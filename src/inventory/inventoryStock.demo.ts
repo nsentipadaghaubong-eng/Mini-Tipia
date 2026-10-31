@@ -13,7 +13,7 @@ import { products } from "../products/productList.ts";
 const panadolInventory = createInventory(
     products.id,
     products.variant[0].id,
-     products.variant[0].batches[0].batchNumber,
+     products.variant[0].batches[0].batchId,
     [
         { packagingLevelId: "box", quantity: 2 },
         { packagingLevelId: "pack", quantity: 3 },
@@ -44,7 +44,7 @@ const deductedPanadolInventory = removeStock(
 const testInventory = createInventory(
     products.id,
     products.variant[0].id,
-    products.variant[0].batches[0].batchNumber,
+    products.variant[0].batches[0].batchId,
     [
         { packagingLevelId: "box", quantity: 2 },
         { packagingLevelId: "pack", quantity: 17 },

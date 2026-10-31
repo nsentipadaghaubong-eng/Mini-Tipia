@@ -4,7 +4,7 @@ export interface inventory {
     id: string;
     productId: string;
     variantId: string;
-    batchNumber: string | null;
+    batchId: string;
     stockQuantities: stockQuantity[];
 }
 
@@ -27,7 +27,7 @@ function validateSufficientStock(
 export function createInventory(
     productId: string,
     variantId: string,
-    batchNumber: string | null,
+    batchId: string,
     stock: stockQuantity[]
 ): inventory {
 
@@ -46,12 +46,10 @@ export function createInventory(
     }
 
     // 3. Batch number may be null, but not empty
-    const normalizedBatchNumber =
-        batchNumber === null ? null : batchNumber.trim();
+    const normalizedBatchId = batchId.trim();
 
     if (
-        normalizedBatchNumber !== null &&
-        normalizedBatchNumber === ""
+        normalizedBatchId === ""
     ) {
         throw new Error("Batch number must not be empty or whitespace");
     }
@@ -102,7 +100,7 @@ export function createInventory(
         id: crypto.randomUUID(),
         productId: normalizedProductId,
         variantId: normalizedVariantId,
-        batchNumber: normalizedBatchNumber,
+        batchId: normalizedBatchId,
         stockQuantities: normalizedStock
     };
 
