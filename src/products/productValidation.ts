@@ -11,8 +11,10 @@ export function getVariantById(
     variantId: string
 ): variant {
 
+    const normalizedVariantId = variantId.trim()
+
     const matchingVariants = product.variant.filter(
-        variant => variant.id === variantId
+        variant => variant.id === normalizedVariantId
     );
 
     if (matchingVariants.length === 0) {
@@ -35,8 +37,10 @@ export function getBatchById(
     batchId: string
 ): batch {
 
+    const normalizedBatchId = batchId.trim()
+
     const matchingBatches = selectedVariant.batches.filter(
-        batch => batch.batchId === batchId
+        batch => batch.batchId === normalizedBatchId
     );
 
     if (matchingBatches.length === 0) {
@@ -56,8 +60,10 @@ export function getPackagingLevelById(
     packagingLevelId: string
 ): packagingLevel {
 
+    const normalizedPackagingId = packagingLevelId.trim()
+
     const matchingPackagingLevels = selectedVariant.packagingHierarchy.filter(
-        level => level.id === packagingLevelId
+        level => level.id === normalizedPackagingId
     );
 
     if (matchingPackagingLevels.length === 0) {
