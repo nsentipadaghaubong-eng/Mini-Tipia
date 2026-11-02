@@ -1,5 +1,13 @@
 
 import type { ReactNode } from "react";
+import {
+    Activity,
+    Boxes,
+    LayoutDashboard,
+    Package,
+    ShoppingCart,
+    Truck,
+} from "lucide-react";
 
 interface AppLayoutProps {
     children: ReactNode;
@@ -12,12 +20,30 @@ export default function AppLayout({ children }: AppLayoutProps) {
                 <h2>Tipia</h2>
 
                 <nav>
-                    <a href="#">Dashboard</a>
-                    <a href="#">Products</a>
-                    <a href="#">Inventory</a>
-                    <a href="#">Receive Delivery</a>
-                    <a href="#">Sales</a>
-                    <a href="#">Activity</a>
+                    <a href="#">
+                        <LayoutDashboard aria-hidden="true" />
+                        <span>Dashboard</span>
+                    </a>
+                    <a href="#">
+                        <Package aria-hidden="true" />
+                        <span>Products</span>
+                    </a>
+                    <a href="#" aria-current="page">
+                        <Boxes aria-hidden="true" />
+                        <span>Inventory</span>
+                    </a>
+                    <a href="#">
+                        <Truck aria-hidden="true" />
+                        <span>Receive Delivery</span>
+                    </a>
+                    <a href="#">
+                        <ShoppingCart aria-hidden="true" />
+                        <span>Sales</span>
+                    </a>
+                    <a href="#">
+                        <Activity aria-hidden="true" />
+                        <span>Activity</span>
+                    </a>
                 </nav>
             </aside>
 

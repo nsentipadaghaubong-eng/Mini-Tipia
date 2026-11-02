@@ -1,7 +1,7 @@
-import { demoProducts } from "../data/demoInventory";
 import type{ inventory,stockQuantity } from "./inventoryStock";
 import type{ batch, productStructure, variant } from "../products/productStructure";
 import type { packagingLevel } from "../packaging/packagingHierarchy";
+import { demoInventory, demoProducts } from "../data/demoInventory";
 
 export interface inventoryDisplay{
 productName:string;
@@ -107,4 +107,10 @@ export function getInventoryDisplay(
         packagingLevels: getPackagingLevelForInventory(inventoryRecord),
         stockQuantities: inventoryRecord.stockQuantities
     };
+}
+
+export function getAllInventoryDisplay(): inventoryDisplay[] {
+    return demoInventory.map((inventoryRecord) =>
+        getInventoryDisplay(inventoryRecord)
+    );
 }
