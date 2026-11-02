@@ -8,7 +8,7 @@ export interface inventory {
     stockQuantities: stockQuantity[];
 }
 
-interface stockQuantity {
+export interface stockQuantity {
     packagingLevelId: string;
     quantity: number;
 }
