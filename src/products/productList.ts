@@ -28,7 +28,7 @@ export const products: productStructure = {
                     costPrice: 40000,
                     sellingPrice: 45000,
                     quantityofNextLevel: 5,
-                    nextLevel: "Pack"
+                    nextLevelId: "pack"
                 },
                 {
                     id: "pack",
@@ -36,7 +36,7 @@ export const products: productStructure = {
                     costPrice: null,
                     sellingPrice: 15000,
                     quantityofNextLevel: 6,
-                    nextLevel: "Card"
+                    nextLevelId: "card"
                 },
                 {
                     id: "card",
@@ -44,7 +44,7 @@ export const products: productStructure = {
                     costPrice: 4800,
                     sellingPrice: 5000,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -70,7 +70,7 @@ export const products: productStructure = {
                     costPrice: 50000,
                     sellingPrice: 55000,
                     quantityofNextLevel: 5,
-                    nextLevel: "Pack"
+                    nextLevelId: "extra-pack"
                 },
                 {
                     id: "extra-pack",
@@ -78,7 +78,7 @@ export const products: productStructure = {
                     costPrice: null,
                     sellingPrice: 18000,
                     quantityofNextLevel: 6,
-                    nextLevel: "Card"
+                    nextLevelId: "extra-card"
                 },
                 {
                     id: "extra-card",
@@ -86,7 +86,7 @@ export const products: productStructure = {
                     costPrice: 5500,
                     sellingPrice: 6000,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -107,7 +107,7 @@ export const products: productStructure = {
                     costPrice: 1200,
                     sellingPrice: 1500,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -135,7 +135,7 @@ const amoxicillin: productStructure = {
                     costPrice: 60000,
                     sellingPrice: 70000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Box"
+                    nextLevelId: "am-box"
                 },
                 {
                     id: "am-box",
@@ -143,7 +143,7 @@ const amoxicillin: productStructure = {
                     costPrice: 6000,
                     sellingPrice: 7500,
                     quantityofNextLevel: 10,
-                    nextLevel: "Capsule"
+                    nextLevelId: "am-capsule"
                 },
                 {
                     id: "am-capsule",
@@ -151,7 +151,7 @@ const amoxicillin: productStructure = {
                     costPrice: 600,
                     sellingPrice: 800,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -172,7 +172,7 @@ const amoxicillin: productStructure = {
                     costPrice: 1800,
                     sellingPrice: 2200,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -200,7 +200,7 @@ const vitaminC: productStructure = {
                     costPrice: 1500,
                     sellingPrice: 2000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "vc-tablet"
                 },
                 {
                     id: "vc-tablet",
@@ -208,7 +208,7 @@ const vitaminC: productStructure = {
                     costPrice: 150,
                     sellingPrice: 200,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -236,7 +236,7 @@ const paracetamol: productStructure = {
                     costPrice: 40000,
                     sellingPrice: 48000,
                     quantityofNextLevel: 20,
-                    nextLevel: "Pack"
+                    nextLevelId: "par-pack"
                 },
                 {
                     id: "par-pack",
@@ -244,7 +244,7 @@ const paracetamol: productStructure = {
                     costPrice: 2000,
                     sellingPrice: 2500,
                     quantityofNextLevel: 10,
-                    nextLevel: "Card"
+                    nextLevelId: "par-card"
                 },
                 {
                     id: "par-card",
@@ -252,7 +252,7 @@ const paracetamol: productStructure = {
                     costPrice: 200,
                     sellingPrice: 300,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -285,7 +285,7 @@ const ibuprofen: productStructure = {
                     costPrice: 45000,
                     sellingPrice: 50000,
                     quantityofNextLevel: 20,
-                    nextLevel: "Pack"
+                    nextLevelId: "ib-pack"
                 },
                 {
                     id: "ib-pack",
@@ -293,7 +293,7 @@ const ibuprofen: productStructure = {
                     costPrice: 2250,
                     sellingPrice: 2500,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "ib-tablet"
                 },
                 {
                     id: "ib-tablet",
@@ -301,7 +301,7 @@ const ibuprofen: productStructure = {
                     costPrice: 225,
                     sellingPrice: 300,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -327,7 +327,7 @@ const ibuprofen: productStructure = {
                     costPrice: 60000,
                     sellingPrice: 68000,
                     quantityofNextLevel: 20,
-                    nextLevel: "Pack"
+                    nextLevelId: "ib400-pack"
                 },
                 {
                     id: "ib400-pack",
@@ -335,7 +335,7 @@ const ibuprofen: productStructure = {
                     costPrice: 3000,
                     sellingPrice: 3400,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "ib400-tablet"
                 },
                 {
                     id: "ib400-tablet",
@@ -343,7 +343,7 @@ const ibuprofen: productStructure = {
                     costPrice: 300,
                     sellingPrice: 350,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -376,7 +376,7 @@ const cetirizine: productStructure = {
                     costPrice: 12000,
                     sellingPrice: 15000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "cet-tablet"
                 },
                 {
                     id: "cet-tablet",
@@ -384,7 +384,7 @@ const cetirizine: productStructure = {
                     costPrice: 1200,
                     sellingPrice: 1500,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -410,7 +410,7 @@ const cetirizine: productStructure = {
                     costPrice: 3500,
                     sellingPrice: 4200,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -443,7 +443,7 @@ const omeprazole: productStructure = {
                     costPrice: 18000,
                     sellingPrice: 22000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Capsule"
+                    nextLevelId: "ome-capsule"
                 },
                 {
                     id: "ome-capsule",
@@ -451,7 +451,7 @@ const omeprazole: productStructure = {
                     costPrice: 1800,
                     sellingPrice: 2200,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -477,7 +477,7 @@ const omeprazole: productStructure = {
                     costPrice: 30000,
                     sellingPrice: 36000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Capsule"
+                    nextLevelId: "ome40-capsule"
                 },
                 {
                     id: "ome40-capsule",
@@ -485,7 +485,7 @@ const omeprazole: productStructure = {
                     costPrice: 3000,
                     sellingPrice: 3600,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -518,7 +518,7 @@ const metformin: productStructure = {
                     costPrice: 15000,
                     sellingPrice: 18000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "met-tablet"
                 },
                 {
                     id: "met-tablet",
@@ -526,7 +526,7 @@ const metformin: productStructure = {
                     costPrice: 1500,
                     sellingPrice: 1800,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -552,7 +552,7 @@ const metformin: productStructure = {
                     costPrice: 20000,
                     sellingPrice: 24000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "met850-tablet"
                 },
                 {
                     id: "met850-tablet",
@@ -560,7 +560,7 @@ const metformin: productStructure = {
                     costPrice: 2000,
                     sellingPrice: 2400,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -593,7 +593,7 @@ const oralRehydrationSalts: productStructure = {
                     costPrice: 500,
                     sellingPrice: 700,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -619,7 +619,7 @@ const oralRehydrationSalts: productStructure = {
                     costPrice: 600,
                     sellingPrice: 800,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }
@@ -652,7 +652,7 @@ const amlodipine: productStructure = {
                     costPrice: 10000,
                     sellingPrice: 12500,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "aml-tablet"
                 },
                 {
                     id: "aml-tablet",
@@ -660,7 +660,7 @@ const amlodipine: productStructure = {
                     costPrice: 1000,
                     sellingPrice: 1250,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -686,7 +686,7 @@ const amlodipine: productStructure = {
                     costPrice: 16000,
                     sellingPrice: 20000,
                     quantityofNextLevel: 10,
-                    nextLevel: "Tablet"
+                    nextLevelId: "aml10-tablet"
                 },
                 {
                     id: "aml10-tablet",
@@ -694,7 +694,7 @@ const amlodipine: productStructure = {
                     costPrice: 1600,
                     sellingPrice: 2000,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }

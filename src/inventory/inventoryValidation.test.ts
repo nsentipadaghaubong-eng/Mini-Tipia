@@ -30,7 +30,7 @@ const product: productStructure = {
                     costPrice: 40000,
                     sellingPrice: 45000,
                     quantityofNextLevel: 5,
-                    nextLevel: "PACK001"
+                    nextLevelId: "PACK001"
                 },
                 {
                     id: "PACK001",
@@ -38,7 +38,7 @@ const product: productStructure = {
                     costPrice: null,
                     sellingPrice: 15000,
                     quantityofNextLevel: 6,
-                    nextLevel: "CARD001"
+                    nextLevelId: "CARD001"
                 },
                 {
                     id: "CARD001",
@@ -46,7 +46,7 @@ const product: productStructure = {
                     costPrice: 4800,
                     sellingPrice: 5000,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         },
@@ -70,7 +70,7 @@ const product: productStructure = {
                     costPrice: 1000,
                     sellingPrice: 1500,
                     quantityofNextLevel: null,
-                    nextLevel: null
+                    nextLevelId: null
                 }
             ]
         }

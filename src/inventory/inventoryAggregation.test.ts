@@ -11,7 +11,7 @@ const pack: packagingLevel = {
     costPrice: 1000,
     sellingPrice: 1500,
     quantityofNextLevel: 6,
-    nextLevel: "card"
+    nextLevelId: "card"
 };
 
 const card: packagingLevel = {
@@ -20,7 +20,7 @@ const card: packagingLevel = {
     costPrice: 200,
     sellingPrice: 300,
     quantityofNextLevel: null,
-    nextLevel: null
+    nextLevelId: null
 };
 
 // Helper for creating inventory display records

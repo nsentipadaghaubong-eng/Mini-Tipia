@@ -136,7 +136,7 @@ select {
     color: #fff;
 }
 
-.sidebar nav a:nth-child(3) {
+.sidebar nav a[aria-current="page"] {
     background: #2854c5;
     color: #fff;
     font-weight: 650;

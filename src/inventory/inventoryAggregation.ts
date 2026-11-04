@@ -76,7 +76,7 @@ export function aggregateVariantStock(
                 if (
                     existingDefinition.name !== matchingDefinition.name ||
                     existingDefinition.quantityofNextLevel !== matchingDefinition.quantityofNextLevel ||
-                    existingDefinition.nextLevel !== matchingDefinition.nextLevel
+                    existingDefinition.nextLevelId !== matchingDefinition.nextLevelId
                 ) {
                     throw new Error(
                         `Conflicting packaging definitions found: ${matchingDefinition.id}`

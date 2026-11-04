@@ -11,9 +11,15 @@ import {
 
 interface AppLayoutProps {
     children: ReactNode;
+    activePage: "products" | "inventory";
+    onNavigate: (page: "products" | "inventory") => void;
 }
 
-export default function AppLayout({ children }: AppLayoutProps) {
+export default function AppLayout({
+    children,
+    activePage,
+    onNavigate
+}: AppLayoutProps) {
     return (
         <div className="app-layout">
             <aside className="sidebar">
@@ -24,11 +30,19 @@ export default function AppLayout({ children }: AppLayoutProps) {
                         <LayoutDashboard aria-hidden="true" />
                         <span>Dashboard</span>
                     </a>
-                    <a href="#">
+                    <a
+                        href="#products"
+                        aria-current={activePage === "products" ? "page" : undefined}
+                        onClick={() => onNavigate("products")}
+                    >
                         <Package aria-hidden="true" />
                         <span>Products</span>
                     </a>
-                    <a href="#" aria-current="page">
+                    <a
+                        href="#inventory"
+                        aria-current={activePage === "inventory" ? "page" : undefined}
+                        onClick={() => onNavigate("inventory")}
+                    >
                         <Boxes aria-hidden="true" />
                         <span>Inventory</span>
                     </a>

@@ -10,9 +10,14 @@ import type { inventoryDisplay } from "../../../inventory/inventoryLookup";
 import type { aggregatedVariantStock } from "../../../inventory/inventoryAggregation";
 import EditProductModal from "../components/EditProductModal";
 import type { EditProductChanges } from "../components/EditProductModal";
-import { demoInventory, demoProducts } from "../../../data/demoInventory";
+import { demoProducts } from "../../../data/demoInventory";
 import type { productStructure } from "../../../products/productStructure";
 import "./InventoryPage.css";
+
+interface InventoryPageProps {
+    inventoryRecords: inventory[];
+    onInventoryChange: (records: inventory[]) => void;
+}
 
 interface VariantGroup {
     variantId: string;
@@ -89,10 +94,10 @@ function groupInventoryRecords(
     return result;
 }
 
-export default function InventoryPage() {
-
-    const [inventoryState, setInventoryState] =
-        useState<inventory[]>(() => demoInventory);
+export default function InventoryPage({
+    inventoryRecords: inventoryState,
+    onInventoryChange
+}: InventoryPageProps) {
 
     const [productsState, setProductsState] =
         useState<productStructure[]>(() => demoProducts);
@@ -336,7 +341,7 @@ export default function InventoryPage() {
 
         // Commit all changes only after processing succeeds.
         setProductsState(nextProducts);
-        setInventoryState(nextInventory);
+        onInventoryChange(nextInventory);
 
         if (newAdjustments.length > 0) {
             setAdjustmentHistory((previous) => [

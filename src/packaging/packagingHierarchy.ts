@@ -4,6 +4,6 @@ export interface packagingLevel{
     costPrice: number|null;
     sellingPrice: number|null;
     quantityofNextLevel:number|null;
-    nextLevel: string|null;
+    nextLevelId: string|null;
 
 }
