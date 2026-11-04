@@ -28,7 +28,8 @@ export function createInventory(
     productId: string,
     variantId: string,
     batchId: string,
-    stock: stockQuantity[]
+    stock: stockQuantity[],
+    id?: string
 ): inventory {
 
     // 1. Normalize and validate product ID
@@ -97,7 +98,7 @@ export function createInventory(
 
     // 9. Create the inventory record after validation
     const inventoryRecord: inventory = {
-        id: crypto.randomUUID(),
+        id: id ?? crypto.randomUUID(),
         productId: normalizedProductId,
         variantId: normalizedVariantId,
         batchId: normalizedBatchId,
