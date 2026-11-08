@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 
 import type { productStructure } from "../products/productStructure.ts";
+import type { inventoryBatch } from "./inventoryBatch.ts";
 
 import {
     createInventory,
@@ -27,14 +28,6 @@ const product: productStructure = {
         {
             id: "VAR001",
             variantName: "Panadol 500mg Tablets",
-
-            batches: [
-                {
-                    batchId: "BATCH001",
-                    batchNumber: "B1-1001",
-                    expiryDate: new Date("2027-12-31")
-                }
-            ],
 
             packagingHierarchy: [
                 {
@@ -68,14 +61,6 @@ const product: productStructure = {
             id: "VAR002",
             variantName: "Panadol Syrup",
 
-            batches: [
-                {
-                    batchId: "BATCH002",
-                    batchNumber: null,
-                    expiryDate: new Date("2027-10-31")
-                }
-            ],
-
             packagingHierarchy: [
                 {
                     id: "BOTTLE001",
@@ -90,6 +75,10 @@ const product: productStructure = {
     ]
 };
 
+const batches: inventoryBatch[] = [
+    { batchId: "BATCH001", productId: "PROD001", variantId: "VAR001", batchNumber: "B1-1001", expiryDate: new Date("2027-12-31") },
+    { batchId: "BATCH002", productId: "PROD001", variantId: "VAR002", batchNumber: null, expiryDate: new Date("2027-10-31") }
+];
 
 // --------------------------------------------------
 // 2. Helper for relationship validation
@@ -99,7 +88,7 @@ function expectValidInventory(
     inventoryRecord: ReturnType<typeof createInventory>
 ): void {
     expect(() => {
-        validateInventoryRelationships(product, inventoryRecord);
+        validateInventoryRelationships(product, inventoryRecord, batches);
     }).not.toThrow();
 }
 
@@ -119,7 +108,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 },
                 { packagingLevelId: "PACK001", quantity: 3 },
@@ -144,7 +133,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 },
                 { packagingLevelId: "PACK001", quantity: 3 },
@@ -153,6 +142,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         );
 
         const updatedInventory = addStock(
+            product,
             inventoryRecord,
             "CARD001",
             5
@@ -176,7 +166,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 },
                 { packagingLevelId: "PACK001", quantity: 3 },
@@ -185,6 +175,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         );
 
         const updatedInventory = removeStock(
+            product,
             inventoryRecord,
             "CARD001",
             4
@@ -205,7 +196,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 },
                 { packagingLevelId: "PACK001", quantity: 3 },
@@ -214,10 +205,10 @@ describe("Inventory Stock and Relationship Integration", () => {
         );
 
         const updatedInventory = breakdownPackaging(
+            product,
             inventoryRecord,
             "BOX001",
             "PACK001",
-            5,
             1
         );
 
@@ -242,7 +233,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 },
                 { packagingLevelId: "PACK001", quantity: 17 },
@@ -251,10 +242,10 @@ describe("Inventory Stock and Relationship Integration", () => {
         );
 
         const updatedInventory = buildUpPackaging(
+            product,
             inventoryRecord,
             "BOX001",
-            "PACK001",
-            5
+            "PACK001"
         );
 
         expectValidInventory(updatedInventory);
@@ -274,7 +265,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 },
                 { packagingLevelId: "PACK001", quantity: 3 },
@@ -283,6 +274,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         );
 
         const updatedInventory = adjustStock(
+            product,
             inventoryRecord,
             "CARD001",
             2
@@ -303,14 +295,14 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             "PROD999",
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 }
             ]
         );
 
         expect(() => {
-            validateInventoryRelationships(product, inventoryRecord);
+            validateInventoryRelationships(product, inventoryRecord, batches);
         }).toThrow("The inventory record doesn't belong to this product");
     });
 
@@ -324,14 +316,14 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             "VAR999",
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOX001", quantity: 2 }
             ]
         );
 
         expect(() => {
-            validateInventoryRelationships(product, inventoryRecord);
+            validateInventoryRelationships(product, inventoryRecord, batches);
         }).toThrow("Variant does not belong to this product.");
     });
 
@@ -352,7 +344,7 @@ describe("Inventory Stock and Relationship Integration", () => {
         );
 
         expect(() => {
-            validateInventoryRelationships(product, inventoryRecord);
+            validateInventoryRelationships(product, inventoryRecord, batches);
         }).toThrow("Batch does not belong to this variant.");
     });
 
@@ -366,14 +358,14 @@ describe("Inventory Stock and Relationship Integration", () => {
         const inventoryRecord = createInventory(
             product.id,
             product.variant[0].id,
-            product.variant[0].batches[0].batchId,
+            batches[0].batchId,
             [
                 { packagingLevelId: "BOTTLE001", quantity: 2 }
             ]
         );
 
         expect(() => {
-            validateInventoryRelationships(product, inventoryRecord);
+            validateInventoryRelationships(product, inventoryRecord, batches);
         }).toThrow("Packaging level does not belong to this variant.");
     });
 

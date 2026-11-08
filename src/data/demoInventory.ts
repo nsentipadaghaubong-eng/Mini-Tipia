@@ -4,6 +4,23 @@ import type { inventory } from "../inventory/inventoryStock";
 
 import { products, productList } from "../products/productList";
 import { createInventory } from "../inventory/inventoryStock";
+import {
+    demoInventoryBatches
+} from "../inventory/inventoryBatchList";
+
+function getDemoBatchId(variantId: string, index: number): string {
+    const batch = demoInventoryBatches.filter(
+        (item) => item.variantId === variantId
+    )[index];
+
+    if (!batch) {
+        throw new Error(`Demo batch not found for variant: ${variantId}`);
+    }
+
+    return batch.batchId;
+}
+
+export { demoInventoryBatches };
 
 // Temporary product collection
 export const demoProducts: productStructure[] = productList;
@@ -15,7 +32,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         products.id,
         products.variant[0].id,
-        products.variant[0].batches[0].batchId,
+        getDemoBatchId(productList[0].variant[0].id, 0),
         [
             { packagingLevelId: "box", quantity: 2 },
             { packagingLevelId: "pack", quantity: 3 },
@@ -28,7 +45,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         products.id,
         products.variant[0].id,
-        products.variant[0].batches[1].batchId,
+        getDemoBatchId(productList[0].variant[0].id, 1),
         [
             { packagingLevelId: "box", quantity: 1 },
             { packagingLevelId: "pack", quantity: 4 },
@@ -41,7 +58,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         products.id,
         products.variant[1].id,
-        products.variant[1].batches[0].batchId,
+        getDemoBatchId(productList[0].variant[1].id, 0),
         [
             { packagingLevelId: "extra-box", quantity: 3 },
             { packagingLevelId: "extra-pack", quantity: 2 },
@@ -54,7 +71,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         products.id,
         products.variant[1].id,
-        products.variant[1].batches[1].batchId,
+        getDemoBatchId(productList[0].variant[1].id, 1),
         [
             { packagingLevelId: "extra-box", quantity: 1 },
             { packagingLevelId: "extra-pack", quantity: 3 },
@@ -67,7 +84,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         products.id,
         products.variant[2].id,
-        products.variant[2].batches[0].batchId,
+        getDemoBatchId(productList[0].variant[2].id, 0),
         [
             { packagingLevelId: "bottle", quantity: 15 }
         ],
@@ -78,7 +95,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[1].id,
         productList[1].variant[0].id,
-        productList[1].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[1].variant[0].id, 0),
         [
             { packagingLevelId: "am-carton", quantity: 2 },
             { packagingLevelId: "am-box", quantity: 4 },
@@ -91,7 +108,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[1].id,
         productList[1].variant[1].id,
-        productList[1].variant[1].batches[0].batchId,
+        getDemoBatchId(productList[1].variant[1].id, 0),
         [
             { packagingLevelId: "am-suspension-bottle", quantity: 8 }
         ],
@@ -102,7 +119,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[2].id,
         productList[2].variant[0].id,
-        productList[2].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[2].variant[0].id, 0),
         [
             { packagingLevelId: "vc-tube", quantity: 6 },
             { packagingLevelId: "vc-tablet", quantity: 15 }
@@ -114,7 +131,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[3].id,
         productList[3].variant[0].id,
-        productList[3].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[3].variant[0].id, 0),
         [
             { packagingLevelId: "par-carton", quantity: 1 },
             { packagingLevelId: "par-pack", quantity: 5 },
@@ -127,7 +144,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[4].id,
         productList[4].variant[0].id,
-        productList[4].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[4].variant[0].id, 0),
         [
             { packagingLevelId: "ib-carton", quantity: 2 },
             { packagingLevelId: "ib-pack", quantity: 6 },
@@ -140,7 +157,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[5].id,
         productList[5].variant[0].id,
-        productList[5].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[5].variant[0].id, 0),
         [
             { packagingLevelId: "cet-box", quantity: 8 },
             { packagingLevelId: "cet-tablet", quantity: 24 }
@@ -152,7 +169,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[6].id,
         productList[6].variant[0].id,
-        productList[6].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[6].variant[0].id, 0),
         [
             { packagingLevelId: "ome-box", quantity: 5 },
             { packagingLevelId: "ome-capsule", quantity: 16 }
@@ -164,7 +181,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[7].id,
         productList[7].variant[0].id,
-        productList[7].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[7].variant[0].id, 0),
         [
             { packagingLevelId: "met-box", quantity: 7 },
             { packagingLevelId: "met-tablet", quantity: 20 }
@@ -176,7 +193,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[8].id,
         productList[8].variant[0].id,
-        productList[8].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[8].variant[0].id, 0),
         [
             { packagingLevelId: "ors-sachet", quantity: 30 }
         ],
@@ -187,7 +204,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[9].id,
         productList[9].variant[0].id,
-        productList[9].variant[0].batches[0].batchId,
+        getDemoBatchId(productList[9].variant[0].id, 0),
         [
             { packagingLevelId: "aml-box", quantity: 4 },
             { packagingLevelId: "aml-tablet", quantity: 12 }
@@ -199,7 +216,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[4].id,
         productList[4].variant[0].id,
-        productList[4].variant[0].batches[1].batchId,
+        getDemoBatchId(productList[4].variant[0].id, 1),
         [
             { packagingLevelId: "ib-carton", quantity: 1 },
             { packagingLevelId: "ib-pack", quantity: 8 },
@@ -212,7 +229,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[4].id,
         productList[4].variant[1].id,
-        productList[4].variant[1].batches[0].batchId,
+        getDemoBatchId(productList[4].variant[1].id, 0),
         [
             { packagingLevelId: "ib400-carton", quantity: 2 },
             { packagingLevelId: "ib400-pack", quantity: 5 },
@@ -225,7 +242,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[4].id,
         productList[4].variant[1].id,
-        productList[4].variant[1].batches[1].batchId,
+        getDemoBatchId(productList[4].variant[1].id, 1),
         [
             { packagingLevelId: "ib400-carton", quantity: 1 },
             { packagingLevelId: "ib400-pack", quantity: 7 },
@@ -238,7 +255,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[5].id,
         productList[5].variant[0].id,
-        productList[5].variant[0].batches[1].batchId,
+        getDemoBatchId(productList[5].variant[0].id, 1),
         [
             { packagingLevelId: "cet-box", quantity: 6 },
             { packagingLevelId: "cet-tablet", quantity: 18 }
@@ -250,7 +267,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[5].id,
         productList[5].variant[1].id,
-        productList[5].variant[1].batches[0].batchId,
+        getDemoBatchId(productList[5].variant[1].id, 0),
         [
             { packagingLevelId: "cet-s-bottle", quantity: 12 }
         ],
@@ -261,7 +278,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[5].id,
         productList[5].variant[1].id,
-        productList[5].variant[1].batches[1].batchId,
+        getDemoBatchId(productList[5].variant[1].id, 1),
         [
             { packagingLevelId: "cet-s-bottle", quantity: 9 }
         ],
@@ -272,7 +289,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[6].id,
         productList[6].variant[0].id,
-        productList[6].variant[0].batches[1].batchId,
+        getDemoBatchId(productList[6].variant[0].id, 1),
         [
             { packagingLevelId: "ome-box", quantity: 4 },
             { packagingLevelId: "ome-capsule", quantity: 20 }
@@ -284,7 +301,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[6].id,
         productList[6].variant[1].id,
-        productList[6].variant[1].batches[0].batchId,
+        getDemoBatchId(productList[6].variant[1].id, 0),
         [
             { packagingLevelId: "ome40-box", quantity: 3 },
             { packagingLevelId: "ome40-capsule", quantity: 12 }
@@ -296,7 +313,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[6].id,
         productList[6].variant[1].id,
-        productList[6].variant[1].batches[1].batchId,
+        getDemoBatchId(productList[6].variant[1].id, 1),
         [
             { packagingLevelId: "ome40-box", quantity: 6 },
             { packagingLevelId: "ome40-capsule", quantity: 15 }
@@ -308,7 +325,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[7].id,
         productList[7].variant[0].id,
-        productList[7].variant[0].batches[1].batchId,
+        getDemoBatchId(productList[7].variant[0].id, 1),
         [
             { packagingLevelId: "met-box", quantity: 5 },
             { packagingLevelId: "met-tablet", quantity: 25 }
@@ -320,7 +337,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[7].id,
         productList[7].variant[1].id,
-        productList[7].variant[1].batches[0].batchId,
+        getDemoBatchId(productList[7].variant[1].id, 0),
         [
             { packagingLevelId: "met850-box", quantity: 4 },
             { packagingLevelId: "met850-tablet", quantity: 16 }
@@ -332,7 +349,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[7].id,
         productList[7].variant[1].id,
-        productList[7].variant[1].batches[1].batchId,
+        getDemoBatchId(productList[7].variant[1].id, 1),
         [
             { packagingLevelId: "met850-box", quantity: 8 },
             { packagingLevelId: "met850-tablet", quantity: 22 }
@@ -344,7 +361,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[8].id,
         productList[8].variant[0].id,
-        productList[8].variant[0].batches[1].batchId,
+        getDemoBatchId(productList[8].variant[0].id, 1),
         [
             { packagingLevelId: "ors-sachet", quantity: 24 }
         ],
@@ -355,7 +372,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[8].id,
         productList[8].variant[1].id,
-        productList[8].variant[1].batches[0].batchId,
+        getDemoBatchId(productList[8].variant[1].id, 0),
         [
             { packagingLevelId: "ors-orange-sachet", quantity: 32 }
         ],
@@ -366,7 +383,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[8].id,
         productList[8].variant[1].id,
-        productList[8].variant[1].batches[1].batchId,
+        getDemoBatchId(productList[8].variant[1].id, 1),
         [
             { packagingLevelId: "ors-orange-sachet", quantity: 27 }
         ],
@@ -377,7 +394,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[9].id,
         productList[9].variant[0].id,
-        productList[9].variant[0].batches[1].batchId,
+        getDemoBatchId(productList[9].variant[0].id, 1),
         [
             { packagingLevelId: "aml-box", quantity: 5 },
             { packagingLevelId: "aml-tablet", quantity: 15 }
@@ -389,7 +406,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[9].id,
         productList[9].variant[1].id,
-        productList[9].variant[1].batches[0].batchId,
+        getDemoBatchId(productList[9].variant[1].id, 0),
         [
             { packagingLevelId: "aml10-box", quantity: 3 },
             { packagingLevelId: "aml10-tablet", quantity: 18 }
@@ -401,7 +418,7 @@ export const demoInventory: inventory[] = [
     createInventory(
         productList[9].id,
         productList[9].variant[1].id,
-        productList[9].variant[1].batches[1].batchId,
+        getDemoBatchId(productList[9].variant[1].id, 1),
         [
             { packagingLevelId: "aml10-box", quantity: 6 },
             { packagingLevelId: "aml10-tablet", quantity: 20 }

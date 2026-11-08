@@ -1,6 +1,8 @@
 import { useId, useState } from "react";
 import type { productStructure } from "../../../products/productStructure";
+import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { inventoryDisplay } from "../../../inventory/inventoryLookup";
+import type { unbatchedInventoryChange } from "../../../inventory/inventoryAdjustment";
 import "./EditProductModal.css";
 
 interface StockQuantityDraft {
@@ -17,29 +19,44 @@ interface BatchDraft {
     stockQuantities: StockQuantityDraft[];
 }
 
+type UnbatchedDraft = Omit<unbatchedInventoryChange, "stockQuantities"> & {
+    stockQuantities: StockQuantityDraft[];
+};
+
 export interface EditProductChanges {
+    operationId: string;
     reason: string;
     batches: {
         variantId: string;
         batchId: string;
         batchNumber: string | null;
-        expiryDate: Date;
+        expiryDate: Date | null;
         inventoryId: string | null;
         stockQuantities: {
             packagingLevelId: string;
             quantity: number;
         }[];
     }[];
+    unbatched: unbatchedInventoryChange[];
 }
 
 interface EditProductModalProps {
     product: productStructure;
+    batches: inventoryBatch[];
     inventoryRecords: inventoryDisplay[];
+    initialVariantId?: string | null;
+    initialInventoryId?: string | null;
+    initialBatchId?: string | null;
+    onEditProductDetails: (variantId: string) => void;
     onClose: () => void;
     onSave: (changes: EditProductChanges) => void;
 }
 
-function formatDateForInput(date: Date): string {
+function formatDateForInput(date: Date | null): string {
+    if (date === null) {
+        return "";
+    }
+
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
@@ -49,7 +66,12 @@ function formatDateForInput(date: Date): string {
 
 export default function EditProductModal({
     product,
+    batches,
     inventoryRecords,
+    initialVariantId = null,
+    initialInventoryId = null,
+    initialBatchId = null,
+    onEditProductDetails,
     onClose,
     onSave
 }: EditProductModalProps) {
@@ -60,10 +82,27 @@ export default function EditProductModal({
 
     const [batchDrafts, setBatchDrafts] = useState<BatchDraft[]>(() =>
         product.variant.flatMap((variant) =>
-            variant.batches.map((batch) => {
+            batches
+                .filter(
+                    (batch) =>
+                        batch.productId === product.id &&
+                        batch.variantId === variant.id
+                )
+                .sort((first, second) =>
+                    first.batchId === initialBatchId
+                        ? -1
+                        : second.batchId === initialBatchId
+                            ? 1
+                            : 0
+                )
+                .map((batch) => {
 
                 const matchingInventory = inventoryRecords.find(
                     (record) =>
+                        (batch.batchId !== initialBatchId ||
+                            initialInventoryId === null ||
+                            record.inventoryId === initialInventoryId) &&
+                        record.productId === product.id &&
                         record.variantId === variant.id &&
                         record.batchId === batch.batchId
                 );
@@ -83,6 +122,34 @@ export default function EditProductModal({
             })
         )
     );
+
+    const [unbatchedDrafts, setUnbatchedDrafts] =
+        useState<UnbatchedDraft[]>(() =>
+            inventoryRecords
+                .filter(
+                    (record) =>
+                        record.productId === product.id &&
+                        record.batchId === null &&
+                        product.variant.some(
+                            (variant) => variant.id === record.variantId
+                        )
+                )
+                .map((record) => ({
+                    inventoryId: record.inventoryId,
+                    variantId: record.variantId,
+                    stockQuantities: record.stockQuantities.map((stock) => ({
+                        packagingLevelId: stock.packagingLevelId,
+                        quantity: String(stock.quantity)
+                    }))
+                }))
+                .sort((first, second) =>
+                    first.inventoryId === initialInventoryId
+                        ? -1
+                        : second.inventoryId === initialInventoryId
+                            ? 1
+                            : 0
+                )
+        );
 
     function updateBatchDraft(
         variantId: string,
@@ -125,21 +192,44 @@ export default function EditProductModal({
         );
     }
 
-    const validStockQuantities = batchDrafts.every((batch) =>
-        batch.stockQuantities.every((stock) => {
-            if (stock.quantity.trim() === "") {
-                return false;
-            }
+    function updateUnbatchedStockQuantity(
+        inventoryId: string,
+        packagingLevelId: string,
+        value: string
+    ) {
+        setSaveError(null);
+        setUnbatchedDrafts((currentDrafts) =>
+            currentDrafts.map((draft) =>
+                draft.inventoryId === inventoryId
+                    ? {
+                        ...draft,
+                        stockQuantities: draft.stockQuantities.map((stock) =>
+                            stock.packagingLevelId === packagingLevelId
+                                ? { ...stock, quantity: value }
+                                : stock
+                        )
+                    }
+                    : draft
+            )
+        );
+    }
 
-            const quantity = Number(stock.quantity);
+    const validStockQuantities =
+        [...batchDrafts, ...unbatchedDrafts].every((draft) =>
+            draft.stockQuantities.every((stock) => {
+                if (stock.quantity.trim() === "") {
+                    return false;
+                }
 
-            return Number.isSafeInteger(quantity) && quantity >= 0;
-        })
-    );
+                const quantity = Number(stock.quantity);
+
+                return Number.isSafeInteger(quantity) && quantity >= 0;
+            })
+        );
 
     const validDates = batchDrafts.every((batch) => {
         if (!batch.expiryDate) {
-            return false;
+            return true;
         }
 
         const parsedDate = new Date(`${batch.expiryDate}T00:00:00`);
@@ -154,21 +244,49 @@ export default function EditProductModal({
         validStockQuantities &&
         validDates;
 
+    const unbatchedDraftsByVariant = new Map<string, UnbatchedDraft[]>();
+    for (const draft of unbatchedDrafts) {
+        const variantDrafts =
+            unbatchedDraftsByVariant.get(draft.variantId) ?? [];
+        variantDrafts.push(draft);
+        unbatchedDraftsByVariant.set(draft.variantId, variantDrafts);
+    }
+    const orderedVariants = initialVariantId
+        ? [...product.variant].sort((first, second) =>
+            first.id === initialVariantId
+                ? -1
+                : second.id === initialVariantId
+                    ? 1
+                    : 0
+        )
+        : product.variant;
+
     function handleSave() {
         if (!canSave) {
             return;
         }
 
         const changes: EditProductChanges = {
+            operationId: crypto.randomUUID(),
             reason: reason.trim(),
 
             batches: batchDrafts.map((batch) => ({
                 variantId: batch.variantId,
                 batchId: batch.batchId,
                 batchNumber: batch.batchNumber.trim() || null,
-                expiryDate: new Date(`${batch.expiryDate}T00:00:00`),
+                expiryDate: batch.expiryDate
+                    ? new Date(`${batch.expiryDate}T00:00:00`)
+                    : null,
                 inventoryId: batch.inventoryId,
                 stockQuantities: batch.stockQuantities.map((stock) => ({
+                    packagingLevelId: stock.packagingLevelId,
+                    quantity: Number(stock.quantity)
+                }))
+            })),
+            unbatched: unbatchedDrafts.map((draft) => ({
+                inventoryId: draft.inventoryId,
+                variantId: draft.variantId,
+                stockQuantities: draft.stockQuantities.map((stock) => ({
                     packagingLevelId: stock.packagingLevelId,
                     quantity: Number(stock.quantity)
                 }))
@@ -230,9 +348,9 @@ export default function EditProductModal({
                     </section>
 
                     <section className="edit-product-section">
-                        <h3>Variants and Batches</h3>
+                        <h3>Variants and Inventory</h3>
 
-                        {product.variant.map((variant) => (
+                        {orderedVariants.map((variant) => (
                             <div
                                 className="edit-variant-section"
                                 key={variant.id}
@@ -240,9 +358,22 @@ export default function EditProductModal({
                                 <div className="edit-variant-heading">
                                     <h4>{variant.variantName}</h4>
                                     <span>Read only</span>
+                                    <button
+                                        className="secondary-button"
+                                        onClick={() => onEditProductDetails(variant.id)}
+                                        type="button"
+                                    >
+                                        Edit Product Details
+                                    </button>
                                 </div>
 
-                                {variant.batches.map((batch) => {
+                                {batches
+                                    .filter(
+                                        (batch) =>
+                                            batch.productId === product.id &&
+                                            batch.variantId === variant.id
+                                    )
+                                    .map((batch) => {
 
                                     const draft = batchDrafts.find(
                                         (item) =>
@@ -250,16 +381,19 @@ export default function EditProductModal({
                                             item.batchId === batch.batchId
                                     );
 
-                                    const matchingInventory =
-                                        inventoryRecords.find(
-                                            (record) =>
-                                                record.batchId === batch.batchId &&
-                                                record.variantId === variant.id
-                                        );
-
                                     if (!draft) {
                                         return null;
                                     }
+
+                                    const matchingInventory =
+                                        inventoryRecords.find(
+                                            (record) =>
+                                                (draft.inventoryId === null ||
+                                                    record.inventoryId === draft.inventoryId) &&
+                                                record.productId === product.id &&
+                                                record.batchId === batch.batchId &&
+                                                record.variantId === variant.id
+                                        );
 
                                     return (
                                         <article
@@ -374,7 +508,71 @@ export default function EditProductModal({
 
                                         </article>
                                     );
-                                })}
+                                    })}
+
+                                {(unbatchedDraftsByVariant.get(variant.id) ?? []).length > 0 && (
+                                    <section
+                                        className="edit-stock-section"
+                                        aria-label="Unbatched Inventory"
+                                    >
+                                        <h5>Unbatched Inventory</h5>
+
+                                        {(unbatchedDraftsByVariant.get(variant.id) ?? [])
+                                            .map((draft) => {
+                                                const matchingInventory =
+                                                    inventoryRecords.find(
+                                                        (record) =>
+                                                            record.inventoryId === draft.inventoryId &&
+                                                            record.productId === product.id &&
+                                                            record.variantId === variant.id &&
+                                                            record.batchId === null
+                                                    );
+
+                                                if (!matchingInventory) {
+                                                    return null;
+                                                }
+
+                                                return (
+                                                    <div key={draft.inventoryId}>
+                                                        {draft.stockQuantities.map((stock) => {
+                                                            const packagingLevel =
+                                                                matchingInventory.packagingLevels.find(
+                                                                    (level) =>
+                                                                        level.id === stock.packagingLevelId
+                                                                );
+                                                            const inputId =
+                                                                `unbatched-stock-${modalId}-${encodeURIComponent(draft.inventoryId)}-${encodeURIComponent(stock.packagingLevelId)}`;
+
+                                                            return (
+                                                                <div
+                                                                    className="edit-stock-row"
+                                                                    key={stock.packagingLevelId}
+                                                                >
+                                                                    <label htmlFor={inputId}>
+                                                                        {packagingLevel?.name ?? "Unknown packaging"}
+                                                                    </label>
+                                                                    <input
+                                                                        id={inputId}
+                                                                        type="number"
+                                                                        min="0"
+                                                                        step="1"
+                                                                        value={stock.quantity}
+                                                                        onChange={(event) =>
+                                                                            updateUnbatchedStockQuantity(
+                                                                                draft.inventoryId,
+                                                                                stock.packagingLevelId,
+                                                                                event.target.value
+                                                                            )
+                                                                        }
+                                                                    />
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                );
+                                            })}
+                                    </section>
+                                )}
                             </div>
                         ))}
                     </section>

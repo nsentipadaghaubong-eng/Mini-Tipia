@@ -9,16 +9,18 @@ import {
     Truck,
 } from "lucide-react";
 
+type AppPage = "products" | "inventory" | "delivery" | "sales";
+
 interface AppLayoutProps {
     children: ReactNode;
-    activePage: "products" | "inventory";
-    onNavigate: (page: "products" | "inventory") => void;
+    activePage: AppPage;
+    onSelectPage: (page: AppPage) => void;
 }
 
 export default function AppLayout({
     children,
     activePage,
-    onNavigate
+    onSelectPage
 }: AppLayoutProps) {
     return (
         <div className="app-layout">
@@ -33,7 +35,7 @@ export default function AppLayout({
                     <a
                         href="#products"
                         aria-current={activePage === "products" ? "page" : undefined}
-                        onClick={() => onNavigate("products")}
+                        onClick={() => onSelectPage("products")}
                     >
                         <Package aria-hidden="true" />
                         <span>Products</span>
@@ -41,16 +43,24 @@ export default function AppLayout({
                     <a
                         href="#inventory"
                         aria-current={activePage === "inventory" ? "page" : undefined}
-                        onClick={() => onNavigate("inventory")}
+                        onClick={() => onSelectPage("inventory")}
                     >
                         <Boxes aria-hidden="true" />
                         <span>Inventory</span>
                     </a>
-                    <a href="#">
+                    <a
+                        href="#delivery"
+                        aria-current={activePage === "delivery" ? "page" : undefined}
+                        onClick={() => onSelectPage("delivery")}
+                    >
                         <Truck aria-hidden="true" />
                         <span>Receive Delivery</span>
                     </a>
-                    <a href="#">
+                    <a
+                        href="#sales"
+                        aria-current={activePage === "sales" ? "page" : undefined}
+                        onClick={() => onSelectPage("sales")}
+                    >
                         <ShoppingCart aria-hidden="true" />
                         <span>Sales</span>
                     </a>

@@ -1,21 +1,20 @@
 import type { inventory, stockQuantity } from "./inventoryStock";
-import type {
-    batch,
-    productStructure,
-    variant
-} from "../products/productStructure";
+import type { productStructure, variant } from "../products/productStructure";
+import type { inventoryBatch } from "./inventoryBatch";
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import { demoInventory, demoProducts } from "../data/demoInventory";
+import { demoInventoryBatches } from "./inventoryBatchList";
+import { validateInventoryPackagingRelationships } from "./inventoryValidation";
 
 export interface inventoryDisplay {
     inventoryId: string;
     productId: string;
     variantId: string;
-    batchId: string;
+    batchId: string | null;
     productName: string;
     variantName: string;
     batchNumber: string | null;
-    expiryDate: Date;
+    expiryDate: Date | null;
     packagingLevels: packagingLevel[];
     stockQuantities: stockQuantity[];
 }
@@ -49,20 +48,25 @@ export function getVariantForInventory(
 
 export function getBatchForInventory(
     inventoryRecord: inventory,
-    productsCollection: productStructure[] = demoProducts
-): batch | undefined {
-    const matchingVariant = getVariantForInventory(
-        inventoryRecord,
-        productsCollection
-    );
-
-    if (!matchingVariant) {
+    batchesCollection: inventoryBatch[] = demoInventoryBatches
+): inventoryBatch | undefined {
+    if (inventoryRecord.batchId === null) {
         return undefined;
     }
 
-    return matchingVariant.batches.find(
-        (item) => item.batchId === inventoryRecord.batchId
+    const matchingBatches = batchesCollection.filter(
+        (batch) => batch.batchId === inventoryRecord.batchId
     );
+
+    if (matchingBatches.length !== 1) {
+        return undefined;
+    }
+
+    const [batch] = matchingBatches;
+    return batch.productId === inventoryRecord.productId &&
+        batch.variantId === inventoryRecord.variantId
+        ? batch
+        : undefined;
 }
 
 export function getPackagingLevelForInventory(
@@ -78,29 +82,19 @@ export function getPackagingLevelForInventory(
         return [];
     }
 
-    const matchingPackagingLevels: packagingLevel[] = [];
-
-    for (const stockQuantity of inventoryRecord.stockQuantities) {
-        const matchingPackagingLevel =
-            matchingVariant.packagingHierarchy.find(
-                (level) => level.id === stockQuantity.packagingLevelId
-            );
-
-        if (!matchingPackagingLevel) {
-            throw new Error(
-                `Packaging level not found: ${stockQuantity.packagingLevelId}`
-            );
-        }
-
-        matchingPackagingLevels.push(matchingPackagingLevel);
+    const product = getProductForInventory(inventoryRecord, productsCollection);
+    if (!product) {
+        return [];
     }
 
-    return matchingPackagingLevels;
+    validateInventoryPackagingRelationships(product, inventoryRecord);
+    return matchingVariant.packagingHierarchy.map((level) => ({ ...level }));
 }
 
 export function getInventoryDisplay(
     inventoryRecord: inventory,
-    productsCollection: productStructure[] = demoProducts
+    productsCollection: productStructure[] = demoProducts,
+    batchesCollection: inventoryBatch[] = demoInventoryBatches
 ): inventoryDisplay {
     const product = getProductForInventory(
         inventoryRecord,
@@ -112,12 +106,9 @@ export function getInventoryDisplay(
         productsCollection
     );
 
-    const batch = getBatchForInventory(
-        inventoryRecord,
-        productsCollection
-    );
+    const batch = getBatchForInventory(inventoryRecord, batchesCollection);
 
-    if (!product || !variant || !batch) {
+    if (!product || !variant || (inventoryRecord.batchId !== null && !batch)) {
         throw new Error(
             "Inventory references invalid product, variant or batch."
         );
@@ -130,8 +121,8 @@ export function getInventoryDisplay(
         batchId: inventoryRecord.batchId,
         productName: product.name,
         variantName: variant.variantName,
-        batchNumber: batch.batchNumber,
-        expiryDate: batch.expiryDate,
+        batchNumber: batch?.batchNumber ?? null,
+        expiryDate: batch?.expiryDate ?? null,
         packagingLevels: getPackagingLevelForInventory(
             inventoryRecord,
             productsCollection
@@ -142,9 +133,14 @@ export function getInventoryDisplay(
 
 export function getAllInventoryDisplay(
     inventoryRecords: inventory[] = demoInventory,
-    productsCollection: productStructure[] = demoProducts
+    productsCollection: productStructure[] = demoProducts,
+    batchesCollection: inventoryBatch[] = demoInventoryBatches
 ): inventoryDisplay[] {
     return inventoryRecords.map((inventoryRecord) =>
-        getInventoryDisplay(inventoryRecord, productsCollection)
+        getInventoryDisplay(
+            inventoryRecord,
+            productsCollection,
+            batchesCollection
+        )
     );
-} 
+}

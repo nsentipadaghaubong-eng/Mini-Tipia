@@ -3,19 +3,16 @@ import type { packagingLevel } from "../packaging/packagingHierarchy";
 export interface productStructure {
     id: string;
     name: string;
+    genericName?: string;
+    manufacturer?: string;
+    category?: string;
     variant: variant[]
 }
 
 export interface variant {
     id: string;
     variantName: string;
-    batches: batch[];
+    nafdacRegistrationNumber?: string;
     packagingHierarchy: packagingLevel[]
 
-}
-
-export interface batch{
-    batchId: string;
-    batchNumber: string|null;
-    expiryDate:Date;
 }

@@ -1,22 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
-import { demoInventory } from "./demoInventory";
+import { demoInventory, demoInventoryBatches } from "./demoInventory";
 import { productList } from "../products/productList";
 import { createInventory } from "../inventory/inventoryStock";
 
 function getDemoIdSnapshot(
     products: typeof productList,
-    inventoryRecords: typeof demoInventory
+    inventoryRecords: typeof demoInventory,
+    batches: typeof demoInventoryBatches
 ) {
     return {
         products: products.map((product) => ({
             id: product.id,
             variants: product.variant.map((variant) => ({
                 id: variant.id,
-                batches: variant.batches.map((batch) => batch.batchId),
                 packagingLevels: variant.packagingHierarchy.map(
                     (level) => level.id
                 )
             }))
+        })),
+        batches: batches.map((batch) => ({
+            batchId: batch.batchId,
+            productId: batch.productId,
+            variantId: batch.variantId,
+            batchNumber: batch.batchNumber,
+            expiryDate: batch.expiryDate
         })),
         inventory: inventoryRecords.map((record) => ({
             id: record.id,
@@ -34,13 +41,23 @@ describe("demo inventory identifiers", () => {
     it("keeps demo IDs stable across repeated module imports", async () => {
         const importDemoData = async () => {
             vi.resetModules();
-            const [{ productList: importedProducts }, { demoInventory: importedInventory }] =
+            const [
+                { productList: importedProducts },
+                {
+                    demoInventory: importedInventory,
+                    demoInventoryBatches: importedBatches
+                }
+            ] =
                 await Promise.all([
                     import("../products/productList"),
                     import("./demoInventory")
                 ]);
 
-            return getDemoIdSnapshot(importedProducts, importedInventory);
+            return getDemoIdSnapshot(
+                importedProducts,
+                importedInventory,
+                importedBatches
+            );
         };
 
         const firstImport = await importDemoData();
@@ -54,11 +71,7 @@ describe("demo inventory identifiers", () => {
         const variantIds = productList.flatMap((product) =>
             product.variant.map((variant) => variant.id)
         );
-        const batchIds = productList.flatMap((product) =>
-            product.variant.flatMap((variant) =>
-                variant.batches.map((batch) => batch.batchId)
-            )
-        );
+        const batchIds = demoInventoryBatches.map((batch) => batch.batchId);
         const packagingLevelIds = productList.flatMap((product) =>
             product.variant.flatMap((variant) =>
                 variant.packagingHierarchy.map((level) => level.id)
@@ -90,7 +103,12 @@ describe("demo inventory identifiers", () => {
             );
             expect(variant).toBeDefined();
             expect(
-                variant?.batches.some((batch) => batch.batchId === record.batchId)
+                demoInventoryBatches.some(
+                    (batch) =>
+                        batch.batchId === record.batchId &&
+                        batch.productId === record.productId &&
+                        batch.variantId === record.variantId
+                )
             ).toBe(true);
 
             const packagingIds = new Set(

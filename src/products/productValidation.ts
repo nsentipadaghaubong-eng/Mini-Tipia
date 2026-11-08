@@ -1,10 +1,10 @@
 import type {
     productStructure,
-    variant,
-    batch
+    variant
 } from "./productStructure.ts";
 
 import type { packagingLevel } from "../packaging/packagingHierarchy";
+import { getPackagingLevelFromHierarchy } from "../packaging/packagingValidation";
 
 export function getVariantById(
     product: productStructure,
@@ -32,47 +32,12 @@ export function getVariantById(
 }
 
 
-export function getBatchById(
-    selectedVariant: variant,
-    batchId: string
-): batch {
-
-    const normalizedBatchId = batchId.trim()
-
-    const matchingBatches = selectedVariant.batches.filter(
-        batch => batch.batchId === normalizedBatchId
-    );
-
-    if (matchingBatches.length === 0) {
-        throw new Error("Batch does not belong to this variant.");
-    }
-
-    if (matchingBatches.length > 1) {
-        throw new Error("Duplicate batch ID found in variant.");
-    }
-
-    return matchingBatches[0];
-}
-
-
 export function getPackagingLevelById(
     selectedVariant: variant,
     packagingLevelId: string
 ): packagingLevel {
-
-    const normalizedPackagingId = packagingLevelId.trim()
-
-    const matchingPackagingLevels = selectedVariant.packagingHierarchy.filter(
-        level => level.id === normalizedPackagingId
+    return getPackagingLevelFromHierarchy(
+        selectedVariant.packagingHierarchy,
+        packagingLevelId
     );
-
-    if (matchingPackagingLevels.length === 0) {
-        throw new Error("Packaging level does not belong to this variant.");
-    }
-
-    if (matchingPackagingLevels.length > 1) {
-        throw new Error("Duplicate packaging level ID found in variant.");
-    }
-
-    return matchingPackagingLevels[0];
 }

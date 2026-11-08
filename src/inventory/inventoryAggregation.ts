@@ -1,6 +1,7 @@
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import type { stockQuantity } from "./inventoryStock";
 import type{ inventoryDisplay } from "./inventoryLookup";
+import { validatePackagingHierarchy } from "../packaging/packagingValidation";
 
 export interface aggregatedVariantStock{
 productId:string;
@@ -40,6 +41,9 @@ export function aggregateVariantStock(
     const batchIds = new Set<string>();
 
     for (const record of inventoryRecords) {
+        if (record.batchId === null) {
+            continue;
+        }
         if (batchIds.has(record.batchId)) {
             throw new Error(
                 `Duplicate batch found: ${record.batchId}`
@@ -49,41 +53,54 @@ export function aggregateVariantStock(
         batchIds.add(record.batchId);
     }
 
+    const packagingDefinitions = firstRecord.packagingLevels.map(
+        (level) => ({ ...level })
+    );
+    validatePackagingHierarchy(packagingDefinitions);
+
     const aggregatedQuantities: stockQuantity[] = [];
-    const packagingDefinitions: packagingLevel[] = [];
 
     for (const record of inventoryRecords) {
-        for (const stock of record.stockQuantities) {
-
-            // Find the packaging definition for this stock quantity.
-            const matchingDefinition = record.packagingLevels.find(
-                (level) => level.id === stock.packagingLevelId
+        validatePackagingHierarchy(record.packagingLevels);
+        if (
+            record.packagingLevels.length !== packagingDefinitions.length ||
+            packagingDefinitions.some((definition, index) => {
+                const candidate = record.packagingLevels[index];
+                return (
+                    !candidate ||
+                    definition.id !== candidate.id ||
+                    definition.name !== candidate.name ||
+                    definition.costPrice !== candidate.costPrice ||
+                    definition.sellingPrice !== candidate.sellingPrice ||
+                    definition.quantityofNextLevel !==
+                        candidate.quantityofNextLevel ||
+                    definition.nextLevelId !== candidate.nextLevelId
+                );
+            })
+        ) {
+            throw new Error(
+                "Conflicting packaging definitions found for this variant."
             );
+        }
 
-            if (!matchingDefinition) {
+        for (const stock of record.stockQuantities) {
+            if (
+                !packagingDefinitions.some(
+                    (level) => level.id === stock.packagingLevelId
+                )
+            ) {
                 throw new Error(
                     `Packaging definition not found: ${stock.packagingLevelId}`
                 );
             }
 
-            // Check whether this packaging definition already exists.
-            const existingDefinition = packagingDefinitions.find(
-                (level) => level.id === matchingDefinition.id
-            );
-
-            if (existingDefinition) {
-                // Ensure the packaging definition is consistent.
-                if (
-                    existingDefinition.name !== matchingDefinition.name ||
-                    existingDefinition.quantityofNextLevel !== matchingDefinition.quantityofNextLevel ||
-                    existingDefinition.nextLevelId !== matchingDefinition.nextLevelId
-                ) {
-                    throw new Error(
-                        `Conflicting packaging definitions found: ${matchingDefinition.id}`
-                    );
-                }
-            } else {
-                packagingDefinitions.push(matchingDefinition);
+            if (
+                !Number.isSafeInteger(stock.quantity) ||
+                stock.quantity < 0
+            ) {
+                throw new Error(
+                    "Stock quantities must be non-negative safe integers."
+                );
             }
 
             // Find an existing aggregated quantity for this packaging level.

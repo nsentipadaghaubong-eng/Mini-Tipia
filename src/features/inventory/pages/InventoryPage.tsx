@@ -1,22 +1,48 @@
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getAllInventoryDisplay } from "../../../inventory/inventoryLookup";
 import { aggregateVariantStock } from "../../../inventory/inventoryAggregation";
 import { getStockQuantity } from "../../../inventory/inventoryStock";
-import { adjustInventoryStock } from "../../../inventory/inventoryAdjustment";
+import {
+    adjustInventoryStock,
+    applyUnbatchedInventoryChanges
+} from "../../../inventory/inventoryAdjustment";
 import type { stockAdjustment } from "../../../inventory/inventoryAdjustment";
 import type { inventory } from "../../../inventory/inventoryStock";
+import type { inventoryBatch } from "../../../inventory/inventoryBatch";
+import {
+    buildBatchUpdatedActivityInput,
+    buildStockAdjustmentActivityInput,
+    type ActivityEventInput
+} from "../../../activity/activity";
 import type { inventoryDisplay } from "../../../inventory/inventoryLookup";
 import type { aggregatedVariantStock } from "../../../inventory/inventoryAggregation";
 import EditProductModal from "../components/EditProductModal";
 import type { EditProductChanges } from "../components/EditProductModal";
-import { demoProducts } from "../../../data/demoInventory";
 import type { productStructure } from "../../../products/productStructure";
+import {
+    createProductEditIntent,
+    resolveInventoryManageTarget,
+    type NavigationIntent,
+    type NavigationRequest
+} from "../../../navigation/navigationIntent";
 import "./InventoryPage.css";
 
 interface InventoryPageProps {
     inventoryRecords: inventory[];
-    onInventoryChange: (records: inventory[]) => void;
+    inventoryBatches: inventoryBatch[];
+    onInventoryCommit: (commit: InventoryCommit) => void;
+    products: productStructure[];
+    navigationRequest: NavigationRequest | null;
+    onNavigate: (intent: NavigationIntent) => void;
+    onNavigationConsumed: (requestId: number, handled: boolean) => void;
+    onNavigationDismissed: (requestId: number) => void;
+}
+
+export interface InventoryCommit {
+    inventoryRecords: inventory[];
+    inventoryBatches: inventoryBatch[];
+    activityEvents: ActivityEventInput[];
 }
 
 interface VariantGroup {
@@ -94,17 +120,27 @@ function groupInventoryRecords(
     return result;
 }
 
+function describeStockGrouping(records: inventoryDisplay[], batchCount: number): string {
+    const hasUnbatchedStock = records.some((record) => record.batchId === null);
+    if (hasUnbatchedStock && batchCount === 0) {
+        return "Unbatched stock";
+    }
+    if (hasUnbatchedStock) {
+        return `Across ${batchCount} ${batchCount === 1 ? "batch" : "batches"} and unbatched stock`;
+    }
+    return `Across ${batchCount} ${batchCount === 1 ? "batch" : "batches"}`;
+}
+
 export default function InventoryPage({
     inventoryRecords: inventoryState,
-    onInventoryChange
+    inventoryBatches: inventoryBatchesState,
+    onInventoryCommit,
+    products: productsState,
+    navigationRequest,
+    onNavigate,
+    onNavigationConsumed,
+    onNavigationDismissed
 }: InventoryPageProps) {
-
-    const [productsState, setProductsState] =
-        useState<productStructure[]>(() => demoProducts);
-
-    const [, setAdjustmentHistory] =
-        useState<stockAdjustment[]>([]);
-
     const [searchTerm, setSearchTerm] = useState("");
 
     const [selectedProductId, setSelectedProductId] =
@@ -115,18 +151,63 @@ export default function InventoryPage({
 
     const [editingProductId, setEditingProductId] =
     useState<string | null>(null);
+    const handledNavigationRequestId = useRef<number | null>(null);
 
-    const inventoryRecords = getAllInventoryDisplay(inventoryState, productsState);
+    useEffect(() => {
+        if (
+            !navigationRequest ||
+            navigationRequest.consumed ||
+            handledNavigationRequestId.current === navigationRequest.requestId ||
+            navigationRequest.intent.type !== "inventory.manage"
+        ) {
+            return;
+        }
+
+        const { intent, requestId } = navigationRequest;
+        handledNavigationRequestId.current = requestId;
+        const target = resolveInventoryManageTarget(
+            intent,
+            productsState,
+            inventoryState,
+            inventoryBatchesState
+        );
+        onNavigationConsumed(requestId, target !== undefined);
+    }, [
+        inventoryBatchesState,
+        inventoryState,
+        navigationRequest,
+        onNavigationConsumed,
+        productsState
+    ]);
+
+    const inventoryRecords = getAllInventoryDisplay(
+        inventoryState,
+        productsState,
+        inventoryBatchesState
+    );
 
     // Build product and variant groups using all inventory records.
     const productGroups = groupInventoryRecords(inventoryRecords);
 
-    const editingProduct = productsState.find(
-        (product) => product.id === editingProductId
-    );
+    const inventoryNavigationIntent =
+        navigationRequest?.intent.type === "inventory.manage"
+            ? navigationRequest.intent
+            : null;
+    const inventoryNavigationTarget = inventoryNavigationIntent
+        ? resolveInventoryManageTarget(
+            inventoryNavigationIntent,
+            productsState,
+            inventoryState,
+            inventoryBatchesState
+        )
+        : undefined;
+    const inventoryNavigationProduct = inventoryNavigationTarget?.product;
+    const editingProduct = inventoryNavigationIntent
+        ? inventoryNavigationProduct
+        : productsState.find((product) => product.id === editingProductId);
 
     const editingInventoryRecords = productGroups.find(
-        (product) => product.productId === editingProductId
+        (product) => product.productId === editingProduct?.id
     )?.records ?? [];
 
     // Search filters product cards, not the underlying aggregation.
@@ -143,11 +224,15 @@ export default function InventoryPage({
     );
 
     const selectedProduct = productGroups.find(
-        (product) => product.productId === selectedProductId
+        (product) =>
+            product.productId ===
+            (inventoryNavigationProduct?.id ?? selectedProductId)
     );
 
     const selectedVariant = selectedProduct?.variants.find(
-        (variant) => variant.variantId === selectedVariantId
+        (variant) =>
+            variant.variantId ===
+            (inventoryNavigationTarget?.inventoryRecord.variantId ?? selectedVariantId)
     );
 
     function openProduct(productId: string) {
@@ -161,11 +246,13 @@ export default function InventoryPage({
     }
 
     function handleSaveInventoryChanges(changes: EditProductChanges) {
-        if (!editingProductId) {
+        const productId = inventoryNavigationIntent
+            ? inventoryNavigationTarget?.product.id
+            : editingProductId;
+        if (!productId) {
             throw new Error("No product is currently being edited.");
         }
 
-        const productId = editingProductId;
         const currentProduct = productsState.find(
             (product) => product.id === productId
         );
@@ -178,13 +265,25 @@ export default function InventoryPage({
             throw new Error("An adjustment reason is required.");
         }
 
-        const validBatchKeys = new Set(
-            currentProduct.variant.flatMap((variant) =>
-                variant.batches.map((batch) =>
-                    JSON.stringify([variant.id, batch.batchId])
+        if (inventoryNavigationTarget) {
+            const target = inventoryNavigationTarget.inventoryRecord;
+            const targetIncluded = target.batchId === null
+                ? changes.unbatched.some(
+                    (item) => item.inventoryId === target.id &&
+                        item.variantId === target.variantId
                 )
-            )
-        );
+                : changes.batches.some(
+                    (item) => item.inventoryId === target.id &&
+                        item.variantId === target.variantId &&
+                        item.batchId === target.batchId
+                );
+            if (!targetIncluded) {
+                throw new Error(
+                    "The selected inventory record is missing from the edit."
+                );
+            }
+        }
+
         const changesByBatch = new Map<
             string,
             EditProductChanges["batches"][number]
@@ -196,7 +295,19 @@ export default function InventoryPage({
                 batchChanges.batchId
             ]);
 
-            if (!validBatchKeys.has(batchKey)) {
+            const matchingBatches = inventoryBatchesState.filter(
+                (batch) => batch.batchId === batchChanges.batchId
+            );
+            const selectedVariant = currentProduct.variant.find(
+                (variant) => variant.id === batchChanges.variantId
+            );
+
+            if (
+                matchingBatches.length !== 1 ||
+                matchingBatches[0].productId !== productId ||
+                matchingBatches[0].variantId !== batchChanges.variantId ||
+                !selectedVariant
+            ) {
                 throw new Error(
                     `Batch not found for variant: ${batchChanges.variantId}, batch: ${batchChanges.batchId}`
                 );
@@ -218,8 +329,9 @@ export default function InventoryPage({
             }
 
             if (
-                !(batchChanges.expiryDate instanceof Date) ||
-                Number.isNaN(batchChanges.expiryDate.getTime())
+                batchChanges.expiryDate !== null &&
+                (!(batchChanges.expiryDate instanceof Date) ||
+                    Number.isNaN(batchChanges.expiryDate.getTime()))
             ) {
                 throw new Error(
                     `Invalid expiry date for batch: ${batchChanges.batchId}`
@@ -255,31 +367,23 @@ export default function InventoryPage({
 
         // Work with local copies first. React state is not changed
         // until every requested change has been processed successfully.
-        const nextProducts = productsState.map((product) => {
-            if (product.id !== productId) {
-                return product;
+        const nextInventoryBatches = inventoryBatchesState.map((batch) => {
+            const batchChanges = batch.productId === productId
+                ? changesByBatch.get(
+                    JSON.stringify([batch.variantId, batch.batchId])
+                )
+                : undefined;
+
+            if (!batchChanges) {
+                return batch;
             }
 
             return {
-                ...product,
-                variant: product.variant.map((variant) => ({
-                    ...variant,
-                    batches: variant.batches.map((batch) => {
-                        const batchChanges = changesByBatch.get(
-                            JSON.stringify([variant.id, batch.batchId])
-                        );
-
-                        if (!batchChanges) {
-                            return batch;
-                        }
-
-                        return {
-                            ...batch,
-                            batchNumber: batchChanges.batchNumber,
-                            expiryDate: new Date(batchChanges.expiryDate)
-                        };
-                    })
-                }))
+                ...batch,
+                batchNumber: batchChanges.batchNumber,
+                expiryDate: batchChanges.expiryDate === null
+                    ? null
+                    : new Date(batchChanges.expiryDate)
             };
         });
 
@@ -326,6 +430,7 @@ export default function InventoryPage({
                 }
 
                 const result = adjustInventoryStock(
+                    currentProduct,
                     updatedRecord,
                     stock.packagingLevelId,
                     stock.quantity,
@@ -339,22 +444,92 @@ export default function InventoryPage({
             nextInventory[inventoryIndex] = updatedRecord;
         }
 
-        // Commit all changes only after processing succeeds.
-        setProductsState(nextProducts);
-        onInventoryChange(nextInventory);
+        const unbatchedResult = applyUnbatchedInventoryChanges(
+            currentProduct,
+            nextInventory,
+            changes.unbatched,
+            changes.reason,
+            seenInventoryIds
+        );
+        newAdjustments.push(...unbatchedResult.adjustments);
 
-        if (newAdjustments.length > 0) {
-            setAdjustmentHistory((previous) => [
-                ...previous,
-                ...newAdjustments
-            ]);
+        const activityEvents: ActivityEventInput[] = [];
+
+        for (const batchChanges of changes.batches) {
+            const previousBatch = inventoryBatchesState.find(
+                (batch) =>
+                    batch.batchId === batchChanges.batchId &&
+                    batch.productId === productId &&
+                    batch.variantId === batchChanges.variantId
+            );
+            const updatedBatch = nextInventoryBatches.find(
+                (batch) =>
+                    batch.batchId === batchChanges.batchId &&
+                    batch.productId === productId &&
+                    batch.variantId === batchChanges.variantId
+            );
+            if (!previousBatch || !updatedBatch) {
+                throw new Error(
+                    `Batch not found for variant: ${batchChanges.variantId}, batch: ${batchChanges.batchId}`
+                );
+            }
+
+            const batchUpdateEvent = buildBatchUpdatedActivityInput(
+                changes.operationId,
+                previousBatch,
+                updatedBatch,
+                currentProduct,
+                changes.reason
+            );
+            if (batchUpdateEvent) {
+                activityEvents.push(batchUpdateEvent);
+            }
+        }
+
+        for (const adjustment of newAdjustments) {
+            activityEvents.push(
+                buildStockAdjustmentActivityInput(
+                    adjustment,
+                    currentProduct,
+                    inventoryBatchesState,
+                    changes.operationId
+                )
+            );
+        }
+
+        if (activityEvents.length > 0) {
+            onInventoryCommit({
+                inventoryRecords: unbatchedResult.updatedInventory,
+                inventoryBatches: nextInventoryBatches,
+                activityEvents
+            });
         }
 
         setEditingProductId(null);
+        dismissInventoryNavigation();
     }
 
     function openVariant(variantId: string) {
         setSelectedVariantId(variantId);
+    }
+
+    function openInventoryEditor(productId: string) {
+        setEditingProductId(productId);
+    }
+
+    function openProductEditor(variantId: string) {
+        if (!editingProduct?.variant.some((variant) => variant.id === variantId)) {
+            throw new Error(`Variant not found: ${variantId}`);
+        }
+        setEditingProductId(null);
+        dismissInventoryNavigation();
+        onNavigate(createProductEditIntent(editingProduct.id, variantId));
+    }
+
+    function dismissInventoryNavigation() {
+        if (inventoryNavigationIntent && navigationRequest) {
+            onNavigationDismissed(navigationRequest.requestId);
+        }
     }
 
     function displayStock(
@@ -391,9 +566,6 @@ export default function InventoryPage({
                     </p>
                 </div>
 
-                <button className="primary-button" type="button">
-                    Adjust Stock
-                </button>
             </div>
 
             <div className="inventory-toolbar">
@@ -489,12 +661,12 @@ export default function InventoryPage({
                                     </button>
 
                                     <button
-    className="secondary-button"
-    type="button"
-    onClick={() => setEditingProductId(product.productId)}
->
-    Edit
-</button>
+                                        className="secondary-button"
+                                        type="button"
+                                        onClick={() => openInventoryEditor(product.productId)}
+                                    >
+                                        Edit Stock
+                                    </button>
 
                                     <button
                                         className="product-delete-button"
@@ -605,11 +777,10 @@ export default function InventoryPage({
                                                     </div>
 
                                                     <p className="variant-batch-count">
-                                                        Across{" "}
-                                                        {variant.aggregatedStock.batchCount}{" "}
-                                                        {variant.aggregatedStock.batchCount === 1
-                                                            ? "batch"
-                                                            : "batches"}
+                                                        {describeStockGrouping(
+                                                            variant.records,
+                                                            variant.aggregatedStock.batchCount
+                                                        )}
                                                     </p>
 
                                                 </button>
@@ -655,17 +826,16 @@ export default function InventoryPage({
                                         </div>
 
                                         <span className="variant-batch-count">
-                                            Across{" "}
-                                            {selectedVariant.aggregatedStock.batchCount}{" "}
-                                            {selectedVariant.aggregatedStock.batchCount === 1
-                                                ? "batch"
-                                                : "batches"}
+                                            {describeStockGrouping(
+                                                selectedVariant.records,
+                                                selectedVariant.aggregatedStock.batchCount
+                                            )}
                                         </span>
 
                                     </div>
 
                                     <h3 className="modal-section-title">
-                                        Individual batches
+                                        Stock records
                                     </h3>
 
                                     <div className="batch-card-list">
@@ -675,19 +845,23 @@ export default function InventoryPage({
 
                                                 <article
                                                     className="batch-card"
-                                                    key={record.batchId}
+                                                    key={record.inventoryId}
                                                 >
 
                                                     <div className="batch-card-heading">
 
                                                         <strong>
-                                                            {record.batchNumber ?? "No batch number"}
+                                                            {record.batchId === null
+                                                                ? "No batch association"
+                                                                : record.batchNumber ?? "No batch number"}
                                                         </strong>
 
-                                                        <span>
-                                                            Expires:{" "}
-                                                            {record.expiryDate.toLocaleDateString()}
-                                                        </span>
+                                                        {record.expiryDate && (
+                                                            <span>
+                                                                Expires:{" "}
+                                                                {record.expiryDate.toLocaleDateString()}
+                                                            </span>
+                                                        )}
 
                                                     </div>
 
@@ -722,8 +896,22 @@ export default function InventoryPage({
             {editingProduct && (
                 <EditProductModal
                     product={editingProduct}
+                    batches={inventoryBatchesState}
                     inventoryRecords={editingInventoryRecords}
-                    onClose={() => setEditingProductId(null)}
+                    initialVariantId={
+                        inventoryNavigationTarget?.inventoryRecord.variantId ?? null
+                    }
+                    initialInventoryId={
+                        inventoryNavigationTarget?.inventoryRecord.id ?? null
+                    }
+                    initialBatchId={
+                        inventoryNavigationTarget?.inventoryRecord.batchId ?? null
+                    }
+                    onEditProductDetails={openProductEditor}
+                    onClose={() => {
+                        dismissInventoryNavigation();
+                        setEditingProductId(null);
+                    }}
                     onSave={handleSaveInventoryChanges}
                 />
             )}

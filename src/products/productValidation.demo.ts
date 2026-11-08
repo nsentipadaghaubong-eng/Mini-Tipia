@@ -1,10 +1,8 @@
 import { products } from "./productList.ts";
 
-import {
-    getVariantById,
-    getBatchById,
-    getPackagingLevelById
-} from "./productValidation.ts";
+import { getVariantById, getPackagingLevelById } from "./productValidation.ts";
+import { getInventoryBatchById } from "../inventory/inventoryBatch.ts";
+import { demoInventoryBatches } from "../inventory/inventoryBatchList.ts";
 
 // Get Panadol 500mg tablets
 const panadolVariant = getVariantById(
@@ -13,9 +11,9 @@ const panadolVariant = getVariantById(
 );
 
 // Get its first batch
-const panadolBatch = getBatchById(
-    panadolVariant,
-    panadolVariant.batches[0].batchId
+const panadolBatch = getInventoryBatchById(
+    demoInventoryBatches,
+    demoInventoryBatches[0].batchId
 );
 
 // Get its Box packaging level
@@ -31,10 +29,13 @@ console.log("Valid packaging level:", box);
 
 // Test an invalid batch relationship
 try {
-    getBatchById(
-        panadolVariant,
-        products.variant[1].batches[0].batchId
+    const batch = getInventoryBatchById(
+        demoInventoryBatches,
+        demoInventoryBatches[2].batchId
     );
+    if (batch.variantId !== panadolVariant.id) {
+        throw new Error("Batch does not belong to this variant.");
+    }
 } catch (error) {
     console.log("Expected batch error:", (error as Error).message);
 }

@@ -1,10 +1,16 @@
 
+import type { productStructure } from "../products/productStructure";
+import { getVariantById, getPackagingLevelById } from "../products/productValidation";
+import {
+    getPackagingConversionQuantity
+} from "../packaging/packagingValidation";
+import { validateInventoryPackagingRelationships } from "./inventoryValidation";
 
 export interface inventory {
     id: string;
     productId: string;
     variantId: string;
-    batchId: string;
+    batchId: string | null;
     stockQuantities: stockQuantity[];
 }
 
@@ -24,10 +30,83 @@ function validateSufficientStock(
     }
 }
 
+function validateStockOperation(
+    product: productStructure,
+    inventoryRecord: inventory,
+    packagingLevelIds: string[]
+): void {
+    validateInventoryPackagingRelationships(product, inventoryRecord);
+    const selectedVariant = getVariantById(product, inventoryRecord.variantId);
+    for (const packagingLevelId of packagingLevelIds) {
+        getPackagingLevelById(selectedVariant, packagingLevelId);
+    }
+}
+
+export function getStockQuantityOrZero(
+    inventoryRecord: inventory,
+    packagingLevelId: string
+): number {
+    const normalizedPackagingId = packagingLevelId.trim();
+    if (normalizedPackagingId === "") {
+        throw new Error("Packaging level ID must not be empty.");
+    }
+
+    const matches = inventoryRecord.stockQuantities.filter(
+        (item) => item.packagingLevelId === normalizedPackagingId
+    );
+    if (matches.length > 1) {
+        throw new Error(
+            `Duplicate stock quantity for packaging level: ${packagingLevelId}`
+        );
+    }
+    if (matches.length === 0) {
+        return 0;
+    }
+
+    const quantity = matches[0].quantity;
+    if (!Number.isSafeInteger(quantity) || quantity < 0) {
+        throw new Error("Stock quantity must be a non-negative safe integer.");
+    }
+    return quantity;
+}
+
+function applyQuantityUpdates(
+    inventoryRecord: inventory,
+    updates: Map<string, number>
+): inventory {
+    const updatedIds = new Set<string>();
+    const stockQuantities = inventoryRecord.stockQuantities.map((stock) => {
+        const quantity = updates.get(stock.packagingLevelId);
+        if (quantity === undefined) {
+            return stock;
+        }
+        updatedIds.add(stock.packagingLevelId);
+        return { ...stock, quantity };
+    });
+
+    for (const [packagingLevelId, quantity] of updates) {
+        if (!updatedIds.has(packagingLevelId)) {
+            stockQuantities.push({ packagingLevelId, quantity });
+        }
+    }
+
+    if (
+        stockQuantities.some(
+            (stock) =>
+                !Number.isSafeInteger(stock.quantity) ||
+                stock.quantity < 0
+        )
+    ) {
+        throw new Error("Stock operation would produce invalid quantities.");
+    }
+
+    return { ...inventoryRecord, stockQuantities };
+}
+
 export function createInventory(
     productId: string,
     variantId: string,
-    batchId: string,
+    batchId: string | null,
     stock: stockQuantity[],
     id?: string
 ): inventory {
@@ -47,12 +126,10 @@ export function createInventory(
     }
 
     // 3. Batch number may be null, but not empty
-    const normalizedBatchId = batchId.trim();
+    const normalizedBatchId = batchId?.trim() ?? null;
 
-    if (
-        normalizedBatchId === ""
-    ) {
-        throw new Error("Batch number must not be empty or whitespace");
+    if (batchId !== null && normalizedBatchId === "") {
+        throw new Error("Batch ID must not be empty or whitespace");
     }
 
     // 4. Inventory must contain at least one stock entry
@@ -109,6 +186,7 @@ export function createInventory(
 }
 
 export function addStock(
+    product: productStructure,
     inventoryRecord: inventory,
     packagingLevelId: string,
     updateStock: number
@@ -123,23 +201,11 @@ export function addStock(
         throw new Error("Packaging Id must not be empty");
     }
 
-    const index = inventoryRecord.stockQuantities.findIndex((item) => {
-        return normalizedPackagingId === item.packagingLevelId;
-    });
-
-    if (index === -1) {
-        throw new Error(
-            `This packaging level with id: ${packagingLevelId} doesn't exist`
-        );
-    }
-
-    const existingQuantity = inventoryRecord.stockQuantities[index].quantity;
-
-    if (!Number.isSafeInteger(existingQuantity) || existingQuantity < 0) {
-        throw new Error(
-            "Existing stock quantity must be a non-negative safe integer"
-        );
-    }
+    validateStockOperation(product, inventoryRecord, [normalizedPackagingId]);
+    const existingQuantity = getStockQuantityOrZero(
+        inventoryRecord,
+        normalizedPackagingId
+    );
 
     const newQuantity = existingQuantity + updateStock;
 
@@ -147,19 +213,14 @@ export function addStock(
         throw new Error("The sum of these 2 numbers is too large");
     }
 
-    const updatedStock = inventoryRecord.stockQuantities.map((item) => {
-        return normalizedPackagingId === item.packagingLevelId
-            ? { ...item, quantity: newQuantity }
-            : item;
-    });
-
-    return {
-        ...inventoryRecord,
-        stockQuantities: updatedStock
-    };
+    return applyQuantityUpdates(
+        inventoryRecord,
+        new Map([[normalizedPackagingId, newQuantity]])
+    );
 }
 
 export function removeStock(
+    product: productStructure,
     inventoryRecord: inventory,
     packagingLevelId: string,
     updateStock: number
@@ -174,18 +235,11 @@ export function removeStock(
         throw new Error("Packaging Id must not be empty");
     }
 
-    const index = inventoryRecord.stockQuantities.findIndex((item) => {
-        return normalizedPackagingId === item.packagingLevelId;
-    });
-
-    if (index === -1) {
-        throw new Error(
-            `This packaging level with id: ${packagingLevelId} doesn't exist`
-        );
-    }
-
-    const availableStock =
-        inventoryRecord.stockQuantities[index].quantity;
+    validateStockOperation(product, inventoryRecord, [normalizedPackagingId]);
+    const availableStock = getStockQuantityOrZero(
+        inventoryRecord,
+        normalizedPackagingId
+    );
 
     if (!Number.isSafeInteger(availableStock) || availableStock < 0) {
         throw new Error(
@@ -201,16 +255,10 @@ export function removeStock(
         throw new Error("The difference of these 2 numbers is too large");
     }
 
-    const deductStock = inventoryRecord.stockQuantities.map((item) => {
-        return item.packagingLevelId === normalizedPackagingId
-            ? { ...item, quantity: updatedStock }
-            : item;
-    });
-
-    return {
-        ...inventoryRecord,
-        stockQuantities: deductStock
-    };
+    return applyQuantityUpdates(
+        inventoryRecord,
+        new Map([[normalizedPackagingId, updatedStock]])
+    );
 }
 
 
@@ -260,143 +308,67 @@ function calculateBreakdownQuantity(
 
 
 export function breakdownPackaging(
+    product: productStructure,
     inventoryRecord: inventory,
     largerPackageId: string,
     smallerPackageId: string,
-    conversionQuantity: number,
     shortage: number
 ): inventory {
-
-    // 1. Validate conversion quantity and shortage
-    if (
-        !Number.isSafeInteger(conversionQuantity) ||
-        conversionQuantity <= 0 ||
-        !Number.isSafeInteger(shortage) ||
-        shortage <= 0
-    ) {
-        throw new Error("Quantities must be positive safe integers");
-    }
-
-    // 2. Normalize packaging IDs
     const normalizedLargerId = largerPackageId.trim();
     const normalizedSmallerId = smallerPackageId.trim();
-
     if (!normalizedLargerId || !normalizedSmallerId) {
         throw new Error("Packaging level IDs must not be empty");
     }
-
-    // 3. Reject identical packaging IDs
     if (normalizedLargerId === normalizedSmallerId) {
         throw new Error("Packaging IDs cannot be the same");
     }
-
-    // 4. Find both packaging levels
-    const findLargerId = inventoryRecord.stockQuantities.findIndex(
-        (item) => normalizedLargerId === item.packagingLevelId
+    validateStockOperation(product, inventoryRecord, [
+        normalizedLargerId,
+        normalizedSmallerId
+    ]);
+    const conversionQuantity = getPackagingConversionQuantity(
+        getVariantById(product, inventoryRecord.variantId).packagingHierarchy,
+        normalizedLargerId,
+        normalizedSmallerId
     );
+    if (!Number.isSafeInteger(shortage) || shortage <= 0) {
+        throw new Error("Shortage must be a positive safe integer");
+    }
 
-    const findSmallerId = inventoryRecord.stockQuantities.findIndex(
-        (item) => normalizedSmallerId === item.packagingLevelId
+    const quantityAvailable = getStockQuantityOrZero(
+        inventoryRecord,
+        normalizedLargerId
     );
-
-    if (findLargerId === -1) {
-        throw new Error(
-            `The packaging level with ID: ${largerPackageId} doesn't exist`
-        );
-    }
-
-    if (findSmallerId === -1) {
-        throw new Error(
-            `The packaging level with ID: ${smallerPackageId} doesn't exist`
-        );
-    }
-
-    // 5. Get existing quantities
-    const quantityAvailable =
-        inventoryRecord.stockQuantities[findLargerId].quantity;
-
-    const smallerQuantityAvailable =
-        inventoryRecord.stockQuantities[findSmallerId].quantity;
-
-    // 6. Validate existing quantities
-    if (
-        !Number.isSafeInteger(quantityAvailable) ||
-        quantityAvailable < 0 ||
-        !Number.isSafeInteger(smallerQuantityAvailable) ||
-        smallerQuantityAvailable < 0
-    ) {
-        throw new Error(
-            "Available stock quantities must be non-negative safe integers"
-        );
-    }
-
-    // 7. Calculate the number of larger packages needed
+    const smallerQuantityAvailable = getStockQuantityOrZero(
+        inventoryRecord,
+        normalizedSmallerId
+    );
     const quantityNeeded = calculateBreakdownQuantity(
         shortage,
         conversionQuantity
     );
-
-    // 8. Check whether sufficient larger packages exist
     validateSufficientStock(quantityAvailable, quantityNeeded);
-
-    // 9. Calculate the number of smaller packages created
     const smallerPackagesCreated =
         quantityNeeded * conversionQuantity;
-
     if (!Number.isSafeInteger(smallerPackagesCreated)) {
         throw new Error(
             "Breakdown would produce an unsafe number of smaller packages"
         );
     }
-
-    // 10. Calculate the new smaller-package quantity
     const newSmallerQuantity =
         smallerQuantityAvailable + smallerPackagesCreated;
-
     if (!Number.isSafeInteger(newSmallerQuantity)) {
         throw new Error(
             "New smaller-package quantity exceeds the safe integer limit"
         );
     }
-
-    // 11. Update both packaging levels
-    const result = inventoryRecord.stockQuantities.map((item) => {
-
-        if (normalizedLargerId === item.packagingLevelId) {
-            return {
-                ...item,
-                quantity: item.quantity - quantityNeeded
-            };
-        }
-
-        if (normalizedSmallerId === item.packagingLevelId) {
-            return {
-                ...item,
-                quantity: newSmallerQuantity
-            };
-        }
-
-        return item;
-    });
-
-    // 12. Validate the completed result array
-    if (
-        result.some(
-            (item) =>
-                !Number.isSafeInteger(item.quantity) ||
-                item.quantity < 0
-        )
-    ) {
-        throw new Error(
-            "Breakdown would produce invalid stock quantities"
-        );
-    }
-
-    // 13. Return a new inventory record
-    return {
-        ...inventoryRecord,
-        stockQuantities: result
-    };
+    return applyQuantityUpdates(
+        inventoryRecord,
+        new Map([
+            [normalizedLargerId, quantityAvailable - quantityNeeded],
+            [normalizedSmallerId, newSmallerQuantity]
+        ])
+    );
 }
 
 
@@ -420,19 +392,13 @@ function calculateBuildUpQuantity(
 }
 
 export function buildUpPackaging(
+    product: productStructure,
     inventoryRecord: inventory,
     largerPackageId: string,
-    smallerPackageId: string,
-    conversionQuantity: number
+    smallerPackageId: string
 ): inventory {
-    // 1. Validate the conversion quantity
-    if (!Number.isSafeInteger(conversionQuantity) || conversionQuantity <= 0) {
-        throw new Error("Conversion quantity must be a safe positive integer");
-    }
-
     const normalizedLargerId = largerPackageId.trim()
     const normalizedSmallerId = smallerPackageId.trim()
-    // 2. Validate the packaging IDs
     if (
         !normalizedLargerId ||
         !normalizedSmallerId.trim()
@@ -443,44 +409,23 @@ export function buildUpPackaging(
     if (normalizedLargerId === normalizedSmallerId) {
         throw new Error("Packaging IDs cannot be the same");
     }
-
-    // 3. Find both packaging levels
-    const largerIndex = inventoryRecord.stockQuantities.findIndex(
-        (item) => item.packagingLevelId === normalizedLargerId
+    validateStockOperation(product, inventoryRecord, [
+        normalizedLargerId,
+        normalizedSmallerId
+    ]);
+    const conversionQuantity = getPackagingConversionQuantity(
+        getVariantById(product, inventoryRecord.variantId).packagingHierarchy,
+        normalizedLargerId,
+        normalizedSmallerId
     );
-
-    const smallerIndex = inventoryRecord.stockQuantities.findIndex(
-        (item) => item.packagingLevelId === normalizedSmallerId
+    const availableSmallerPackages = getStockQuantityOrZero(
+        inventoryRecord,
+        normalizedSmallerId
     );
-
-    if (largerIndex === -1) {
-        throw new Error(
-            `Packaging level with ID ${normalizedLargerId} doesn't exist`
-        );
-    }
-
-    if (smallerIndex === -1) {
-        throw new Error(
-            `Packaging level with ID ${normalizedSmallerId} doesn't exist`
-        );
-    }
-
-    // 4. Get the available smaller-package quantity
-    const availableSmallerPackages =
-        inventoryRecord.stockQuantities[smallerIndex].quantity;
-
-    const availableLargerPackages =
-        inventoryRecord.stockQuantities[largerIndex].quantity
-
-    if (!Number.isSafeInteger(availableLargerPackages) ||
-        availableLargerPackages < 0 ||
-        !Number.isSafeInteger(availableSmallerPackages) ||
-        availableSmallerPackages < 0
-    ) {
-        throw new Error("Available stock quantities must be non-negative safe integers")
-    }
-
-    // 5. Calculate the number of complete larger packages
+    const availableLargerPackages = getStockQuantityOrZero(
+        inventoryRecord,
+        normalizedLargerId
+    );
     const largerPackagesFormed = calculateBuildUpQuantity(
         availableSmallerPackages,
         conversionQuantity
@@ -497,57 +442,33 @@ export function buildUpPackaging(
             "Number of larger packages formed exceeds the safe integer limit"
         );
     }
-
-    // 6. Calculate the number of smaller packages consumed
     const smallerPackagesConsumed =
         largerPackagesFormed * conversionQuantity;
-
     if (!Number.isSafeInteger(smallerPackagesConsumed)) {
         throw new Error(
             "Build-up would consume an unsafe number of smaller packages"
         );
     }
-
-    // 7. Update both packaging levels
-    const updatedStockQuantities = inventoryRecord.stockQuantities.map(
-        (item) => {
-            if (item.packagingLevelId === normalizedLargerId) {
-                return {
-                    ...item,
-                    quantity: item.quantity + largerPackagesFormed
-                };
-            }
-
-            if (item.packagingLevelId === normalizedSmallerId) {
-                return {
-                    ...item,
-                    quantity: item.quantity - smallerPackagesConsumed
-                };
-            }
-
-            // Preserve every other packaging level
-            return item;
-        }
-    );
-
-    if (updatedStockQuantities.some(
-        (item) =>
-        !Number.isSafeInteger(item.quantity)||
-        item.quantity<0
-    )) {
-        throw new Error(
-            "Build up would produce invalid stock quantities"
-        );
+    const newLargerQuantity =
+        availableLargerPackages + largerPackagesFormed;
+    if (!Number.isSafeInteger(newLargerQuantity)) {
+        throw new Error("Build-up would produce an unsafe stock quantity");
     }
 
-    // 8. Return a new inventory record
-    return {
-        ...inventoryRecord,
-        stockQuantities: updatedStockQuantities
-    };
+    return applyQuantityUpdates(
+        inventoryRecord,
+        new Map([
+            [normalizedLargerId, newLargerQuantity],
+            [
+                normalizedSmallerId,
+                availableSmallerPackages - smallerPackagesConsumed
+            ]
+        ])
+    );
 }
 
 export function adjustStock(
+    product: productStructure,
     inventoryRecord: inventory,
     packagingLevelId: string,
     actualQuantity: number
@@ -561,37 +482,9 @@ export function adjustStock(
     if (normalizedPackagingId === "") {
         throw new Error("Packaging level ID must not be empty");
     }
-
-    const index = inventoryRecord.stockQuantities.findIndex((item) => {
-        return normalizedPackagingId === item.packagingLevelId;
-    });
-
-    if (index === -1) {
-        throw new Error(
-            `This packaging level with id: ${normalizedPackagingId} doesn't exist`
-        );
-    }
-
-    const updatedStockQuantities = inventoryRecord.stockQuantities.map(
-        (item) => {
-            return item.packagingLevelId === normalizedPackagingId
-                ? { ...item, quantity: actualQuantity }
-                : item;
-        }
+    validateStockOperation(product, inventoryRecord, [normalizedPackagingId]);
+    return applyQuantityUpdates(
+        inventoryRecord,
+        new Map([[normalizedPackagingId, actualQuantity]])
     );
-
-    if (updatedStockQuantities.some(
-        (item) =>
-        !Number.isSafeInteger(item.quantity)||
-        item.quantity<0
-    )) {
-        throw new Error(
-            "Adjustment would produce invalid stock quantities"
-        );
-    }
-
-    return {
-        ...inventoryRecord,
-        stockQuantities: updatedStockQuantities
-    };
 }

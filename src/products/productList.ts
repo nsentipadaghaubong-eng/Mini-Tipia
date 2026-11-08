@@ -9,18 +9,6 @@ export const products: productStructure = {
         {
             id: "variant-panadol-500mg-tablets",
             variantName: "Panadol 500mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-panadol-b1-1001",
-                    batchNumber: "B1-1001",
-                    expiryDate: new Date("2027-03-31")
-                },
-                {
-                    batchId: "batch-panadol-b1-1002",
-                    batchNumber: "B1-1002",
-                    expiryDate: new Date("2027-06-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "box",
@@ -51,18 +39,6 @@ export const products: productStructure = {
         {
             id: "variant-panadol-extra-tablets",
             variantName: "Panadol Extra Tablets",
-            batches: [
-                {
-                    batchId: "batch-panadol-e1-1001",
-                    batchNumber: "E1-1001",
-                    expiryDate: new Date("2027-08-31")
-                },
-                {
-                    batchId: "batch-panadol-e1-1002",
-                    batchNumber: "E1-1002",
-                    expiryDate: new Date("2027-12-31")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "extra-box",
@@ -93,13 +69,6 @@ export const products: productStructure = {
         {
             id: "variant-panadol-syrup",
             variantName: "Panadol Syrup",
-            batches: [
-                {
-                    batchId: "batch-panadol-syrup-001",
-                    batchNumber: null,
-                    expiryDate: new Date("2027-09-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "bottle",
@@ -121,13 +90,6 @@ const amoxicillin: productStructure = {
         {
             id: "variant-amoxicillin-500mg-capsules",
             variantName: "Amoxicillin 500mg Capsules",
-            batches: [
-                {
-                    batchId: "batch-amoxicillin-am-1001",
-                    batchNumber: "AM-1001",
-                    expiryDate: new Date("2027-05-31")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "am-carton",
@@ -158,13 +120,6 @@ const amoxicillin: productStructure = {
         {
             id: "variant-amoxicillin-suspension",
             variantName: "Amoxicillin Suspension",
-            batches: [
-                {
-                    batchId: "batch-amoxicillin-am-1002",
-                    batchNumber: "AM-1002",
-                    expiryDate: new Date("2027-07-31")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "am-suspension-bottle",
@@ -186,13 +141,6 @@ const vitaminC: productStructure = {
         {
             id: "variant-vitamin-c-100mg-tablets",
             variantName: "Vitamin C 100mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-vitamin-c-vc-1001",
-                    batchNumber: "VC-1001",
-                    expiryDate: new Date("2028-01-31")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "vc-tube",
@@ -222,13 +170,6 @@ const paracetamol: productStructure = {
         {
             id: "variant-paracetamol-500mg-tablets",
             variantName: "Paracetamol 500mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-paracetamol-par-1001",
-                    batchNumber: "PAR-1001",
-                    expiryDate: new Date("2027-11-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "par-carton",
@@ -266,18 +207,6 @@ const ibuprofen: productStructure = {
         {
             id: "variant-ibuprofen-200mg-tablets",
             variantName: "Ibuprofen 200mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-ibuprofen-ib-1001",
-                    batchNumber: "IB-1001",
-                    expiryDate: new Date("2028-04-30")
-                },
-                {
-                    batchId: "batch-ibuprofen-ib-1002",
-                    batchNumber: "IB-1002",
-                    expiryDate: new Date("2028-09-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "ib-carton",
@@ -308,18 +237,6 @@ const ibuprofen: productStructure = {
         {
             id: "variant-ibuprofen-400mg-tablets",
             variantName: "Ibuprofen 400mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-ibuprofen-ib4-1001",
-                    batchNumber: "IB4-1001",
-                    expiryDate: new Date("2028-07-31")
-                },
-                {
-                    batchId: "batch-ibuprofen-ib4-1002",
-                    batchNumber: "IB4-1002",
-                    expiryDate: new Date("2029-01-31")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "ib400-carton",
@@ -357,18 +274,6 @@ const cetirizine: productStructure = {
         {
             id: "variant-cetirizine-10mg-tablets",
             variantName: "Cetirizine 10mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-cetirizine-cet-1001",
-                    batchNumber: "CET-1001",
-                    expiryDate: new Date("2028-06-30")
-                },
-                {
-                    batchId: "batch-cetirizine-cet-1002",
-                    batchNumber: "CET-1002",
-                    expiryDate: new Date("2028-11-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "cet-box",
@@ -391,18 +296,6 @@ const cetirizine: productStructure = {
         {
             id: "variant-cetirizine-5mg-5ml-solution",
             variantName: "Cetirizine 5mg/5mL Oral Solution",
-            batches: [
-                {
-                    batchId: "batch-cetirizine-cet-s-1001",
-                    batchNumber: "CET-S-1001",
-                    expiryDate: new Date("2028-08-31")
-                },
-                {
-                    batchId: "batch-cetirizine-cet-s-1002",
-                    batchNumber: "CET-S-1002",
-                    expiryDate: new Date("2029-02-28")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "cet-s-bottle",
@@ -424,18 +317,6 @@ const omeprazole: productStructure = {
         {
             id: "variant-omeprazole-20mg-capsules",
             variantName: "Omeprazole 20mg Capsules",
-            batches: [
-                {
-                    batchId: "batch-omeprazole-ome-1001",
-                    batchNumber: "OME-1001",
-                    expiryDate: new Date("2028-08-31")
-                },
-                {
-                    batchId: "batch-omeprazole-ome-1002",
-                    batchNumber: "OME-1002",
-                    expiryDate: new Date("2029-02-28")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "ome-box",
@@ -458,18 +339,6 @@ const omeprazole: productStructure = {
         {
             id: "variant-omeprazole-40mg-capsules",
             variantName: "Omeprazole 40mg Capsules",
-            batches: [
-                {
-                    batchId: "batch-omeprazole-ome40-1001",
-                    batchNumber: "OME40-1001",
-                    expiryDate: new Date("2028-10-31")
-                },
-                {
-                    batchId: "batch-omeprazole-ome40-1002",
-                    batchNumber: "OME40-1002",
-                    expiryDate: new Date("2029-04-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "ome40-box",
@@ -499,18 +368,6 @@ const metformin: productStructure = {
         {
             id: "variant-metformin-500mg-tablets",
             variantName: "Metformin 500mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-metformin-met-1001",
-                    batchNumber: "MET-1001",
-                    expiryDate: new Date("2028-10-31")
-                },
-                {
-                    batchId: "batch-metformin-met-1002",
-                    batchNumber: "MET-1002",
-                    expiryDate: new Date("2029-04-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "met-box",
@@ -533,18 +390,6 @@ const metformin: productStructure = {
         {
             id: "variant-metformin-850mg-tablets",
             variantName: "Metformin 850mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-metformin-met850-1001",
-                    batchNumber: "MET850-1001",
-                    expiryDate: new Date("2028-12-31")
-                },
-                {
-                    batchId: "batch-metformin-met850-1002",
-                    batchNumber: "MET850-1002",
-                    expiryDate: new Date("2029-06-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "met850-box",
@@ -574,18 +419,6 @@ const oralRehydrationSalts: productStructure = {
         {
             id: "variant-ors-original-sachets",
             variantName: "Oral Rehydration Salts Sachets",
-            batches: [
-                {
-                    batchId: "batch-ors-ors-1001",
-                    batchNumber: "ORS-1001",
-                    expiryDate: new Date("2028-12-31")
-                },
-                {
-                    batchId: "batch-ors-ors-1002",
-                    batchNumber: "ORS-1002",
-                    expiryDate: new Date("2029-06-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "ors-sachet",
@@ -600,18 +433,6 @@ const oralRehydrationSalts: productStructure = {
         {
             id: "variant-ors-orange-sachets",
             variantName: "Orange Oral Rehydration Salts Sachets",
-            batches: [
-                {
-                    batchId: "batch-ors-ors-o-1001",
-                    batchNumber: "ORS-O-1001",
-                    expiryDate: new Date("2029-01-31")
-                },
-                {
-                    batchId: "batch-ors-ors-o-1002",
-                    batchNumber: "ORS-O-1002",
-                    expiryDate: new Date("2029-07-31")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "ors-orange-sachet",
@@ -633,18 +454,6 @@ const amlodipine: productStructure = {
         {
             id: "variant-amlodipine-5mg-tablets",
             variantName: "Amlodipine 5mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-amlodipine-aml-1001",
-                    batchNumber: "AML-1001",
-                    expiryDate: new Date("2029-01-31")
-                },
-                {
-                    batchId: "batch-amlodipine-aml-1002",
-                    batchNumber: "AML-1002",
-                    expiryDate: new Date("2029-07-31")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "aml-box",
@@ -667,18 +476,6 @@ const amlodipine: productStructure = {
         {
             id: "variant-amlodipine-10mg-tablets",
             variantName: "Amlodipine 10mg Tablets",
-            batches: [
-                {
-                    batchId: "batch-amlodipine-aml10-1001",
-                    batchNumber: "AML10-1001",
-                    expiryDate: new Date("2029-03-31")
-                },
-                {
-                    batchId: "batch-amlodipine-aml10-1002",
-                    batchNumber: "AML10-1002",
-                    expiryDate: new Date("2029-09-30")
-                }
-            ],
             packagingHierarchy: [
                 {
                     id: "aml10-box",

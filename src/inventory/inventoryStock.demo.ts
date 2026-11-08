@@ -8,12 +8,13 @@ import {
     removeStock
 } from "./inventoryStock.ts";
 import { products } from "../products/productList.ts";
+import { demoInventoryBatches } from "./inventoryBatchList.ts";
 
 // Create inventory for Panadol
 const panadolInventory = createInventory(
     products.id,
     products.variant[0].id,
-     products.variant[0].batches[0].batchId,
+    demoInventoryBatches[0].batchId,
     [
         { packagingLevelId: "box", quantity: 2 },
         { packagingLevelId: "pack", quantity: 3 },
@@ -23,20 +24,22 @@ const panadolInventory = createInventory(
 
 
 const updatedPanadolInventory = addStock(
+    products,
     panadolInventory,
     "card",
     5
 );
 
 const packagingBreakdown = breakdownPackaging(
+    products,
     panadolInventory,
     "box",
     "pack",
-    5,
     1
 );
 
 const deductedPanadolInventory = removeStock(
+    products,
     packagingBreakdown,
     "pack",
     2
@@ -44,7 +47,7 @@ const deductedPanadolInventory = removeStock(
 const testInventory = createInventory(
     products.id,
     products.variant[0].id,
-    products.variant[0].batches[0].batchId,
+    demoInventoryBatches[0].batchId,
     [
         { packagingLevelId: "box", quantity: 2 },
         { packagingLevelId: "pack", quantity: 17 },
@@ -53,13 +56,14 @@ const testInventory = createInventory(
 );
 
 const builtUpInventory = buildUpPackaging(
+    products,
     testInventory,
     "box",
-    "pack",
-    5
+    "pack"
 );
 
 const adjustedPanadolInventory = adjustStock(
+    products,
     testInventory,
     "card",
     2

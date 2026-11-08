@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import type { productStructure } from "../products/productStructure.ts";
 import type { inventory } from "./inventoryStock.ts";
+import type { inventoryBatch } from "./inventoryBatch.ts";
 
 import { validateInventoryRelationships } from "./inventoryValidation.ts";
 
@@ -14,14 +15,6 @@ const product: productStructure = {
         {
             id: "VAR001",
             variantName: "Panadol 500mg Tablets",
-
-            batches: [
-                {
-                    batchId: "BATCH001",
-                    batchNumber: "B1-1001",
-                    expiryDate: new Date("2027-12-31")
-                }
-            ],
 
             packagingHierarchy: [
                 {
@@ -55,14 +48,6 @@ const product: productStructure = {
             id: "VAR002",
             variantName: "Panadol Syrup",
 
-            batches: [
-                {
-                    batchId: "BATCH002",
-                    batchNumber: "S1-1001",
-                    expiryDate: new Date("2027-10-31")
-                }
-            ],
-
             packagingHierarchy: [
                 {
                     id: "BOTTLE001",
@@ -77,6 +62,22 @@ const product: productStructure = {
     ]
 };
 
+const batches: inventoryBatch[] = [
+    {
+        batchId: "BATCH001",
+        productId: "PROD001",
+        variantId: "VAR001",
+        batchNumber: "B1-1001",
+        expiryDate: new Date("2027-12-31")
+    },
+    {
+        batchId: "BATCH002",
+        productId: "PROD001",
+        variantId: "VAR002",
+        batchNumber: "S1-1001",
+        expiryDate: new Date("2027-10-31")
+    }
+];
 
 // 2. Create a valid inventory record
 const validInventory: inventory = {
@@ -99,7 +100,7 @@ describe("validateInventoryRelationships", () => {
     it("should pass when all relationships are valid", () => {
 
         expect(() => {
-            validateInventoryRelationships(product, validInventory);
+            validateInventoryRelationships(product, validInventory, batches);
         }).not.toThrow();
 
     });
@@ -113,7 +114,7 @@ describe("validateInventoryRelationships", () => {
         };
 
         expect(() => {
-            validateInventoryRelationships(product, invalidInventory);
+            validateInventoryRelationships(product, invalidInventory, batches);
         }).toThrow("The inventory record doesn't belong to this product");
 
     });
@@ -127,7 +128,7 @@ describe("validateInventoryRelationships", () => {
         };
 
         expect(() => {
-            validateInventoryRelationships(product, invalidInventory);
+            validateInventoryRelationships(product, invalidInventory, batches);
         }).toThrow("Variant does not belong to this product.");
 
     });
@@ -141,9 +142,20 @@ describe("validateInventoryRelationships", () => {
         };
 
         expect(() => {
-            validateInventoryRelationships(product, invalidInventory);
+            validateInventoryRelationships(product, invalidInventory, batches);
         }).toThrow("Batch does not belong to this variant.");
 
+    });
+
+    it("should reject a batch record that belongs to another variant", () => {
+        const invalidInventory = {
+            ...validInventory,
+            batchId: "BATCH002"
+        };
+
+        expect(() => {
+            validateInventoryRelationships(product, invalidInventory, batches);
+        }).toThrow("Batch does not belong to this variant.");
     });
 
 
@@ -158,7 +170,7 @@ describe("validateInventoryRelationships", () => {
         };
 
         expect(() => {
-            validateInventoryRelationships(product, invalidInventory);
+            validateInventoryRelationships(product, invalidInventory, batches);
         }).toThrow("Packaging level does not belong to this variant.");
 
     });
@@ -175,7 +187,7 @@ describe("validateInventoryRelationships", () => {
         };
 
         expect(() => {
-            validateInventoryRelationships(product, invalidInventory);
+            validateInventoryRelationships(product, invalidInventory, batches);
         }).toThrow("Packaging level does not belong to this variant.");
 
     });
@@ -193,9 +205,51 @@ describe("validateInventoryRelationships", () => {
         };
 
         expect(() => {
-            validateInventoryRelationships(product, invalidInventory);
+            validateInventoryRelationships(product, invalidInventory, batches);
         }).toThrow();
 
+    });
+
+    it("should reject invalid packaging hierarchies even when stock references a known level", () => {
+        const invalidProduct: productStructure = {
+            ...product,
+            variant: [{
+                ...product.variant[0],
+                packagingHierarchy: [
+                    {
+                        ...product.variant[0].packagingHierarchy[0],
+                        nextLevelId: "BOX001"
+                    },
+                    ...product.variant[0].packagingHierarchy.slice(1)
+                ]
+            }]
+        };
+
+        expect(() =>
+            validateInventoryRelationships(invalidProduct, validInventory, batches)
+        ).toThrow();
+    });
+
+    it("rejects duplicate stock packaging references and unsafe quantities", () => {
+        expect(() =>
+            validateInventoryRelationships(product, {
+                ...validInventory,
+                stockQuantities: [
+                    { packagingLevelId: "BOX001", quantity: 2 },
+                    { packagingLevelId: "BOX001", quantity: 3 }
+                ]
+            }, batches)
+        ).toThrow("Duplicate stock quantity");
+
+        expect(() =>
+            validateInventoryRelationships(product, {
+                ...validInventory,
+                stockQuantities: [{
+                    packagingLevelId: "BOX001",
+                    quantity: Number.MAX_SAFE_INTEGER + 1
+                }]
+            }, batches)
+        ).toThrow("non-negative safe integers");
     });
 
 });
