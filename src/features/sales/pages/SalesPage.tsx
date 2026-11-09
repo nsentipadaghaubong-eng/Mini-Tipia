@@ -7,8 +7,10 @@ import { getInventoryDisplay } from "../../../inventory/inventoryLookup";
 import {
     addSaleDraftItem,
     createSaleDraft,
+    updateSaleDraftDetails,
     updateSaleDraftItem,
     type SaleDraft,
+    type SaleDraftDetailsChanges,
     type SaleDraftItem,
     type SaleDraftItemChanges
 } from "../../../sales/salesDraft";
@@ -29,6 +31,11 @@ interface SalesPageProps {
     inventoryBatches: inventoryBatch[];
     saleDrafts: SaleDraft[];
     onDraftCreated: (draft: SaleDraft) => void;
+    onDraftDetailsUpdated: (
+        draftId: string,
+        changes: SaleDraftDetailsChanges,
+        updatedAt: string
+    ) => void;
     onDraftItemAdded: (
         draftId: string,
         item: SaleDraftItem,
@@ -65,6 +72,46 @@ interface ActiveItemModal {
     lineId?: string;
 }
 
+interface SaleInformation {
+    customerName: string;
+    customerAddress: string;
+    date: string;
+    receivedBy: string;
+}
+
+function localDateToday(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+}
+
+function saleDetailsChanges(
+    information: SaleInformation,
+    currentStaffMember?: SaleDraft["staffMember"]
+): SaleDraftDetailsChanges {
+    const userId = currentStaffMember?.userId;
+    return {
+        customerName: information.customerName,
+        customerAddress: information.customerAddress,
+        saleDate: information.date,
+        staffMember: information.receivedBy.trim()
+            ? {
+                ...(userId ? { userId } : {}),
+                displayName: information.receivedBy
+            }
+            : userId ? { userId } : null
+    };
+}
+
+function nextDraftUpdatedAt(draft: SaleDraft): string {
+    return new Date(Math.max(
+        Date.now(),
+        Date.parse(draft.updatedAt) + 1
+    )).toISOString();
+}
+
 function roundMoney(value: number): number {
     return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -75,15 +122,23 @@ export default function SalesPage({
     inventoryBatches,
     saleDrafts,
     onDraftCreated,
+    onDraftDetailsUpdated,
     onDraftItemAdded,
     onDraftItemUpdated,
     onDraftItemRemoved,
     onApproveSale
 }: SalesPageProps) {
+    const currentDraft = saleDrafts.find((draft) => draft.status === "draft");
     const [selection, dispatchSelection] = useReducer(
         salesSelectionReducer,
         initialSalesSelection
     );
+    const [saleInformation, setSaleInformation] = useState<SaleInformation>(() => ({
+        customerName: currentDraft?.customerName ?? "",
+        customerAddress: currentDraft?.customerAddress ?? "",
+        date: currentDraft?.saleDate ?? localDateToday(),
+        receivedBy: currentDraft?.staffMember?.displayName ?? ""
+    }));
     const [productSearch, setProductSearch] = useState("");
     const [activeItemModal, setActiveItemModal] =
         useState<ActiveItemModal | null>(null);
@@ -99,7 +154,6 @@ export default function SalesPage({
     const matchingProducts = productSearch.trim()
         ? searchProductsByName(products, productSearch)
         : [];
-    const currentDraft = saleDrafts.find((draft) => draft.status === "draft");
     const modalProduct = activeItemModal
         ? products.find((product) => product.id === activeItemModal.productId)
         : undefined;
@@ -124,26 +178,70 @@ export default function SalesPage({
         searchRef.current?.focus();
     }
 
+    function updateSaleInformation(field: keyof SaleInformation, value: string) {
+        const nextInformation = { ...saleInformation, [field]: value };
+        setSaleInformation(nextInformation);
+        if (field === "receivedBy" && value.trim()) {
+            setErrorMessage("");
+        }
+        if (currentDraft) {
+            const updatedAt = nextDraftUpdatedAt(currentDraft);
+            const changes: SaleDraftDetailsChanges = field === "customerName"
+                ? { customerName: value }
+                : field === "customerAddress"
+                    ? { customerAddress: value }
+                    : field === "date"
+                        ? { saleDate: value }
+                        : {
+                            staffMember: value.trim()
+                                ? {
+                                    ...(currentDraft.staffMember?.userId
+                                        ? { userId: currentDraft.staffMember.userId }
+                                        : {}),
+                                    displayName: value
+                                }
+                                : currentDraft.staffMember?.userId
+                                    ? { userId: currentDraft.staffMember.userId }
+                                    : null
+                        };
+            onDraftDetailsUpdated(currentDraft.draftId, changes, updatedAt);
+            return;
+        }
+
+        const draft = createSaleDraft();
+        const updatedAt = nextDraftUpdatedAt(draft);
+        onDraftCreated(updateSaleDraftDetails(
+            draft,
+            saleDetailsChanges(nextInformation),
+            updatedAt
+        ));
+    }
+
     function saveItem(item: SaleDraftItem) {
         const isEditing = activeItemModal?.lineId !== undefined;
         const draft = currentDraft ?? createSaleDraft();
-        const updatedAt = new Date().toISOString();
+        const updatedAt = nextDraftUpdatedAt(draft);
         let candidateDraft: SaleDraft;
 
         try {
+            const draftWithDetails = updateSaleDraftDetails(
+                draft,
+                saleDetailsChanges(saleInformation, draft.staffMember),
+                updatedAt
+            );
             if (isEditing) {
                 if (!currentDraft || !activeItemModal?.lineId) {
                     throw new Error("The sale draft item is no longer available.");
                 }
                 const { lineId, ...changes } = item;
                 candidateDraft = updateSaleDraftItem(
-                    currentDraft,
+                    draftWithDetails,
                     lineId,
                     changes,
                     updatedAt
                 );
             } else {
-                candidateDraft = addSaleDraftItem(draft, item, updatedAt);
+                candidateDraft = addSaleDraftItem(draftWithDetails, item, updatedAt);
             }
             prepareSaleDraft(candidateDraft, {
                 products,
@@ -160,6 +258,11 @@ export default function SalesPage({
         }
 
         if (isEditing) {
+            onDraftDetailsUpdated(
+                candidateDraft.draftId,
+                saleDetailsChanges(saleInformation, draft.staffMember),
+                updatedAt
+            );
             const { lineId, ...changes } = item;
             onDraftItemUpdated(
                 candidateDraft.draftId,
@@ -171,6 +274,11 @@ export default function SalesPage({
             if (!currentDraft) {
                 onDraftCreated(candidateDraft);
             } else {
+                onDraftDetailsUpdated(
+                    candidateDraft.draftId,
+                    saleDetailsChanges(saleInformation, draft.staffMember),
+                    updatedAt
+                );
                 onDraftItemAdded(candidateDraft.draftId, item, updatedAt);
             }
         }
@@ -198,6 +306,13 @@ export default function SalesPage({
     }
 
     function approveSale(confirmExpired = false) {
+        if (!saleInformation.receivedBy.trim()) {
+            setErrorMessage(
+                "Please enter the name of the person who carried out this sale."
+            );
+            setConfirmExpiredBatch(false);
+            return;
+        }
         if (
             !currentDraft ||
             currentDraft.items.length === 0 ||
@@ -258,6 +373,51 @@ export default function SalesPage({
                 </div>
             </header>
 
+            <section className="sales-information" aria-label="Sale information">
+                <label className="sales-field">
+                    <span>Customer Name</span>
+                    <input
+                        onChange={(event) => updateSaleInformation(
+                            "customerName",
+                            event.target.value
+                        )}
+                        value={saleInformation.customerName}
+                    />
+                </label>
+                <label className="sales-field">
+                    <span>Customer Address</span>
+                    <input
+                        onChange={(event) => updateSaleInformation(
+                            "customerAddress",
+                            event.target.value
+                        )}
+                        value={saleInformation.customerAddress}
+                    />
+                </label>
+                <label className="sales-field">
+                    <span>Date</span>
+                    <input
+                        onChange={(event) => updateSaleInformation(
+                            "date",
+                            event.target.value
+                        )}
+                        type="date"
+                        value={saleInformation.date}
+                    />
+                </label>
+                <label className="sales-field">
+                    <span>Received By <span aria-hidden="true">*</span></span>
+                    <input
+                        onChange={(event) => updateSaleInformation(
+                            "receivedBy",
+                            event.target.value
+                        )}
+                        required
+                        value={saleInformation.receivedBy}
+                    />
+                </label>
+            </section>
+
             <section className="sales-selection" aria-label="Product search and selection">
                 <label className="sales-field sales-search-field">
                     <span>Search products</span>
@@ -303,6 +463,7 @@ export default function SalesPage({
                                             type: "product.selected",
                                             productId: product.id
                                         });
+                                        setProductSearch("");
                                         setErrorMessage("");
                                     }}
                                     type="button"

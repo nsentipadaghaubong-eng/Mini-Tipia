@@ -1,16 +1,30 @@
+// @vitest-environment jsdom
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import {
+    cleanup,
+    fireEvent,
+    render,
+    screen,
+    within
+} from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { variant, productStructure } from "../../../products/productStructure";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { packagingLevel } from "../../../packaging/packagingHierarchy";
 import type { NavigationRequest } from "../../../navigation/navigationIntent";
+import type { SaleDraft } from "../../../sales/salesDraft";
+import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
 import {
     ProductInformation,
     VariantDetails
 } from "./ProductsPage";
 import ProductsPage from "./ProductsPage";
+
+afterEach(cleanup);
 
 function createLevel(
     id: string,
@@ -81,15 +95,95 @@ function renderProductsPage(
     products: productStructure[],
     inventoryRecords: inventory[] = [],
     inventoryBatches: inventoryBatch[] = [],
-    navigationRequest: NavigationRequest | null = null
+    navigationRequest: NavigationRequest | null = null,
+    deletionOptions: {
+        saleDrafts?: SaleDraft[];
+        deliveryDrafts?: DeliveryDraft[];
+        onDeleteProduct?: (
+            productId: string
+        ) => { success: true } | { success: false; error: string };
+    } = {}
 ) {
     return renderToStaticMarkup(createElement(ProductsPage, {
         products,
         inventoryRecords,
         inventoryBatches,
         onCreateProduct: () => undefined,
+        onDeleteProduct: deletionOptions.onDeleteProduct ?? (() => ({ success: true })),
         onUpdateProduct: () => undefined,
+        saleDrafts: deletionOptions.saleDrafts ?? [],
+        deliveryDrafts: deletionOptions.deliveryDrafts ?? [],
         navigationRequest,
+        onNavigate: () => undefined,
+        onNavigationConsumed: () => undefined,
+        onNavigationDismissed: () => undefined
+    }));
+}
+
+function makeSaleDraft(productId: string, status: SaleDraft["status"] = "draft"): SaleDraft {
+    return {
+        draftId: "sale-draft-1",
+        status,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        items: [{
+            lineId: "sale-line-1",
+            productId,
+            variantId: "variant-1",
+            inventoryRecordId: "inventory-1",
+            batchId: null,
+            packagingLevelId: "box",
+            quantity: 1,
+            defaultSellingPrice: 1,
+            appliedSellingPrice: 1,
+            discountAmount: 0
+        }]
+    };
+}
+
+function makeDeliveryDraft(
+    productId: string,
+    status: DeliveryDraft["status"] = "draft"
+): DeliveryDraft {
+    return {
+        deliveryId: "delivery-draft-1",
+        status,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        deliveryDate: "2026-01-01",
+        receivedBy: "Staff",
+        items: [{
+            deliveryItemId: "delivery-line-1",
+            productId,
+            variantId: "variant-1",
+            packagingLevelId: "box",
+            quantity: 1,
+            batchNumber: null,
+            expiryDate: null
+        }]
+    };
+}
+
+function renderInteractiveProductsPage(
+    product: productStructure,
+    deletionOptions: {
+        saleDrafts?: SaleDraft[];
+        deliveryDrafts?: DeliveryDraft[];
+        onDeleteProduct?: (
+            productId: string
+        ) => { success: true } | { success: false; error: string };
+    } = {}
+) {
+    return render(createElement(ProductsPage, {
+        products: [product],
+        inventoryRecords: [],
+        inventoryBatches: [],
+        onCreateProduct: () => undefined,
+        onDeleteProduct: deletionOptions.onDeleteProduct ?? (() => ({ success: true })),
+        onUpdateProduct: () => undefined,
+        saleDrafts: deletionOptions.saleDrafts ?? [],
+        deliveryDrafts: deletionOptions.deliveryDrafts ?? [],
+        navigationRequest: null,
         onNavigate: () => undefined,
         onNavigationConsumed: () => undefined,
         onNavigationDismissed: () => undefined
@@ -433,7 +527,7 @@ describe("ProductsPage listing", () => {
         expect(markup).toContain(">View</button>");
         expect(markup).toContain('aria-label="Edit Medicine"');
         expect(markup).not.toContain("Product editing is not available yet.");
-        expect(markup).toContain('aria-label="Delete Medicine (not available yet)"');
+        expect(markup).toContain('aria-label="Delete Medicine"');
         expect(markup).not.toContain("No products yet.");
         const actionsMarkup =
             markup.match(/<div class="product-card-actions">([\s\S]*?)<\/div>/)?.[1] ?? "";
@@ -442,5 +536,119 @@ describe("ProductsPage listing", () => {
             ([, label]) => label.trim()
         );
         expect(actionLabels).toEqual(["View", "Edit", "Delete"]);
+    });
+});
+
+describe("ProductsPage deletion", () => {
+    const product = createProduct(
+        [createVariant("variant-1", "Tablets", undefined, [
+            createLevel("box", "Box")
+        ])],
+        { id: "product-1", name: "Medicine" }
+    );
+
+    it("requires explicit confirmation before invoking permanent deletion", () => {
+        const onDeleteProduct = vi.fn(() => ({ success: true as const }));
+        renderInteractiveProductsPage(product, { onDeleteProduct });
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+
+        expect(screen.getByRole("alertdialog")).toHaveTextContent(
+            "permanent and cannot be undone"
+        );
+        expect(onDeleteProduct).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        expect(onDeleteProduct).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+        fireEvent.click(screen.getByRole("button", {
+            name: "Delete permanently"
+        }));
+        expect(onDeleteProduct).toHaveBeenCalledTimes(1);
+        expect(onDeleteProduct).toHaveBeenCalledWith(product.id);
+    });
+
+    it("blocks deletion for active Sales and Receive Delivery drafts", () => {
+        const salesMessage =
+            "This product is currently in a Sales draft and cannot be deleted. Please complete or cancel the Sales draft before attempting to delete this product.";
+        const deliveryMessage =
+            "This product is currently in a Receive Delivery draft and cannot be deleted. Please complete or cancel the Receive Delivery draft before attempting to delete this product.";
+        const onDeleteProduct = vi.fn(() => ({ success: true as const }));
+
+        const { unmount } = renderInteractiveProductsPage(product, {
+            onDeleteProduct,
+            saleDrafts: [makeSaleDraft(product.id)]
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+        const salesDialog = screen.getByRole("alertdialog", {
+            name: "Product cannot be deleted"
+        });
+        expect(salesDialog).toBeVisible();
+        expect(salesDialog).toHaveTextContent(salesMessage);
+        expect(onDeleteProduct).not.toHaveBeenCalled();
+        fireEvent.click(within(salesDialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        unmount();
+
+        renderInteractiveProductsPage(product, {
+            onDeleteProduct,
+            deliveryDrafts: [makeDeliveryDraft(product.id)]
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+        const deliveryDialog = screen.getByRole("alertdialog", {
+            name: "Product cannot be deleted"
+        });
+        expect(deliveryDialog).toBeVisible();
+        expect(deliveryDialog).toHaveTextContent(deliveryMessage);
+        fireEvent.click(within(deliveryDialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+        expect(onDeleteProduct).not.toHaveBeenCalled();
+    });
+
+    it("explains both active draft restrictions when both workflows reference the product", () => {
+        const onDeleteProduct = vi.fn(() => ({ success: true as const }));
+        renderInteractiveProductsPage(product, {
+            onDeleteProduct,
+            saleDrafts: [makeSaleDraft(product.id)],
+            deliveryDrafts: [makeDeliveryDraft(product.id)]
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+
+        const dialog = screen.getByRole("alertdialog", {
+            name: "Product cannot be deleted"
+        });
+        expect(dialog).toBeVisible();
+        expect(dialog).toHaveTextContent(
+            "This product is currently in a Sales draft and cannot be deleted. Please complete or cancel the Sales draft before attempting to delete this product."
+        );
+        expect(dialog).toHaveTextContent(
+            "This product is currently in a Receive Delivery draft and cannot be deleted. Please complete or cancel the Receive Delivery draft before attempting to delete this product."
+        );
+        expect(onDeleteProduct).not.toHaveBeenCalled();
+        fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+
+    it("displays a deletion failure returned during confirmation", () => {
+        const onDeleteProduct = vi.fn(() => ({
+            success: false as const,
+            error: "The product could not be deleted."
+        }));
+        renderInteractiveProductsPage(product, { onDeleteProduct });
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+        fireEvent.click(screen.getByRole("button", {
+            name: "Delete permanently"
+        }));
+
+        expect(onDeleteProduct).toHaveBeenCalledWith(product.id);
+        expect(screen.getByRole("alertdialog")).toHaveTextContent(
+            "The product could not be deleted."
+        );
+        expect(screen.getByRole("alertdialog")).toHaveTextContent("Cancel");
     });
 });

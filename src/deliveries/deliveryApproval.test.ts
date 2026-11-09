@@ -389,7 +389,15 @@ describe("Delivery approval and stock-in", () => {
         };
         const committed = applicationReducer(state, action);
 
-        expect(committed.deliveryDrafts[0].status).toBe("received");
+        expect(committed.deliveryDrafts[0]).toMatchObject({
+            deliveryId: draft.deliveryId,
+            status: "received",
+            deliveryDate: draft.deliveryDate,
+            receivedBy: draft.receivedBy,
+            supplier: draft.supplier,
+            invoiceNumber: draft.invoiceNumber,
+            updatedAt: plan.draft.updatedAt
+        });
         expect(committed.inventoryRecords[0].stockQuantities).toEqual([
             { packagingLevelId: "box", quantity: 3 }
         ]);
@@ -401,8 +409,29 @@ describe("Delivery approval and stock-in", () => {
             deliveryDate: draft.deliveryDate,
             receivedBy: draft.receivedBy,
             supplierName: "Supplier",
-            invoiceNumber: "INV-1"
+            invoiceNumber: "INV-1",
+            occurredAt: expect.any(String),
+            items: [{
+                productId: "medicine",
+                productName: "Medicine",
+                variantId: "tablets",
+                variantName: "Tablets",
+                batch: expect.objectContaining({
+                    productId: "medicine",
+                    variantId: "tablets",
+                    batchNumber: "LOT-1",
+                    expiryDate: "2027-12-31T00:00:00.000Z"
+                }),
+                stock: [{
+                    packagingLevel: expect.objectContaining({
+                        packagingLevelId: "box",
+                        name: "Box"
+                    }),
+                    quantity: 3
+                }]
+            }]
         });
+        expect(Date.parse(committed.activityEvents[0].occurredAt)).not.toBeNaN();
         expect(applicationReducer(committed, action)).toBe(committed);
         expect(committed.inventoryRecords[0].stockQuantities[0].quantity).toBe(3);
     });
@@ -421,6 +450,11 @@ describe("Delivery approval and stock-in", () => {
             type: "delivery.approved",
             plan,
             event: { ...event, deliveryId: "different-delivery" }
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event: { ...event, receivedBy: "Someone Else" }
         })).toThrow("Delivery approval does not match the active draft.");
         expect(state.deliveryDrafts).toEqual([draft]);
         expect(state.inventoryRecords).toEqual([]);

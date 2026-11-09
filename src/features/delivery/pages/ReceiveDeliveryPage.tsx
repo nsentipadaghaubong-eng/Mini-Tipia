@@ -141,13 +141,12 @@ export default function ReceiveDeliveryPage({
 }: ReceiveDeliveryPageProps) {
     const initialDraft = deliveryDrafts.find(
         (draft) => draft.status === "draft"
-    ) ?? deliveryDrafts[0];
+    );
     const [selectedDeliveryId, setSelectedDeliveryId] = useState(
         initialDraft?.deliveryId ?? ""
     );
-    const [isNewDeliveryEntry, setIsNewDeliveryEntry] = useState(
-        deliveryDrafts.length === 0
-    );
+    const [isNewDeliveryEntry, setIsNewDeliveryEntry] =
+        useState(!initialDraft);
     const [form, setForm] = useState(() => formFromDraft(initialDraft));
     const [errors, setErrors] = useState<HeaderErrors>({});
     const [formMessage, setFormMessage] = useState("");
@@ -160,6 +159,8 @@ export default function ReceiveDeliveryPage({
     const [isReceivingItem, setIsReceivingItem] = useState(false);
     const [editingItem, setEditingItem] = useState<DeliveryDraftItem>();
     const [isApproving, setIsApproving] = useState(false);
+    const [approvalError, setApprovalError] = useState("");
+    const [completionMessage, setCompletionMessage] = useState("");
 
     const selectedDraft = deliveryDrafts.find(
         (draft) => draft.deliveryId === selectedDeliveryId
@@ -188,6 +189,26 @@ export default function ReceiveDeliveryPage({
     const canEditHeader = isNewDeliveryEntry || selectedDraft?.status === "draft";
     const canAddItems = isNewDeliveryEntry || selectedDraft?.status === "draft";
 
+    function startNextDeliveryEntry() {
+        setSelectedDeliveryId("");
+        setIsNewDeliveryEntry(true);
+        setForm(formFromDraft(undefined));
+        setErrors({});
+        setFormMessage("");
+        setProductSearch("");
+        setShowProductResults(false);
+        setSelectedProductId("");
+        setSelectedVariantId("");
+        setIsCreatingProduct(false);
+        setIsAddingVariant(false);
+        setIsReceivingItem(false);
+        setEditingItem(undefined);
+        setApprovalError("");
+        setCompletionMessage(
+            "Delivery received successfully. Inventory has been updated. You can prepare another delivery."
+        );
+    }
+
     function nextUpdatedAt(draft: DeliveryDraft): string {
         const now = new Date().toISOString();
         return now > draft.updatedAt
@@ -199,6 +220,8 @@ export default function ReceiveDeliveryPage({
         setForm((current) => ({ ...current, [field]: value }));
         setErrors((current) => ({ ...current, [field]: undefined }));
         setFormMessage("");
+        setApprovalError("");
+        setCompletionMessage("");
         if (selectedDraft?.status === "draft") {
             try {
                 const changes: DeliveryDraftDetailsChanges = {
@@ -266,18 +289,37 @@ export default function ReceiveDeliveryPage({
         setIsApproving(true);
         setErrors({});
         setFormMessage("");
+        setApprovalError("");
         try {
             const result = onApproveDelivery(selectedDraft.deliveryId);
             if (result.success) {
+                startNextDeliveryEntry();
                 return;
             }
-            const field = errorField(result.error);
+            const message = result.error.trim() || "The delivery could not be approved.";
+            const field = errorField(message);
             if (field) {
-                setErrors({ [field]: result.error });
+                setErrors({ [field]: message });
                 setFormMessage("");
             } else {
-                setFormMessage(result.error);
+                setFormMessage(message);
             }
+            setApprovalError(field === "receivedBy"
+                ? "Please enter the name of the person who received this delivery."
+                : message);
+        } catch (error) {
+            const message = error instanceof Error && error.message.trim()
+                ? error.message
+                : "The delivery could not be approved.";
+            const field = errorField(message);
+            if (field) {
+                setErrors({ [field]: message });
+            } else {
+                setFormMessage(message);
+            }
+            setApprovalError(field === "receivedBy"
+                ? "Please enter the name of the person who received this delivery."
+                : message);
         } finally {
             setIsApproving(false);
         }
@@ -341,6 +383,8 @@ export default function ReceiveDeliveryPage({
             setEditingItem(undefined);
             setIsReceivingItem(false);
             setFormMessage("");
+            setApprovalError("");
+            setCompletionMessage("");
             return undefined;
         } catch (error) {
             return error instanceof Error
@@ -363,6 +407,7 @@ export default function ReceiveDeliveryPage({
                 updatedAt
             );
             setFormMessage("");
+            setApprovalError("");
         } catch (error) {
             setFormMessage(error instanceof Error
                 ? error.message
@@ -390,6 +435,11 @@ export default function ReceiveDeliveryPage({
                             : status === "received"
                                 ? "Delivery received successfully. Inventory has been updated."
                                 : `This delivery has ${status} status; its header is read-only.`}
+                    </p>
+                )}
+                {completionMessage && (
+                    <p className="delivery-draft-notice" role="status">
+                        {completionMessage}
                     </p>
                 )}
 
@@ -539,39 +589,42 @@ export default function ReceiveDeliveryPage({
                     )}
                     {selectedProduct && (
                         <div className="delivery-variant-selection">
-                            {selectedProduct.variant.length > 0 ? (
-                                <label className="delivery-field">
-                                    <span>Variant</span>
-                                    <select
-                                        aria-label="Select variant"
-                                        disabled={!canAddItems}
-                                        onChange={(event) => selectVariant(event.target.value)}
-                                        value={selectedVariantId}
-                                    >
-                                        <option value="">Select a variant</option>
-                                        {selectedProduct.variant.map((productVariant) => (
-                                            <option
-                                                key={productVariant.id}
-                                                value={productVariant.id}
-                                            >
-                                                {productVariant.variantName}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </label>
-                            ) : (
-                                <p className="delivery-product-no-results" role="status">
-                                    This product has no variants yet.
-                                </p>
-                            )}
-                            <button
-                                className="delivery-secondary-button"
-                                disabled={!canAddItems}
-                                onClick={() => setIsAddingVariant(true)}
-                                type="button"
+                            <div
+                                aria-label="Available variants"
+                                className="delivery-variant-buttons"
+                                role="group"
                             >
-                                Add Variant
-                            </button>
+                                {selectedProduct.variant.length > 0 ? (
+                                    selectedProduct.variant.map((productVariant) => (
+                                        <button
+                                            aria-pressed={selectedVariantId === productVariant.id}
+                                            className="sales-variant-button"
+                                            disabled={!canAddItems}
+                                            key={productVariant.id}
+                                            onClick={() => selectVariant(
+                                                selectedVariantId === productVariant.id
+                                                    ? ""
+                                                    : productVariant.id
+                                            )}
+                                            type="button"
+                                        >
+                                            {productVariant.variantName}
+                                        </button>
+                                    ))
+                                ) : (
+                                    <p className="delivery-product-no-results" role="status">
+                                        This product has no variants yet.
+                                    </p>
+                                )}
+                                <button
+                                    className="sales-variant-button"
+                                    disabled={!canAddItems}
+                                    onClick={() => setIsAddingVariant(true)}
+                                    type="button"
+                                >
+                                    Add New Variant
+                                </button>
+                            </div>
                             {selectedVariantId && (
                                 <p className="delivery-selected-variant" role="status">
                                     Selected variant: {selectedVariant?.variantName}
@@ -613,6 +666,11 @@ export default function ReceiveDeliveryPage({
                                 >
                                     {isApproving ? "Approving Delivery…" : "Approve Delivery"}
                                 </button>
+                            )}
+                            {approvalError && (
+                                <p className="delivery-approval-error" role="alert">
+                                    {approvalError}
+                                </p>
                             )}
                             {selectedDraft.items.length === 0 ? (
                                 <p className="delivery-empty-state" role="status">

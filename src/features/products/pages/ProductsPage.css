@@ -292,6 +292,29 @@
     font-size: 13px;
 }
 
+.product-deletion-dialog {
+    width: min(100%, 520px);
+}
+
+.product-deletion-dialog .inventory-modal-content p {
+    margin: 0;
+    color: #526176;
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.product-deletion-dialog .inventory-modal-content > div:first-child {
+    display: grid;
+    gap: 8px;
+}
+
+.product-deletion-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 24px;
+}
+
 .products-unavailable-action:disabled {
     border-color: #e1e7f0;
     background: #f4f6f9;

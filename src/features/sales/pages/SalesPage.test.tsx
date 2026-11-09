@@ -129,6 +129,14 @@ function renderSales(initialState = makeState()) {
                     type: "sale.draft_created",
                     draft
                 })}
+                onDraftDetailsUpdated={(draftId, changes, updatedAt) =>
+                    dispatch({
+                        type: "sale.draft_details_updated",
+                        draftId,
+                        changes,
+                        updatedAt
+                    })
+                }
                 onDraftItemAdded={(draftId, item, updatedAt) => dispatch({
                     type: "sale.draft_item_added",
                     draftId,
@@ -242,6 +250,12 @@ function addItem(quantity: number, discountPercentage = "0") {
     fireEvent.click(addButton);
 }
 
+function enterReceivedBy(name = "Staff One") {
+    fireEvent.change(screen.getByLabelText("Received By *"), {
+        target: { value: name }
+    });
+}
+
 describe("Sales search-first product selection", () => {
     it("shows neither products nor an empty draft before the pharmacist searches", () => {
         renderSales();
@@ -277,6 +291,10 @@ describe("Sales search-first product selection", () => {
         });
         fireEvent.click(screen.getByRole("button", { name: "Panadol" }));
 
+        expect(screen.getByRole("searchbox", { name: "Search products" }))
+            .toHaveValue("");
+        expect(screen.queryByRole("list", { name: "Matching products" }))
+            .not.toBeInTheDocument();
         expect(screen.getByRole("region", { name: "Selected product" }))
             .toHaveTextContent("Panadol");
         expect(screen.getByRole("button", { name: "500 mg tablet" })).toBeVisible();
@@ -293,6 +311,103 @@ describe("Sales search-first product selection", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "Close sales item" }));
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("renders sale information and preserves it when adding and editing items", () => {
+        const page = renderSales();
+        const today = new Date();
+        const localDate = [
+            today.getFullYear(),
+            String(today.getMonth() + 1).padStart(2, "0"),
+            String(today.getDate()).padStart(2, "0")
+        ].join("-");
+
+        expect(screen.getByLabelText("Customer Name")).toHaveValue("");
+        expect(screen.getByLabelText("Customer Address")).toHaveValue("");
+        expect(screen.getByLabelText("Date")).toHaveValue(localDate);
+        expect(screen.getByLabelText("Received By *")).toHaveAttribute("required");
+        expect(screen.queryByText("Optional")).not.toBeInTheDocument();
+
+        fireEvent.change(screen.getByLabelText("Customer Name"), {
+            target: { value: "Customer One" }
+        });
+        fireEvent.change(screen.getByLabelText("Customer Address"), {
+            target: { value: "1 Main Street" }
+        });
+        fireEvent.change(screen.getByLabelText("Date"), {
+            target: { value: "2026-10-25" }
+        });
+        fireEvent.change(screen.getByLabelText("Received By *"), {
+            target: { value: "Staff One" }
+        });
+
+        expect(page.state.saleDrafts[0]).toMatchObject({
+            status: "draft",
+            items: [],
+            customerName: "Customer One",
+            customerAddress: "1 Main Street",
+            saleDate: "2026-10-25",
+            staffMember: { displayName: "Staff One" }
+        });
+
+        addItem(2);
+        expect(screen.getByLabelText("Customer Name")).toHaveValue("Customer One");
+        expect(screen.getByLabelText("Customer Address")).toHaveValue("1 Main Street");
+        expect(screen.getByLabelText("Date")).toHaveValue("2026-10-25");
+        expect(screen.getByLabelText("Received By *")).toHaveValue("Staff One");
+        expect(page.state.saleDrafts[0]).toMatchObject({
+            customerName: "Customer One",
+            customerAddress: "1 Main Street",
+            saleDate: "2026-10-25",
+            staffMember: { displayName: "Staff One" }
+        });
+
+        fireEvent.change(screen.getByLabelText("Customer Name"), {
+            target: { value: "Updated Customer" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Edit Panadol" }));
+        fireEvent.change(screen.getByLabelText("Sale quantity"), {
+            target: { value: "3" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(screen.getByLabelText("Customer Name")).toHaveValue("Updated Customer");
+        expect(screen.getByLabelText("Customer Address")).toHaveValue("1 Main Street");
+        expect(screen.getByLabelText("Date")).toHaveValue("2026-10-25");
+        expect(screen.getByLabelText("Received By *")).toHaveValue("Staff One");
+        expect(page.state.saleDrafts[0]).toMatchObject({
+            customerName: "Updated Customer",
+            customerAddress: "1 Main Street",
+            saleDate: "2026-10-25",
+            staffMember: { displayName: "Staff One" }
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Remove Panadol" }));
+        expect(page.state.saleDrafts).toEqual([]);
+        expect(screen.getByLabelText("Customer Name")).toHaveValue("Updated Customer");
+        expect(screen.getByLabelText("Customer Address")).toHaveValue("1 Main Street");
+        expect(screen.getByLabelText("Date")).toHaveValue("2026-10-25");
+        expect(screen.getByLabelText("Received By *")).toHaveValue("Staff One");
+
+        addItem(1);
+        fireEvent.click(screen.getByRole("button", { name: "Approve Sale" }));
+
+        expect(page.state.sales[0]).toMatchObject({
+            customerName: "Updated Customer",
+            customerAddress: "1 Main Street",
+            saleDate: "2026-10-25",
+            staffMember: { displayName: "Staff One" }
+        });
+        expect(page.state.sales[0].completedAt).not.toBe("2026-10-25");
+        expect(page.state.activityEvents).toHaveLength(1);
+        expect(page.state.activityEvents[0]).toMatchObject({
+            type: "sale.completed",
+            customerName: "Updated Customer",
+            customerAddress: "1 Main Street",
+            saleDate: "2026-10-25",
+            staffMember: { displayName: "Staff One" },
+            occurredAt: page.state.sales[0].completedAt
+        });
     });
 
     it("keeps product identity selection based on IDs and resets variants on product change", () => {
@@ -668,6 +783,7 @@ describe("Sales item calculations and draft workflow", () => {
     it("approves a multi-item draft atomically and resets the search-first page", () => {
         const initial = makeState();
         const page = renderSales(initial);
+        enterReceivedBy();
         expect(screen.queryByRole("button", { name: "Approve Sale" }))
             .not.toBeInTheDocument();
 
@@ -706,6 +822,7 @@ describe("Sales item calculations and draft workflow", () => {
 
     it("approves a single-item draft and creates one sale and one Activity event", () => {
         const page = renderSales();
+        enterReceivedBy();
         addItem(2);
         const inventoryBeforeApproval = page.state.inventoryRecords;
 
@@ -726,6 +843,23 @@ describe("Sales item calculations and draft workflow", () => {
             .not.toBeInTheDocument();
     });
 
+    it("blocks approval when Received By is empty", () => {
+        const initial = makeState();
+        const page = renderSales(initial);
+        addItem(1);
+        const draftBeforeApproval = page.state.saleDrafts[0];
+
+        fireEvent.click(screen.getByRole("button", { name: "Approve Sale" }));
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "Please enter the name of the person who carried out this sale."
+        );
+        expect(page.state.saleDrafts).toEqual([draftBeforeApproval]);
+        expect(page.state.sales).toEqual(initial.sales);
+        expect(page.state.inventoryRecords).toBe(initial.inventoryRecords);
+        expect(page.state.activityEvents).toEqual(initial.activityEvents);
+    });
+
     it("requires explicit confirmation before approving an expired batch", () => {
         const expiredBatches = [{
             ...inventoryBatches[0],
@@ -733,6 +867,7 @@ describe("Sales item calculations and draft workflow", () => {
         }];
         const initial = makeState({ inventoryBatches: expiredBatches });
         const page = renderSales(initial);
+        enterReceivedBy();
         addItem(1);
 
         fireEvent.click(screen.getByRole("button", { name: "Approve Sale" }));
@@ -758,6 +893,7 @@ describe("Sales item calculations and draft workflow", () => {
     it("preserves a draft when stock changes after composition and approval revalidation fails", () => {
         const initial = makeState();
         const page = renderSales(initial);
+        enterReceivedBy();
         addItem(8);
         const draftBeforeApproval = page.state.saleDrafts[0];
         const changedInventory = [{

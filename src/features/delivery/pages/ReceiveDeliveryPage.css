@@ -122,8 +122,15 @@
     align-items: center;
 }
 
-.delivery-variant-selection .delivery-field {
-    width: min(100%, 440px);
+.delivery-variant-buttons {
+    display: grid;
+    justify-items: start;
+    gap: 8px;
+}
+
+.delivery-variant-buttons .sales-variant-button[aria-pressed="true"] {
+    border-color: var(--color-blue);
+    background: #f3f6fb;
 }
 
 .delivery-selected-variant {
@@ -167,13 +174,15 @@
 }
 
 .delivery-field-error,
-.delivery-form-message {
+.delivery-form-message,
+.delivery-approval-error {
     color: #a32121;
     font-size: 13px;
     font-weight: 400;
 }
 
-.delivery-form-message {
+.delivery-form-message,
+.delivery-approval-error {
     margin: 0;
 }
 

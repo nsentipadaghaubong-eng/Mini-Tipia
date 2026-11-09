@@ -7,20 +7,26 @@ import ReceiveDeliveryPage from "./features/delivery/pages/ReceiveDeliveryPage";
 import ProductsPage from "./features/products/pages/ProductsPage";
 import SalesPage from "./features/sales/pages/SalesPage";
 import {
+    buildProductDeletionActivityInput,
     buildProductCreationActivityInputs,
-    prepareActivityEvents
+    buildProductUpdateActivityInputs,
+    prepareActivityEvents,
+    snapshotVariant
 } from "./activity/activity";
 import {
     applicationReducer,
     createInitialApplicationState
 } from "./applicationState";
+import type { ApplicationAction } from "./applicationState";
 import type { ProductCreationResult } from "./products/productCreation";
 import type { productStructure } from "./products/productStructure";
 import type { variant } from "./products/productStructure";
+import { getProductDeletionBlockMessages } from "./products/productDeletion";
 import type { inventory } from "./inventory/inventoryStock";
 import type { inventoryBatch } from "./inventory/inventoryBatch";
 import type {
     SaleDraft,
+    SaleDraftDetailsChanges,
     SaleDraftItem,
     SaleDraftItemChanges
 } from "./sales/salesDraft";
@@ -32,7 +38,6 @@ import {
 } from "./deliveries/deliveryDraft";
 import { prepareDeliveryApproval } from "./deliveries/deliveryApproval";
 import { completeSale, prepareSaleDraft } from "./sales/salesEngine";
-import { snapshotProduct } from "./activity/activity";
 import { validateInventoryPackagingRelationships } from "./inventory/inventoryValidation";
 import {
     consumeNavigationRequest,
@@ -106,21 +111,44 @@ function App() {
     }
 
     function handleCatalogueProductCreated(product: productStructure) {
-        dispatch({
+        const [event] = prepareActivityEvents(
+            buildProductCreationActivityInputs(product, [], [])
+        );
+        const action = {
             type: "product.catalogue_created",
-            product
-        });
+            product,
+            events: [event]
+        } satisfies ApplicationAction;
+        applicationReducer(applicationState, action);
+        dispatch(action);
     }
 
     function handleDeliveryVariantCreated(
         productId: string,
         productVariant: variant
     ) {
-        dispatch({
+        const product = applicationState.products.find(
+            (candidate) => candidate.id === productId
+        );
+        if (!product) {
+            throw new Error(`Product not found: ${productId}`);
+        }
+        const [event] = prepareActivityEvents([{
+            type: "product.variant_added",
+            operationKey: `product.variant_added:${productId}:${productVariant.id}`,
+            productId,
+            productName: product.name,
+            variant: snapshotVariant(productVariant),
+            reason: "Added through Receive Delivery"
+        }]);
+        const action = {
             type: "product.variant_added",
             productId,
-            variant: productVariant
-        });
+            variant: productVariant,
+            events: [event]
+        } satisfies ApplicationAction;
+        applicationReducer(applicationState, action);
+        dispatch(action);
     }
 
     function handleInventoryCommit(commit: InventoryCommit) {
@@ -240,6 +268,19 @@ function App() {
         });
     }
 
+    function handleSaleDraftDetailsUpdated(
+        draftId: string,
+        changes: SaleDraftDetailsChanges,
+        updatedAt: string
+    ) {
+        dispatch({
+            type: "sale.draft_details_updated",
+            draftId,
+            changes,
+            updatedAt
+        });
+    }
+
     function handleSaleDraftItemAdded(
         draftId: string,
         item: SaleDraftItem,
@@ -345,42 +386,98 @@ function App() {
     }
 
     function handleUpdateProduct(
-          product: productStructure,
-          reason: string,
-          nextInventoryRecords?: inventory[],
-          nextInventoryBatches?: inventoryBatch[]
-      ) {
-          const previousProduct = applicationState.products.find(
-              (current) => current.id === product.id
-          );
-          if (!previousProduct) {
-              throw new Error(`Product not found: ${product.id}`);
+        product: productStructure,
+        reason: string,
+        nextInventoryRecords?: inventory[],
+        nextInventoryBatches?: inventoryBatch[]
+    ) {
+        const previousProduct = applicationState.products.find(
+            (current) => current.id === product.id
+        );
+        if (!previousProduct) {
+            throw new Error(`Product not found: ${product.id}`);
         }
-          const resolvedInventoryRecords = nextInventoryRecords ?? applicationState.inventoryRecords;
-          const resolvedInventoryBatches = nextInventoryBatches ?? applicationState.inventoryBatches;
-          for (const record of resolvedInventoryRecords) {
-              if (record.productId === product.id) {
-                  validateInventoryPackagingRelationships(product, record);
-              }
-          }
 
-          const operationKey = `product.updated:${product.id}:${crypto.randomUUID()}`;
-          dispatch({
-              type: "product.updated",
-              product,
-              inventoryRecords: resolvedInventoryRecords,
-              inventoryBatches: resolvedInventoryBatches,
-              events: prepareActivityEvents([{
-                  type: "product.updated",
-                  operationKey,
-                  productId: product.id,
-                  productName: product.name,
-                  before: snapshotProduct(previousProduct),
-                  after: snapshotProduct(product),
-                  reason
-              }])
-          });
-      }
+        const resolvedInventoryRecords =
+            nextInventoryRecords ?? applicationState.inventoryRecords;
+        const resolvedInventoryBatches =
+            nextInventoryBatches ?? applicationState.inventoryBatches;
+        for (const record of resolvedInventoryRecords) {
+            if (record.productId === product.id) {
+                validateInventoryPackagingRelationships(product, record);
+            }
+        }
+
+        const operationKey = `product.updated:${product.id}:${crypto.randomUUID()}`;
+        const action = {
+            type: "product.updated",
+            product,
+            inventoryRecords: resolvedInventoryRecords,
+            inventoryBatches: resolvedInventoryBatches,
+            events: prepareActivityEvents(buildProductUpdateActivityInputs(
+                previousProduct,
+                product,
+                applicationState.inventoryRecords,
+                resolvedInventoryRecords,
+                resolvedInventoryBatches,
+                operationKey,
+                reason
+            ))
+        } satisfies ApplicationAction;
+        applicationReducer(applicationState, action);
+        dispatch(action);
+    }
+
+    function handleDeleteProduct(
+        productId: string
+    ): { success: true } | { success: false; error: string } {
+        const blockers = getProductDeletionBlockMessages(
+            productId,
+            applicationState.saleDrafts,
+            applicationState.deliveryDrafts
+        );
+        if (blockers.length > 0) {
+            return { success: false, error: blockers.join(" ") };
+        }
+
+        const matchingProducts = applicationState.products.filter(
+            (product) => product.id === productId
+        );
+        if (matchingProducts.length !== 1) {
+            return {
+                success: false,
+                error: `Product not found: ${productId}`
+            };
+        }
+
+        try {
+            const operationKey =
+                `product.deleted:${productId}:${crypto.randomUUID()}`;
+            const event = prepareActivityEvents([
+                buildProductDeletionActivityInput(
+                    matchingProducts[0],
+                    applicationState.inventoryRecords,
+                    applicationState.inventoryBatches,
+                    operationKey
+                )
+            ]);
+            const action = {
+                type: "product.deleted",
+                productId,
+                events: event
+            } satisfies ApplicationAction;
+            applicationReducer(applicationState, action);
+            dispatch(action);
+            return { success: true };
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error
+                    ? error.message
+                    : "Product deletion failed."
+            };
+        }
+    }
 
     return (
         <AppLayout
@@ -395,7 +492,10 @@ function App() {
                     inventoryRecords={applicationState.inventoryRecords}
                     inventoryBatches={applicationState.inventoryBatches}
                     onCreateProduct={handleCreateProduct}
+                    onDeleteProduct={handleDeleteProduct}
                     onUpdateProduct={handleUpdateProduct}
+                    saleDrafts={applicationState.saleDrafts}
+                    deliveryDrafts={applicationState.deliveryDrafts}
                     onNavigate={handleNavigation}
                     onNavigationConsumed={handleNavigationConsumed}
                     onNavigationDismissed={handleNavigationDismissed}
@@ -439,6 +539,7 @@ function App() {
                     inventoryBatches={applicationState.inventoryBatches}
                     saleDrafts={applicationState.saleDrafts}
                     onDraftCreated={handleSaleDraftCreated}
+                    onDraftDetailsUpdated={handleSaleDraftDetailsUpdated}
                     onDraftItemAdded={handleSaleDraftItemAdded}
                     onDraftItemUpdated={handleSaleDraftItemUpdated}
                     onDraftItemRemoved={handleSaleDraftItemRemoved}

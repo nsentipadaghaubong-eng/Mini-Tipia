@@ -3,6 +3,13 @@
     gap: 24px;
 }
 
+.sales-information {
+    display: grid;
+    max-width: 900px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
 .sales-remove-button {
     min-height: 38px;
     padding: 0 14px;
@@ -276,6 +283,10 @@
 }
 
 @media (max-width: 600px) {
+    .sales-information {
+        grid-template-columns: 1fr;
+    }
+
     .sales-draft-items li {
         grid-template-columns: minmax(0, 1fr);
     }

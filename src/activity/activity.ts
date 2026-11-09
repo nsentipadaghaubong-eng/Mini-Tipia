@@ -1,6 +1,7 @@
 import type { inventory } from "../inventory/inventoryStock";
 import type { inventoryBatch } from "../inventory/inventoryBatch";
 import type { stockAdjustment } from "../inventory/inventoryAdjustment";
+import { getStockQuantityOrZero } from "../inventory/inventoryStock";
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import type { productStructure, variant } from "../products/productStructure";
 
@@ -85,6 +86,14 @@ export type ActivityEventInput = ActivityBaseInput & (
         readonly before: ActivityProductSnapshot;
         readonly after: ActivityProductSnapshot;
         readonly reason: string;
+    }
+    | {
+        readonly type: "product.deleted";
+        readonly productId: string;
+        readonly productName: string;
+        readonly product: ActivityProductSnapshot;
+        readonly inventory: readonly ActivityInventorySnapshot[];
+        readonly batches: readonly ActivityBatchSnapshot[];
     }
     | {
         readonly type: "product.variant_added";
@@ -190,6 +199,7 @@ export type ActivityEventInput = ActivityBaseInput & (
         readonly saleId: string;
         readonly customerName?: string;
         readonly customerAddress?: string;
+        readonly saleDate?: string;
         readonly staffMember?: {
             readonly userId?: string;
             readonly displayName?: string;
@@ -369,6 +379,32 @@ export function snapshotInventory(
     };
 }
 
+export function buildProductDeletionActivityInput(
+    product: productStructure,
+    inventoryRecords: readonly inventory[],
+    batches: readonly inventoryBatch[],
+    operationKey: string
+): ActivityEventInput {
+    const productInventory = inventoryRecords.filter(
+        (record) => record.productId === product.id
+    );
+    const productBatches = batches.filter(
+        (batch) => batch.productId === product.id
+    );
+
+    return {
+        type: "product.deleted",
+        operationKey,
+        productId: product.id,
+        productName: product.name,
+        product: snapshotProduct(product),
+        inventory: productInventory.map((record) =>
+            snapshotInventory(record, product, batches)
+        ),
+        batches: productBatches.map((batch) => snapshotBatch(batch, product))
+    };
+}
+
 export function buildProductCreationActivityInputs(
     product: productStructure,
     inventoryRecords: readonly inventory[],
@@ -446,6 +482,89 @@ export function buildStockAdjustmentActivityInput(
         quantityDifference: adjustment.quantityDifference,
         reason: adjustment.reason
     };
+}
+
+export function buildProductUpdateActivityInputs(
+    previousProduct: productStructure,
+    product: productStructure,
+    previousInventory: readonly inventory[],
+    nextInventory: readonly inventory[],
+    batches: readonly inventoryBatch[],
+    operationId: string,
+    reason: string
+): ActivityEventInput[] {
+    const inputs: ActivityEventInput[] = [{
+        type: "product.updated",
+        operationKey: operationId,
+        productId: product.id,
+        productName: product.name,
+        before: snapshotProduct(previousProduct),
+        after: snapshotProduct(product),
+        reason
+    }];
+
+    for (const productVariant of product.variant) {
+        const previousVariant = previousProduct.variant.find(
+            (candidate) => candidate.id === productVariant.id
+        );
+        const previousPackagingIds = new Set(
+            previousVariant?.packagingHierarchy.map((level) => level.id) ?? []
+        );
+
+        for (const level of productVariant.packagingHierarchy) {
+            if (previousPackagingIds.has(level.id)) {
+                continue;
+            }
+
+            for (const record of nextInventory) {
+                if (
+                    record.productId !== product.id ||
+                    record.variantId !== productVariant.id
+                ) {
+                    continue;
+                }
+
+                const previousRecord = previousInventory.find(
+                    (candidate) => candidate.id === record.id
+                );
+                const previousQuantity = previousRecord
+                    ? getStockQuantityOrZero(previousRecord, level.id)
+                    : 0;
+                const newQuantity = getStockQuantityOrZero(record, level.id);
+                const quantityDifference = newQuantity - previousQuantity;
+                if (quantityDifference === 0) {
+                    continue;
+                }
+                if (quantityDifference < 0) {
+                    throw new Error(
+                        "Initial packaging stock cannot reduce an existing quantity."
+                    );
+                }
+
+                const adjustment: stockAdjustment = {
+                    id: crypto.randomUUID(),
+                    inventoryId: record.id,
+                    productId: record.productId,
+                    variantId: record.variantId,
+                    batchId: record.batchId,
+                    packagingLevelId: level.id,
+                    previousQuantity,
+                    newQuantity,
+                    quantityDifference,
+                    reason: `Initial stock added for packaging level ${level.name}`,
+                    createdAt: new Date()
+                };
+                inputs.push(buildStockAdjustmentActivityInput(
+                    adjustment,
+                    product,
+                    batches,
+                    operationId
+                ));
+            }
+        }
+    }
+
+    return inputs;
 }
 
 export function buildBatchUpdatedActivityInput(

@@ -102,10 +102,11 @@ describe("Sales draft domain", () => {
         expect(removed.updatedAt).toBe("2026-11-06T18:04:00.000Z");
     });
 
-    it("updates and clears optional customer, staff, and notes details", () => {
+    it("updates and clears optional customer, date, staff, and notes details", () => {
         const draft = updateSaleDraftDetails(makeDraft(), {
             customerName: "  Customer Name ",
             customerAddress: " 1 Main Street ",
+            saleDate: "2026-10-25",
             staffMember: {
                 userId: " staff-1 ",
                 displayName: " Pharmacist "
@@ -115,6 +116,7 @@ describe("Sales draft domain", () => {
         const cleared = updateSaleDraftDetails(draft, {
             customerName: null,
             customerAddress: "",
+            saleDate: null,
             staffMember: null,
             notes: null
         }, "2026-11-06T18:02:00.000Z");
@@ -122,6 +124,7 @@ describe("Sales draft domain", () => {
         expect(draft).toMatchObject({
             customerName: "Customer Name",
             customerAddress: "1 Main Street",
+            saleDate: "2026-10-25",
             staffMember: {
                 userId: "staff-1",
                 displayName: "Pharmacist"
@@ -130,6 +133,7 @@ describe("Sales draft domain", () => {
         });
         expect(cleared).not.toHaveProperty("customerName");
         expect(cleared).not.toHaveProperty("customerAddress");
+        expect(cleared).not.toHaveProperty("saleDate");
         expect(cleared).not.toHaveProperty("staffMember");
         expect(cleared).not.toHaveProperty("notes");
     });
@@ -138,6 +142,9 @@ describe("Sales draft domain", () => {
         expect(() => updateSaleDraftDetails(makeDraft(), {
             customerName: 42 as unknown as string
         }, later)).toThrow("Optional sale draft details must be strings");
+        expect(() => updateSaleDraftDetails(makeDraft(), {
+            saleDate: "2026-02-30"
+        }, later)).toThrow("Sale date must be a valid date");
         expect(() => updateSaleDraftDetails(makeDraft(), {
             staffMember: "staff" as unknown as { displayName: string }
         }, later)).toThrow("Sale draft staff member must be an object");

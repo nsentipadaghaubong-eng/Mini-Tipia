@@ -668,13 +668,6 @@ export default function InventoryPage({
                                         Edit Stock
                                     </button>
 
-                                    <button
-                                        className="product-delete-button"
-                                        type="button"
-                                    >
-                                        Delete
-                                    </button>
-
                                 </div>
 
                             </article>

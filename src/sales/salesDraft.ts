@@ -25,6 +25,7 @@ export interface SaleDraft {
     updatedAt: string;
     customerName?: string;
     customerAddress?: string;
+    saleDate?: string;
     staffMember?: SaleDraftStaffMember;
     notes?: string;
     items: SaleDraftItem[];
@@ -50,6 +51,7 @@ export interface SaleDraftItemChanges {
 export interface SaleDraftDetailsChanges {
     customerName?: string | null;
     customerAddress?: string | null;
+    saleDate?: string | null;
     staffMember?: SaleDraftStaffMember | null;
     notes?: string | null;
 }
@@ -263,6 +265,7 @@ export function validateSaleDraft(draft: SaleDraft): SaleDraft {
 
     const customerName = normalizeOptionalText(source.customerName);
     const customerAddress = normalizeOptionalText(source.customerAddress);
+    const saleDate = normalizeSaleDate(source.saleDate);
     const notes = normalizeOptionalText(source.notes);
     const staffMember = normalizeStaffMember(source.staffMember);
 
@@ -273,6 +276,7 @@ export function validateSaleDraft(draft: SaleDraft): SaleDraft {
         updatedAt,
         ...(customerName ? { customerName } : {}),
         ...(customerAddress ? { customerAddress } : {}),
+        ...(saleDate ? { saleDate } : {}),
         ...(staffMember ? { staffMember } : {}),
         ...(notes ? { notes } : {}),
         items
@@ -361,6 +365,23 @@ function normalizeOptionalText(value: unknown): string | undefined {
     return normalized === "" ? undefined : normalized;
 }
 
+export function normalizeSaleDate(value: unknown): string | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined;
+    }
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new Error("Sale date must be a valid date in YYYY-MM-DD format.");
+    }
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    if (
+        Number.isNaN(parsed.getTime()) ||
+        parsed.toISOString().slice(0, 10) !== value
+    ) {
+        throw new Error("Sale date must be a valid date in YYYY-MM-DD format.");
+    }
+    return value;
+}
+
 function normalizeStaffMember(
     member: unknown
 ): SaleDraftStaffMember | undefined {
@@ -408,6 +429,14 @@ export function updateSaleDraftDetails(
             delete nextDraft.customerAddress;
         } else {
             nextDraft.customerAddress = customerAddress;
+        }
+    }
+    if ("saleDate" in changes) {
+        const saleDate = normalizeSaleDate(changes.saleDate);
+        if (saleDate === undefined) {
+            delete nextDraft.saleDate;
+        } else {
+            nextDraft.saleDate = saleDate;
         }
     }
     if ("staffMember" in changes) {

@@ -25,7 +25,11 @@ import {
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import { getPackagingLevelById, getVariantById } from "../products/productValidation";
 import type { productStructure, variant } from "../products/productStructure";
-import { validateSaleDraft, type SaleDraft } from "./salesDraft";
+import {
+    normalizeSaleDate,
+    validateSaleDraft,
+    type SaleDraft
+} from "./salesDraft";
 
 export interface SaleStaffMember {
     userId?: string;
@@ -43,6 +47,7 @@ export interface SaleRequest {
     discountAmount?: number;
     customerName?: string;
     customerAddress?: string;
+    saleDate?: string;
     staffMember?: SaleStaffMember;
     notes?: string;
 }
@@ -89,6 +94,7 @@ export interface CompletedSale {
     readonly completedAt: string;
     readonly customerName?: string;
     readonly customerAddress?: string;
+    readonly saleDate?: string;
     readonly staffMember?: SaleStaffMember;
     readonly notes?: string;
     readonly items: readonly CompletedSaleItem[];
@@ -132,6 +138,7 @@ export interface SaleDraftPlan {
     draft: SaleDraft;
     customerName?: string;
     customerAddress?: string;
+    saleDate?: string;
     staffMember?: SaleStaffMember;
     notes?: string;
     linePlans: readonly SalePlan[];
@@ -492,6 +499,7 @@ export function prepareSale(
             discountAmount,
             customerName: normalizeOptionalText(request.customerName),
             customerAddress: normalizeOptionalText(request.customerAddress),
+            saleDate: normalizeSaleDate(request.saleDate),
             notes: normalizeOptionalText(request.notes),
             staffMember: request.staffMember
                 ? {
@@ -560,6 +568,7 @@ export function prepareSaleDraft(
             ...(draft.customerAddress
                 ? { customerAddress: draft.customerAddress }
                 : {}),
+            ...(draft.saleDate ? { saleDate: draft.saleDate } : {}),
             ...(draft.staffMember ? { staffMember: draft.staffMember } : {}),
             ...(draft.notes ? { notes: draft.notes } : {})
         };
@@ -600,6 +609,7 @@ export function prepareSaleDraft(
         draft,
         ...(draft.customerName ? { customerName: draft.customerName } : {}),
         ...(draft.customerAddress ? { customerAddress: draft.customerAddress } : {}),
+        ...(draft.saleDate ? { saleDate: draft.saleDate } : {}),
         ...(draft.staffMember ? { staffMember: draft.staffMember } : {}),
         ...(draft.notes ? { notes: draft.notes } : {}),
         linePlans,
@@ -682,6 +692,9 @@ export function completeSale(
     const customerAddress = "linePlans" in plan
         ? plan.customerAddress
         : firstPlan.request.customerAddress;
+    const saleDate = "linePlans" in plan
+        ? plan.saleDate
+        : firstPlan.request.saleDate;
     const staffMember = "linePlans" in plan
         ? plan.staffMember
         : firstPlan.request.staffMember;
@@ -691,6 +704,7 @@ export function completeSale(
         completedAt: completedAt.toISOString(),
         ...(customerName ? { customerName } : {}),
         ...(customerAddress ? { customerAddress } : {}),
+        ...(saleDate ? { saleDate } : {}),
         ...(staffMember ? { staffMember } : {}),
         ...(notes ? { notes } : {}),
         items: completedItems,
@@ -706,6 +720,7 @@ export function completeSale(
         saleId,
         ...(sale.customerName ? { customerName: sale.customerName } : {}),
         ...(sale.customerAddress ? { customerAddress: sale.customerAddress } : {}),
+        ...(sale.saleDate ? { saleDate: sale.saleDate } : {}),
         ...(sale.staffMember ? { staffMember: sale.staffMember } : {}),
         ...(sale.notes ? { notes: sale.notes } : {}),
         subtotal,

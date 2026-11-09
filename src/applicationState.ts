@@ -1,5 +1,6 @@
 import {
     appendActivityEvents,
+    buildProductDeletionActivityInput,
     snapshotBatch,
     snapshotPackagingLevel,
     snapshotProduct,
@@ -7,6 +8,7 @@ import {
     type ActivityEvent
 } from "./activity/activity";
 import type { inventory } from "./inventory/inventoryStock";
+import { getStockQuantityOrZero } from "./inventory/inventoryStock";
 import type { inventoryBatch } from "./inventory/inventoryBatch";
 import { validateInventoryRelationships } from "./inventory/inventoryValidation";
 import { demoInventory, demoInventoryBatches, demoProducts } from "./data/demoInventory";
@@ -44,6 +46,7 @@ import {
     type DeliveryDraftItemChanges
 } from "./deliveries/deliveryDraft";
 import type { DeliveryApprovalPlan } from "./deliveries/deliveryApproval";
+import { getProductDeletionBlockMessages } from "./products/productDeletion";
 
 export interface ApplicationState {
     products: productStructure[];
@@ -59,11 +62,13 @@ export type ApplicationAction =
     | {
         type: "product.catalogue_created";
         product: productStructure;
+        events: ActivityEvent[];
     }
     | {
         type: "product.variant_added";
         productId: string;
         variant: variant;
+        events: ActivityEvent[];
     }
     | {
         type: "product.created";
@@ -75,6 +80,11 @@ export type ApplicationAction =
         product: productStructure;
         inventoryRecords?: inventory[];
         inventoryBatches?: inventoryBatch[];
+        events: ActivityEvent[];
+    }
+    | {
+        type: "product.deleted";
+        productId: string;
         events: ActivityEvent[];
     }
     | {
@@ -200,6 +210,30 @@ export function applicationReducer(
 ): ApplicationState {
     switch (action.type) {
         case "product.catalogue_created": {
+            const event = action.events[0];
+            const operationKey = `product.created:${action.product.id}`;
+            if (
+                action.events.length !== 1 ||
+                event?.type !== "product.created" ||
+                event.operationKey !== operationKey ||
+                event.initialInventory.length !== 0 ||
+                JSON.stringify(event.product) !==
+                    JSON.stringify(snapshotProduct(action.product))
+            ) {
+                throw new Error(
+                    "A catalogue product creation requires matching product Activity."
+                );
+            }
+            const alreadyRecorded = state.activityEvents.some(
+                (existing) => existing.operationKey === operationKey
+            );
+            const productAlreadyExists = state.products.some(
+                (product) => product.id === action.product.id
+            );
+            if (alreadyRecorded && productAlreadyExists) {
+                return state;
+            }
+
             const existingIds = new Set([
                 ...state.products.flatMap((product) => [
                     product.id,
@@ -229,10 +263,29 @@ export function applicationReducer(
             );
             return {
                 ...state,
-                products: [action.product, ...state.products]
+                products: [action.product, ...state.products],
+                activityEvents: appendActivityEvents(
+                    state.activityEvents,
+                    action.events
+                )
             };
         }
         case "product.variant_added": {
+            const event = action.events[0];
+            const operationKey =
+                `product.variant_added:${action.productId}:${action.variant.id}`;
+            if (
+                action.events.length !== 1 ||
+                event?.type !== "product.variant_added" ||
+                event.operationKey !== operationKey ||
+                event.productId !== action.productId ||
+                JSON.stringify(event.variant) !==
+                    JSON.stringify(snapshotVariant(action.variant))
+            ) {
+                throw new Error(
+                    "A variant creation requires matching variant Activity."
+                );
+            }
             const productIndex = state.products.findIndex(
                 (product) => product.id === action.productId
             );
@@ -240,6 +293,20 @@ export function applicationReducer(
                 throw new Error(`Product not found: ${action.productId}`);
             }
             const product = state.products[productIndex];
+            const variantAlreadyExists = product.variant.some(
+                (productVariant) => productVariant.id === action.variant.id
+            );
+            const alreadyRecorded = state.activityEvents.some(
+                (existing) => existing.operationKey === operationKey
+            );
+            if (alreadyRecorded && variantAlreadyExists) {
+                return state;
+            }
+            if (event.productName !== product.name) {
+                throw new Error(
+                    "A variant creation requires matching product Activity."
+                );
+            }
             const existingIds = new Set([
                 ...state.products.flatMap((item) => [
                     item.id,
@@ -267,7 +334,14 @@ export function applicationReducer(
                 ...product,
                 variant: [...product.variant, action.variant]
             };
-            return { ...state, products };
+            return {
+                ...state,
+                products,
+                activityEvents: appendActivityEvents(
+                    state.activityEvents,
+                    action.events
+                )
+            };
         }
         case "product.created": {
             const operationKey = `product.created:${action.result.product.id}`;
@@ -304,13 +378,96 @@ export function applicationReducer(
                 )
             };
         }
-        case "product.updated": {
+        case "product.deleted": {
+            const productMatches = state.products.filter(
+                (product) => product.id === action.productId
+            );
+            if (productMatches.length !== 1) {
+                throw new Error(`Product not found: ${action.productId}`);
+            }
+            const [product] = productMatches;
+            const blockers = getProductDeletionBlockMessages(
+                action.productId,
+                state.saleDrafts,
+                state.deliveryDrafts
+            );
+            if (blockers.length > 0) {
+                throw new Error(blockers.join(" "));
+            }
+
+            const [event] = action.events;
+            const operationKeyPrefix = `product.deleted:${product.id}:`;
             if (
-                action.events.length === 0 ||
+                action.events.length !== 1 ||
+                event?.type !== "product.deleted" ||
+                event.productId !== product.id ||
+                event.productName !== product.name ||
+                !event.operationKey.startsWith(operationKeyPrefix) ||
+                event.operationKey.length === operationKeyPrefix.length ||
+                !event.eventId.trim() ||
+                !Number.isFinite(Date.parse(event.occurredAt))
+            ) {
+                throw new Error("A product deletion requires matching Activity.");
+            }
+
+            const expectedEvent = buildProductDeletionActivityInput(
+                product,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                event.operationKey
+            );
+            if (
+                expectedEvent.type !== "product.deleted" ||
+                JSON.stringify(event.product) !==
+                    JSON.stringify(expectedEvent.product) ||
+                JSON.stringify(event.inventory) !==
+                    JSON.stringify(expectedEvent.inventory) ||
+                JSON.stringify(event.batches) !==
+                    JSON.stringify(expectedEvent.batches)
+            ) {
+                throw new Error(
+                    "Product deletion Activity does not match the current product and inventory."
+                );
+            }
+            if (state.activityEvents.some(
+                (existing) => existing.operationKey === event.operationKey
+            )) {
+                throw new Error("Product deletion Activity was already recorded.");
+            }
+
+            const activityEvents = appendActivityEvents(
+                state.activityEvents,
+                [event]
+            );
+            if (activityEvents.length !== state.activityEvents.length + 1) {
+                throw new Error("Product deletion Activity could not be recorded.");
+            }
+
+            return {
+                ...state,
+                products: state.products.filter(
+                    (candidate) => candidate.id !== product.id
+                ),
+                inventoryRecords: state.inventoryRecords.filter(
+                    (record) => record.productId !== product.id
+                ),
+                inventoryBatches: state.inventoryBatches.filter(
+                    (batch) => batch.productId !== product.id
+                ),
+                activityEvents
+            };
+        }
+        case "product.updated": {
+            const updateEvents = action.events.filter(
+                (event) => event.type === "product.updated"
+            );
+            if (
+                updateEvents.length !== 1 ||
+                updateEvents[0].productId !== action.product.id ||
                 action.events.some(
                     (event) =>
-                        event.type !== "product.updated" ||
-                        event.productId !== action.product.id
+                        event.type !== "product.updated" &&
+                        event.type !== "inventory.stock_adjusted"
                 )
             ) {
                 throw new Error("A product update requires matching update Activity.");
@@ -334,14 +491,102 @@ export function applicationReducer(
                 throw new Error(`Product not found: ${action.product.id}`);
             }
 
+            const nextInventoryRecords =
+                action.inventoryRecords ?? state.inventoryRecords;
+            const nextInventoryBatches =
+                action.inventoryBatches ?? state.inventoryBatches;
+            const previousProduct = state.products[productIndex];
+            for (const event of action.events) {
+                if (event.type !== "inventory.stock_adjusted") {
+                    continue;
+                }
+
+                const record = nextInventoryRecords.find(
+                    (candidate) => candidate.id === event.inventoryId
+                );
+                const previousRecord = state.inventoryRecords.find(
+                    (candidate) => candidate.id === event.inventoryId
+                );
+                const productVariant = action.product.variant.find(
+                    (candidate) => candidate.id === event.variantId
+                );
+                const previousVariant = previousProduct.variant.find(
+                    (candidate) => candidate.id === event.variantId
+                );
+                const packagingLevel = productVariant?.packagingHierarchy.find(
+                    (candidate) =>
+                        candidate.id === event.packagingLevel.packagingLevelId
+                );
+                const wasExistingPackaging = previousVariant?.packagingHierarchy.some(
+                    (candidate) => candidate.id === event.packagingLevel.packagingLevelId
+                ) ?? false;
+                const batch = record?.batchId === null
+                    ? null
+                    : nextInventoryBatches.find(
+                        (candidate) =>
+                            candidate.batchId === record?.batchId &&
+                            candidate.productId === event.productId &&
+                            candidate.variantId === event.variantId
+                    );
+                if (
+                    !record ||
+                    !productVariant ||
+                    !packagingLevel ||
+                    wasExistingPackaging ||
+                    record.productId !== action.product.id ||
+                    record.variantId !== event.variantId ||
+                    event.productId !== action.product.id ||
+                    event.productName !== action.product.name ||
+                    event.variantName !== productVariant.variantName ||
+                    (record.batchId !== null && !batch) ||
+                    !event.operationKey.startsWith("inventory.stock_adjusted:") ||
+                    !event.operationKey.endsWith(
+                        `:${record.id}:${packagingLevel.id}`
+                    ) ||
+                    !event.reason.trim() ||
+                    JSON.stringify(event.packagingLevel) !==
+                        JSON.stringify(snapshotPackagingLevel(
+                            packagingLevel,
+                            productVariant.packagingHierarchy
+                        )) ||
+                    JSON.stringify(event.batch) !==
+                        JSON.stringify(batch ? snapshotBatch(batch, action.product) : null)
+                ) {
+                    throw new Error(
+                        "A packaging stock change requires matching inventory Activity."
+                    );
+                }
+
+                const previousQuantity = previousRecord
+                    ? getStockQuantityOrZero(
+                        previousRecord,
+                        packagingLevel.id
+                    )
+                    : 0;
+                const newQuantity = getStockQuantityOrZero(
+                    record,
+                    packagingLevel.id
+                );
+                if (
+                    event.previousQuantity !== previousQuantity ||
+                    event.newQuantity !== newQuantity ||
+                    event.quantityDifference !== newQuantity - previousQuantity ||
+                    event.quantityDifference === 0
+                ) {
+                    throw new Error(
+                        "Packaging stock Activity does not match the committed quantity."
+                    );
+                }
+            }
+
             const products = [...state.products];
             products[productIndex] = action.product;
 
             return {
                 ...state,
                 products,
-                inventoryRecords: action.inventoryRecords ?? state.inventoryRecords,
-                inventoryBatches: action.inventoryBatches ?? state.inventoryBatches,
+                inventoryRecords: nextInventoryRecords,
+                inventoryBatches: nextInventoryBatches,
                 activityEvents: appendActivityEvents(
                     state.activityEvents,
                     action.events
@@ -694,6 +939,7 @@ export function applicationReducer(
                 ...(sale.customerAddress
                     ? { customerAddress: sale.customerAddress }
                     : {}),
+                ...(sale.saleDate ? { saleDate: sale.saleDate } : {}),
                 ...(sale.staffMember ? { staffMember: sale.staffMember } : {}),
                 ...(sale.notes ? { notes: sale.notes } : {}),
                 items: sale.items.map((item) => ({
@@ -764,6 +1010,7 @@ export function applicationReducer(
                 activity.expiredBatchConfirmed !== sale.expiredBatchConfirmed ||
                 activity.customerName !== sale.customerName ||
                 activity.customerAddress !== sale.customerAddress ||
+                activity.saleDate !== sale.saleDate ||
                 JSON.stringify(activity.staffMember) !== JSON.stringify(sale.staffMember) ||
                 activity.actorId !== sale.staffMember?.userId ||
                 activity.notes !== sale.notes ||
@@ -817,6 +1064,7 @@ export function applicationReducer(
                     expectedDraft.items.length === sale.items.length &&
                     expectedDraft.customerName === sale.customerName &&
                     expectedDraft.customerAddress === sale.customerAddress &&
+                    expectedDraft.saleDate === sale.saleDate &&
                     JSON.stringify(expectedDraft.staffMember) ===
                         JSON.stringify(sale.staffMember) &&
                     expectedDraft.notes === sale.notes &&
@@ -1073,10 +1321,63 @@ export function applicationReducer(
                 JSON.stringify(receivedDraft.items) !==
                     JSON.stringify(currentDraft.items) ||
                 receivedDraft.deliveryId !== currentDraft.deliveryId ||
+                receivedDraft.deliveryDate !== currentDraft.deliveryDate ||
+                receivedDraft.receivedBy !== currentDraft.receivedBy ||
+                receivedDraft.supplier !== currentDraft.supplier ||
+                receivedDraft.invoiceNumber !== currentDraft.invoiceNumber ||
                 event.type !== "delivery.received" ||
                 event.deliveryId !== currentDraft.deliveryId ||
+                event.deliveryDate !== currentDraft.deliveryDate ||
+                event.receivedBy !== currentDraft.receivedBy ||
+                event.supplierName !== (currentDraft.supplier ?? null) ||
+                event.invoiceNumber !== (currentDraft.invoiceNumber ?? null) ||
                 event.operationKey !== `delivery.received:${currentDraft.deliveryId}` ||
-                event.items.length !== currentDraft.items.length
+                !Number.isFinite(Date.parse(event.occurredAt)) ||
+                event.items.length !== currentDraft.items.length ||
+                !event.items.every((activityItem, index) => {
+                    const draftItem = currentDraft.items[index];
+                    if (!draftItem) {
+                        return false;
+                    }
+                    const product = state.products.find(
+                        (candidate) => candidate.id === draftItem.productId
+                    );
+                    const productVariant = product?.variant.find(
+                        (candidate) => candidate.id === draftItem.variantId
+                    );
+                    const packagingLevel = productVariant?.packagingHierarchy.find(
+                        (candidate) => candidate.id === draftItem.packagingLevelId
+                    );
+                    const batch = plan.inventoryBatches.find(
+                        (candidate) => candidate.batchId === activityItem.batch?.batchId
+                    );
+                    const stock = activityItem.stock[0];
+                    if (!product || !productVariant || !packagingLevel || !batch || !stock) {
+                        return false;
+                    }
+                    return (
+                        activityItem.productId === draftItem.productId &&
+                        activityItem.productName === product.name &&
+                        activityItem.variantId === draftItem.variantId &&
+                        activityItem.variantName === productVariant.variantName &&
+                        activityItem.stock.length === 1 &&
+                        stock.packagingLevel.packagingLevelId ===
+                            draftItem.packagingLevelId &&
+                        JSON.stringify(stock.packagingLevel) ===
+                            JSON.stringify(snapshotPackagingLevel(
+                                packagingLevel,
+                                productVariant.packagingHierarchy
+                            )) &&
+                        stock.quantity === draftItem.quantity &&
+                        batch.productId === draftItem.productId &&
+                        batch.variantId === draftItem.variantId &&
+                        batch.batchNumber === draftItem.batchNumber &&
+                        (batch.expiryDate?.toISOString().slice(0, 10) ?? null) ===
+                            draftItem.expiryDate &&
+                        JSON.stringify(activityItem.batch) ===
+                            JSON.stringify(snapshotBatch(batch, product))
+                    );
+                })
             ) {
                 throw new Error("Delivery approval does not match the active draft.");
             }

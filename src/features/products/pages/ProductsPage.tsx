@@ -20,6 +20,9 @@ import {
 import CreateProductModal from "../components/CreateProductModal";
 import ProductEditModal from "../components/ProductEditModal";
 import type { ProductCreationResult } from "../../../products/productCreation";
+import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
+import type { SaleDraft } from "../../../sales/salesDraft";
+import { getProductDeletionBlockMessages } from "../../../products/productDeletion";
 import {
     createInventoryManageIntent,
     isProductEditContextValid,
@@ -34,7 +37,12 @@ interface ProductsPageProps {
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
     onCreateProduct: (result: ProductCreationResult) => void;
+    onDeleteProduct: (
+        productId: string
+    ) => { success: true } | { success: false; error: string };
     onUpdateProduct: (product: productStructure, reason: string) => void;
+    saleDrafts: SaleDraft[];
+    deliveryDrafts: DeliveryDraft[];
     navigationRequest: NavigationRequest | null;
     onNavigate: (intent: NavigationIntent) => void;
     onNavigationConsumed: (requestId: number, handled: boolean) => void;
@@ -360,7 +368,10 @@ export default function ProductsPage({
     inventoryRecords,
     inventoryBatches,
     onCreateProduct,
+    onDeleteProduct,
     onUpdateProduct,
+    saleDrafts,
+    deliveryDrafts,
     navigationRequest,
     onNavigate,
     onNavigationConsumed,
@@ -378,6 +389,10 @@ export default function ProductsPage({
     const [editingProductId, setEditingProductId] = useState<string | null>(
         null
     );
+    const [pendingDeletionProductId, setPendingDeletionProductId] =
+        useState<string | null>(null);
+    const [deletionErrors, setDeletionErrors] = useState<string[]>([]);
+    const [isDeletingProduct, setIsDeletingProduct] = useState(false);
     const handledNavigationRequestId = useRef<number | null>(null);
     useEffect(() => {
         if (
@@ -440,13 +455,22 @@ export default function ProductsPage({
     );
 
     useEffect(() => {
-        if (!selectedProduct && !editingProduct) {
+        if (
+            !selectedProduct &&
+            !editingProduct &&
+            !pendingDeletionProductId &&
+            deletionErrors.length === 0
+        ) {
             return;
         }
 
         function handleKeyDown(event: KeyboardEvent) {
             if (event.key === "Escape") {
-                if (selectedProduct) {
+                if (deletionErrors.length > 0) {
+                    setDeletionErrors([]);
+                } else if (pendingDeletionProductId) {
+                    setPendingDeletionProductId(null);
+                } else if (selectedProduct) {
                     if (navigationRequest?.intent.type === "product.view") {
                         onNavigationDismissed(navigationRequest.requestId);
                     }
@@ -463,7 +487,53 @@ export default function ProductsPage({
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [editingProduct, navigationRequest, onNavigationDismissed, selectedProduct]);
+    }, [
+        editingProduct,
+        navigationRequest,
+        onNavigationDismissed,
+        pendingDeletionProductId,
+        deletionErrors,
+        selectedProduct
+    ]);
+
+    function requestProductDeletion(productId: string) {
+        setDeletionErrors([]);
+        const blockers = getProductDeletionBlockMessages(
+            productId,
+            saleDrafts,
+            deliveryDrafts
+        );
+        if (blockers.length > 0) {
+            setDeletionErrors(blockers);
+            return;
+        }
+        setPendingDeletionProductId(productId);
+    }
+
+    function confirmProductDeletion() {
+        if (!pendingDeletionProductId || isDeletingProduct) {
+            return;
+        }
+
+        const blockers = getProductDeletionBlockMessages(
+            pendingDeletionProductId,
+            saleDrafts,
+            deliveryDrafts
+        );
+        if (blockers.length > 0) {
+            setPendingDeletionProductId(null);
+            setDeletionErrors(blockers);
+            return;
+        }
+
+        setIsDeletingProduct(true);
+        const result = onDeleteProduct(pendingDeletionProductId);
+        setIsDeletingProduct(false);
+        setPendingDeletionProductId(null);
+        if (!result.success) {
+            setDeletionErrors([result.error]);
+        }
+    }
 
     function openProductEdit(productId: string) {
         if (navigationRequest) {
@@ -613,10 +683,9 @@ export default function ProductsPage({
                                 Edit
                             </button>
                             <button
-                                aria-label={`Delete ${product.name} (not available yet)`}
-                                className="product-delete-button products-unavailable-action"
-                                disabled
-                                title="Product deletion is not available yet."
+                                aria-label={`Delete ${product.name}`}
+                                className="product-delete-button"
+                                onClick={() => requestProductDeletion(product.id)}
                                 type="button"
                             >
                                 Delete
@@ -629,6 +698,90 @@ export default function ProductsPage({
                 <p className="products-empty-state" role="status">
                     {emptyMessage}
                 </p>
+            )}
+            {deletionErrors.length > 0 && (
+                <div className="inventory-modal-overlay">
+                    <section
+                        aria-describedby="product-deletion-blocked-description"
+                        aria-labelledby="product-deletion-blocked-title"
+                        aria-modal="true"
+                        className="inventory-modal product-deletion-dialog"
+                        role="alertdialog"
+                    >
+                        <div className="inventory-modal-header">
+                            <div>
+                                <h2 id="product-deletion-blocked-title">
+                                    Product cannot be deleted
+                                </h2>
+                            </div>
+                        </div>
+                        <div className="inventory-modal-content">
+                            <div id="product-deletion-blocked-description">
+                                {deletionErrors.map((message) => (
+                                    <p key={message}>{message}</p>
+                                ))}
+                            </div>
+                            <div className="product-deletion-actions">
+                                <button
+                                    autoFocus
+                                    className="secondary-button"
+                                    onClick={() => setDeletionErrors([])}
+                                    type="button"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            )}
+
+            {pendingDeletionProductId && (
+                <div className="inventory-modal-overlay">
+                    <section
+                        aria-describedby="product-deletion-description"
+                        aria-labelledby="product-deletion-title"
+                        aria-modal="true"
+                        className="inventory-modal product-deletion-dialog"
+                        role="alertdialog"
+                    >
+                        <div className="inventory-modal-header">
+                            <div>
+                                <h2 id="product-deletion-title">
+                                    Delete {products.find(
+                                        (product) =>
+                                            product.id === pendingDeletionProductId
+                                    )?.name ?? "product"}?
+                                </h2>
+                            </div>
+                        </div>
+                        <div className="inventory-modal-content">
+                            <p id="product-deletion-description">
+                                Deleting this product is permanent and cannot be undone.
+                                Its associated inventory and batches will also be deleted.
+                            </p>
+                            <div className="product-deletion-actions">
+                                <button
+                                    autoFocus
+                                    className="secondary-button"
+                                    disabled={isDeletingProduct}
+                                    onClick={() => setPendingDeletionProductId(null)}
+                                    type="button"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    className="product-delete-button"
+                                    disabled={isDeletingProduct}
+                                    onClick={confirmProductDeletion}
+                                    type="button"
+                                >
+                                    Delete permanently
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
             )}
 
             {isCreatingProduct && (

@@ -15,7 +15,11 @@ import {
     applicationReducer,
     createInitialApplicationState
 } from "../../../applicationState";
-import { prepareActivityEvents } from "../../../activity/activity";
+import {
+    buildProductCreationActivityInputs,
+    prepareActivityEvents,
+    snapshotVariant
+} from "../../../activity/activity";
 import type { ApplicationState } from "../../../applicationState";
 import { createDeliveryDraft } from "../../../deliveries/deliveryDraft";
 import { prepareDeliveryApproval } from "../../../deliveries/deliveryApproval";
@@ -148,7 +152,10 @@ function renderPage(
                 }
                 onApproveDelivery={(deliveryId) => {
                     if (approveWithoutCommit) {
-                        return { success: true };
+                        return {
+                            success: false,
+                            error: "The delivery could not be committed."
+                        };
                     }
                     try {
                         const draft = state.deliveryDrafts.find(
@@ -183,13 +190,33 @@ function renderPage(
                 }}
                 onCatalogueProductCreated={(product) => dispatch({
                     type: "product.catalogue_created",
-                    product
+                    product,
+                    events: prepareActivityEvents(
+                        buildProductCreationActivityInputs(product, [], [])
+                    )
                 })}
-                onVariantCreated={(productId, productVariant) => dispatch({
-                    type: "product.variant_added",
-                    productId,
-                    variant: productVariant
-                })}
+                onVariantCreated={(productId, productVariant) => {
+                    const product = latestState.products.find(
+                        (candidate) => candidate.id === productId
+                    );
+                    if (!product) {
+                        throw new Error(`Product not found: ${productId}`);
+                    }
+                    dispatch({
+                        type: "product.variant_added",
+                        productId,
+                        variant: productVariant,
+                        events: prepareActivityEvents([{
+                            type: "product.variant_added",
+                            operationKey:
+                                `product.variant_added:${productId}:${productVariant.id}`,
+                            productId,
+                            productName: product.name,
+                            variant: snapshotVariant(productVariant),
+                            reason: "Added through Receive Delivery"
+                        }])
+                    });
+                }}
             />
         );
     }
@@ -207,6 +234,10 @@ function fillRequiredHeader(receivedBy = "Pharmacist A") {
     fireEvent.change(screen.getByLabelText(/Received By/), {
         target: { value: receivedBy }
     });
+}
+
+function clickVariant(name: string) {
+    fireEvent.click(screen.getByRole("button", { name }));
 }
 
 describe("Receive Delivery page", () => {
@@ -276,9 +307,7 @@ describe("Receive Delivery page", () => {
         fireEvent.click(screen.getByRole("option", {
             name: "Select product Example medicine"
         }));
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-1" }
-        });
+        clickVariant("10 mg tablets");
 
         let dialog = screen.getByRole("dialog", { name: "Receive Item" });
         fireEvent.change(within(dialog).getByLabelText("Packaging level received"), {
@@ -296,12 +325,8 @@ describe("Receive Delivery page", () => {
             receivedBy: "",
             items: [{ quantity: 2 }]
         });
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "" }
-        });
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-1" }
-        });
+        clickVariant("10 mg tablets");
+        clickVariant("10 mg tablets");
         dialog = screen.getByRole("dialog", { name: "Receive Item" });
         fireEvent.change(within(dialog).getByLabelText("Packaging level received"), {
             target: { value: "bottle" }
@@ -351,11 +376,10 @@ describe("Receive Delivery page", () => {
         }));
 
         expect(screen.getByText("Example medicine")).toBeVisible();
-        expect(screen.getByLabelText("Select variant")).toHaveValue("");
+        expect(screen.getByRole("button", { name: "10 mg tablets" }))
+            .toHaveAttribute("aria-pressed", "false");
         expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-1" }
-        });
+        clickVariant("10 mg tablets");
         expect(page.state.deliveryDrafts).toEqual([]);
         expect(page.state.inventoryRecords).toBe(initial.inventoryRecords);
         expect(page.state.inventoryBatches).toBe(initial.inventoryBatches);
@@ -399,9 +423,7 @@ describe("Receive Delivery page", () => {
         fireEvent.click(screen.getByRole("option", {
             name: "Select product Example medicine"
         }));
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-1" }
-        });
+        clickVariant("10 mg tablets");
 
         expect(screen.getByLabelText("Search products")).toBeVisible();
         expect(screen.queryByRole("button", { name: "Change Product" }))
@@ -513,9 +535,7 @@ describe("Receive Delivery page", () => {
         fireEvent.click(screen.getByRole("option", {
             name: "Select product Example medicine"
         }));
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-1" }
-        });
+        clickVariant("10 mg tablets");
 
         const dialog = screen.getByRole("dialog", { name: "Receive Item" });
         fireEvent.change(within(dialog).getByLabelText("Packaging level received"), {
@@ -563,9 +583,7 @@ describe("Receive Delivery page", () => {
         fireEvent.click(screen.getByRole("option", {
             name: "Select product Example medicine"
         }));
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-1" }
-        });
+        clickVariant("10 mg tablets");
 
         for (const [batchNumber, expiryDate] of [
             ["LOT-A", "2027-12-31"],
@@ -588,12 +606,8 @@ describe("Receive Delivery page", () => {
                 name: "Add to Delivery"
             }));
             if (batchNumber === "LOT-A") {
-                fireEvent.change(screen.getByLabelText("Select variant"), {
-                    target: { value: "" }
-                });
-                fireEvent.change(screen.getByLabelText("Select variant"), {
-                    target: { value: "variant-1" }
-                });
+                clickVariant("10 mg tablets");
+                clickVariant("10 mg tablets");
             }
         }
 
@@ -633,7 +647,8 @@ describe("Receive Delivery page", () => {
         fireEvent.click(screen.getByRole("option", {
             name: "Select product Another medicine"
         }));
-        expect(screen.getByLabelText("Select variant")).toHaveValue("");
+        expect(screen.getByRole("button", { name: "Liquid" }))
+            .toHaveAttribute("aria-pressed", "false");
         expect(page.state.deliveryDrafts[0].items).toHaveLength(1);
         expect(page.state.deliveryDrafts[0].items[0].batchNumber)
             .toBe("LOT-A-EDITED");
@@ -654,7 +669,7 @@ describe("Receive Delivery page", () => {
             .toBeVisible();
     });
 
-    it("creates and selects a catalogue product without stock, Activity, or a delivery draft", () => {
+    it("creates a catalogue product without stock or a delivery draft", () => {
         const initial = makeState();
         const page = renderPage(initial);
         fireEvent.change(screen.getByLabelText("Supplier"), {
@@ -684,6 +699,44 @@ describe("Receive Delivery page", () => {
         expect(screen.getByLabelText("Supplier")).toHaveValue("Preferred supplier");
         expect(screen.getByLabelText("Received By *")).toHaveValue("Pharmacist A");
         expect(page.state.products[0].name).toBe("Brand New Product");
+        expect(page.state.inventoryRecords).toBe(initial.inventoryRecords);
+        expect(page.state.inventoryBatches).toBe(initial.inventoryBatches);
+        expect(page.state.activityEvents).toHaveLength(1);
+        expect(page.state.activityEvents[0]).toMatchObject({
+            type: "product.created",
+            product: {
+                productId: page.state.products[0].id,
+                productName: "Brand New Product"
+            },
+            initialInventory: []
+        });
+        expect(page.state.deliveryDrafts).toEqual([]);
+    });
+
+    it("does not record catalogue or variant creation when their dialogs are cancelled", () => {
+        const initial = makeState();
+        const page = renderPage(initial);
+
+        fireEvent.change(screen.getByLabelText("Search products"), {
+            target: { value: "new catalogue product" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Create New Product" }));
+        fireEvent.click(within(screen.getByRole("dialog", {
+            name: "Create Product"
+        })).getByRole("button", { name: "Cancel" }));
+
+        fireEvent.change(screen.getByLabelText("Search products"), {
+            target: { value: "Example medicine" }
+        });
+        fireEvent.click(screen.getByRole("option", {
+            name: "Select product Example medicine"
+        }));
+        fireEvent.click(screen.getByRole("button", { name: "Add New Variant" }));
+        fireEvent.click(within(screen.getByRole("dialog", {
+            name: "Add Variant"
+        })).getByRole("button", { name: "Cancel" }));
+
+        expect(page.state.products).toEqual(initial.products);
         expect(page.state.inventoryRecords).toBe(initial.inventoryRecords);
         expect(page.state.inventoryBatches).toBe(initial.inventoryBatches);
         expect(page.state.activityEvents).toBe(initial.activityEvents);
@@ -717,10 +770,9 @@ describe("Receive Delivery page", () => {
         fireEvent.click(screen.getByRole("option", {
             name: "Select product Example medicine"
         }));
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-1" }
-        });
-        expect(screen.getByLabelText("Select variant")).toHaveValue("variant-1");
+        clickVariant("10 mg tablets");
+        expect(screen.getByRole("button", { name: "10 mg tablets" }))
+            .toHaveAttribute("aria-pressed", "true");
         expect(screen.getByRole("dialog", { name: "Receive Item" }))
             .toBeVisible();
         fireEvent.click(within(screen.getByRole("dialog", {
@@ -737,20 +789,19 @@ describe("Receive Delivery page", () => {
             name: "Select product Another medicine"
         }));
 
-        expect(screen.getByLabelText("Select variant")).toHaveValue("");
+        expect(screen.getByRole("button", { name: "Liquid" }))
+            .toHaveAttribute("aria-pressed", "false");
         expect(screen.queryByRole("dialog", { name: "Receive Item" }))
             .not.toBeInTheDocument();
-        expect(screen.getByRole("option", { name: "Liquid" })).toBeInTheDocument();
-        expect(screen.queryByRole("option", { name: "10 mg tablets" }))
+        expect(screen.getByRole("button", { name: "Liquid" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "10 mg tablets" }))
             .not.toBeInTheDocument();
-        fireEvent.change(screen.getByLabelText("Select variant"), {
-            target: { value: "variant-2" }
-        });
+        clickVariant("Liquid");
         expect(screen.getByRole("dialog", { name: "Receive Item" }))
             .toBeVisible();
     });
 
-    it("adds a variant to the selected product and auto-selects it without changing stock or drafts", () => {
+    it("records a new variant without changing stock or drafts", () => {
         const initial = makeState();
         const page = renderPage(initial);
         fireEvent.change(screen.getByLabelText("Search products"), {
@@ -759,7 +810,7 @@ describe("Receive Delivery page", () => {
         fireEvent.click(screen.getByRole("option", {
             name: "Select product Example medicine"
         }));
-        fireEvent.click(screen.getByRole("button", { name: "Add Variant" }));
+        fireEvent.click(screen.getByRole("button", { name: "Add New Variant" }));
 
         expect(screen.getByRole("dialog", { name: "Add Variant" }))
             .toHaveTextContent("For Example medicine");
@@ -785,13 +836,21 @@ describe("Receive Delivery page", () => {
                 sellingPrice: 15.5
             }]
         });
-        expect(screen.getByLabelText("Select variant"))
-            .toHaveValue(addedVariant?.id);
+        expect(screen.getByRole("button", { name: "Capsule" }))
+            .toHaveAttribute("aria-pressed", "true");
         expect(screen.getByRole("dialog", { name: "Receive Item" }))
             .toBeVisible();
         expect(page.state.inventoryRecords).toBe(initial.inventoryRecords);
         expect(page.state.inventoryBatches).toBe(initial.inventoryBatches);
-        expect(page.state.activityEvents).toBe(initial.activityEvents);
+        expect(page.state.activityEvents).toHaveLength(1);
+        expect(page.state.activityEvents[0]).toMatchObject({
+            type: "product.variant_added",
+            productId: initial.products[0].id,
+            variant: {
+                variantId: addedVariant?.id,
+                variantName: "Capsule"
+            }
+        });
         expect(page.state.deliveryDrafts).toEqual([]);
     });
 
@@ -806,7 +865,15 @@ describe("Receive Delivery page", () => {
         expect(screen.queryByText("Received by is required."))
             .not.toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Approve Delivery" }));
-        expect(screen.getByText("Received by is required.")).toBeVisible();
+        const receivedByError = screen.getByRole("alert");
+        expect(receivedByError).toHaveTextContent(
+            "Please enter the name of the person who received this delivery."
+        );
+        expect(receivedByError.previousElementSibling)
+            .toBe(screen.getByRole("button", { name: "Approve Delivery" }));
+        expect(screen.getByText("Received by is required.", {
+            selector: ".delivery-field-error"
+        })).toBeVisible();
         expect(screen.getByLabelText(/Received By/))
             .toHaveAttribute("aria-invalid", "true");
         expect(page.state.deliveryDrafts[0].status).toBe("draft");
@@ -816,6 +883,7 @@ describe("Receive Delivery page", () => {
         expect(page.state.activityEvents).toEqual(initial.activityEvents);
 
         fillRequiredHeader("Pharmacist");
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
         fireEvent.change(screen.getByLabelText("Delivery Date *"), {
             target: { value: "" }
         });
@@ -824,10 +892,9 @@ describe("Receive Delivery page", () => {
             deliveryDate: ""
         });
         fireEvent.click(screen.getByRole("button", { name: "Approve Delivery" }));
-        expect(screen.getByText(
+        expect(screen.getByRole("alert")).toHaveTextContent(
             "Delivery date must be a valid date in YYYY-MM-DD format."
-        ))
-            .toBeVisible();
+        );
         expect(screen.getByLabelText(/Delivery Date/))
             .toHaveAttribute("aria-invalid", "true");
         expect(page.state.deliveryDrafts[0].status).toBe("draft");
@@ -855,10 +922,164 @@ describe("Receive Delivery page", () => {
         expect(screen.getByText(/Delivery received successfully/)).toBeVisible();
         expect(screen.queryByRole("button", { name: "Approve Delivery" }))
             .not.toBeInTheDocument();
+        expect(screen.getByLabelText("Supplier")).toBeEnabled();
+        expect(screen.getByLabelText("Invoice Number")).toBeEnabled();
+        expect(screen.getByLabelText("Delivery Date *")).toBeEnabled();
+        expect(screen.getByLabelText("Received By *")).toBeEnabled();
+        expect(screen.getByLabelText("Supplier")).toHaveValue("");
+        expect(page.state.deliveryDrafts[0].status).toBe("received");
 
         expect(page.state.inventoryBatches).not.toBe(initial.inventoryBatches);
         expect(page.state.activityEvents).not.toBe(initial.activityEvents);
         expect(page.state.deliveryDrafts[0].items).toEqual(draft.items);
+    });
+
+    it("starts a fresh delivery after receipt and supports a second complete stock-in", () => {
+        const firstDraft = draftWithItem("delivery-first", "First supplier");
+        const page = renderPage(makeState([firstDraft]));
+
+        fireEvent.click(screen.getByRole("button", { name: "Approve Delivery" }));
+
+        const firstReceivedDraft = page.state.deliveryDrafts[0];
+        const firstReceivedEvent = structuredClone(page.state.activityEvents[0]);
+        const firstInventory = structuredClone(page.state.inventoryRecords);
+        expect(firstReceivedDraft.status).toBe("received");
+        expect(firstInventory[0].stockQuantities[0].quantity).toBe(4);
+        expect(page.state.activityEvents.filter(
+            (event) => event.type === "delivery.received"
+        )).toHaveLength(1);
+
+        expect(screen.getByLabelText("Supplier")).toHaveValue("");
+        expect(screen.getByLabelText("Invoice Number")).toHaveValue("");
+        expect(screen.getByLabelText("Received By *")).toHaveValue("");
+        expect(screen.getByLabelText("Supplier")).toBeEnabled();
+        expect(screen.getByLabelText("Delivery Date *")).toBeEnabled();
+        fireEvent.change(screen.getByLabelText("Supplier"), {
+            target: { value: "Second supplier" }
+        });
+        fireEvent.change(screen.getByLabelText("Invoice Number"), {
+            target: { value: "REF-SECOND" }
+        });
+        fireEvent.change(screen.getByLabelText("Delivery Date *"), {
+            target: { value: "2026-11-08" }
+        });
+        fillRequiredHeader("Pharmacist B");
+
+        fireEvent.change(screen.getByLabelText("Search products"), {
+            target: { value: "Example medicine" }
+        });
+        fireEvent.click(screen.getByRole("option", {
+            name: "Select product Example medicine"
+        }));
+        const existingVariantButton = screen.getByRole("button", {
+            name: "10 mg tablets"
+        });
+        expect(existingVariantButton).toBeEnabled();
+        clickVariant("10 mg tablets");
+        const existingVariantModal = screen.getByRole("dialog", {
+            name: "Receive Item"
+        });
+        fireEvent.change(within(existingVariantModal).getByLabelText(
+            "Packaging level received"
+        ), { target: { value: "box" } });
+        fireEvent.change(within(existingVariantModal).getByLabelText(
+            "Quantity received"
+        ), { target: { value: "2" } });
+        fireEvent.change(within(existingVariantModal).getByLabelText(
+            "Batch number"
+        ), { target: { value: "LOT-SECOND" } });
+        fireEvent.change(within(existingVariantModal).getByLabelText(
+            "Expiry date"
+        ), { target: { value: "2028-01-31" } });
+        fireEvent.click(within(existingVariantModal).getByRole("button", {
+            name: "Add to Delivery"
+        }));
+
+        expect(page.state.deliveryDrafts).toHaveLength(2);
+        const secondDraft = page.state.deliveryDrafts[1];
+        expect(secondDraft).toMatchObject({
+            status: "draft",
+            supplier: "Second supplier",
+            invoiceNumber: "REF-SECOND",
+            deliveryDate: "2026-11-08",
+            receivedBy: "Pharmacist B",
+            items: [{
+                productId: "product-1",
+                variantId: "variant-1",
+                quantity: 2,
+                batchNumber: "LOT-SECOND"
+            }]
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Add New Variant" }));
+        const addVariantDialog = screen.getByRole("dialog", { name: "Add Variant" });
+        fireEvent.change(within(addVariantDialog).getByLabelText(
+            /Name or description/
+        ), { target: { value: "Capsules" } });
+        fireEvent.click(within(addVariantDialog).getByRole("button", {
+            name: "Add Packaging Level"
+        }));
+        fireEvent.change(within(addVariantDialog).getByLabelText(
+            /Packaging name/
+        ), { target: { value: "Bottle" } });
+        fireEvent.change(within(addVariantDialog).getByLabelText(
+            "Selling price"
+        ), { target: { value: "20" } });
+        fireEvent.click(within(addVariantDialog).getByRole("button", {
+            name: "Add Variant"
+        }));
+
+        const newVariantModal = screen.getByRole("dialog", {
+            name: "Receive Item"
+        });
+        fireEvent.change(within(newVariantModal).getByLabelText(
+            "Packaging level received"
+        ), {
+            target: {
+                value: page.state.products[0].variant.find(
+                    (productVariant) => productVariant.variantName === "Capsules"
+                )?.packagingHierarchy[0].id
+            }
+        });
+        fireEvent.change(within(newVariantModal).getByLabelText(
+            "Quantity received"
+        ), { target: { value: "3" } });
+        fireEvent.change(within(newVariantModal).getByLabelText(
+            "Batch number"
+        ), { target: { value: "LOT-CAPSULES" } });
+        fireEvent.change(within(newVariantModal).getByLabelText(
+            "Expiry date"
+        ), { target: { value: "2028-02-28" } });
+        fireEvent.click(within(newVariantModal).getByRole("button", {
+            name: "Add to Delivery"
+        }));
+
+        expect(page.state.products[0].variant).toHaveLength(2);
+        expect(page.state.deliveryDrafts[1].items).toHaveLength(2);
+        expect(page.state.deliveryDrafts[1].items[1].variantId)
+            .toBe(page.state.products[0].variant[1].id);
+
+        fireEvent.click(screen.getByRole("button", { name: "Approve Delivery" }));
+
+        expect(page.state.deliveryDrafts).toHaveLength(2);
+        expect(page.state.deliveryDrafts.map((delivery) => delivery.status))
+            .toEqual(["received", "received"]);
+        expect(page.state.deliveryDrafts[0]).toEqual(firstReceivedDraft);
+        expect(page.state.inventoryRecords.find(
+            (record) =>
+                record.id === firstInventory[0].id
+        )?.stockQuantities).toEqual(firstInventory[0].stockQuantities);
+        expect(page.state.inventoryRecords.reduce(
+            (total, record) => total + record.stockQuantities.reduce(
+                (stockTotal, stock) => stockTotal + stock.quantity,
+                0
+            ),
+            0
+        )).toBe(9);
+        expect(page.state.activityEvents.filter(
+            (event) => event.type === "delivery.received"
+        )).toHaveLength(2);
+        expect(page.state.activityEvents[0]).toEqual(firstReceivedEvent);
     });
 
     it("does not announce success until the received state is committed", () => {
@@ -954,6 +1175,32 @@ describe("Receive Delivery page", () => {
             .not.toBeInTheDocument();
         expect(page.state.inventoryRecords).toEqual([]);
         expect(page.state.activityEvents).toEqual([]);
+    });
+
+    it("opens a fresh workspace when only completed deliveries exist", () => {
+        const receivedDraft = {
+            ...draftWithItem("delivery-received-history", "Old supplier"),
+            status: "received" as const
+        };
+        renderPage(makeState([receivedDraft]));
+
+        expect(screen.getByLabelText("Supplier")).toBeEnabled();
+        expect(screen.getByLabelText("Supplier")).toHaveValue("");
+        expect(screen.getByLabelText("Invoice Number")).toHaveValue("");
+        expect(screen.getByLabelText("Received By *")).toHaveValue("");
+        expect(screen.queryByRole("button", { name: "Approve Delivery" }))
+            .not.toBeInTheDocument();
+
+        fireEvent.change(screen.getByLabelText("Search products"), {
+            target: { value: "Example medicine" }
+        });
+        fireEvent.click(screen.getByRole("option", {
+            name: "Select product Example medicine"
+        }));
+        expect(screen.getByRole("button", { name: "10 mg tablets" }))
+            .toBeEnabled();
+        expect(screen.getByRole("button", { name: "Add New Variant" }))
+            .toBeEnabled();
     });
 
     it("places delivery entry above the draft review area", () => {

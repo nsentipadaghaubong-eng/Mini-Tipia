@@ -1,10 +1,27 @@
+// @vitest-environment jsdom
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import {
+    afterEach,
+    describe,
+    expect,
+    it,
+    vi
+} from "vitest";
+import {
+    cleanup,
+    fireEvent,
+    render,
+    screen
+} from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { productStructure } from "../../../products/productStructure";
 import ProductEditModal from "./ProductEditModal";
+
+afterEach(cleanup);
 
 const product: productStructure = {
     id: "product-1",
@@ -110,6 +127,27 @@ describe("ProductEditModal", () => {
 
         expect(records).toEqual(before);
         expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("does not save or create stock Activity when a packaging change is cancelled", () => {
+        const onSave = vi.fn();
+        const onClose = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose,
+            onSave
+        }));
+
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Add packaging level"
+        })[0]);
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+        expect(onSave).not.toHaveBeenCalled();
+        expect(onClose).toHaveBeenCalledOnce();
     });
 
     it("shows read-only inventory and sends the exact record context to Manage Stock", () => {

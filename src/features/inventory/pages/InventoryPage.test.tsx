@@ -95,7 +95,7 @@ describe("InventoryPage navigation", () => {
         expect(markup).not.toContain('role="dialog"');
     });
 
-    it("shows exactly View, Edit Stock, and Delete for each inventory item", () => {
+    it("shows View and Edit Stock actions for each inventory item", () => {
         const product: productStructure = {
             id: "product-1",
             name: "Medicine",
@@ -126,7 +126,8 @@ describe("InventoryPage navigation", () => {
             ([, label]) => label.trim()
         );
 
-        expect(actionLabels).toEqual(["View", "Edit Stock", "Delete"]);
+        expect(actionLabels).toEqual(["View", "Edit Stock"]);
+        expect(markup).not.toContain("Delete");
         expect(markup).not.toContain("Edit Product");
         expect(markup).not.toContain("Adjust Stock");
     });
