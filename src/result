@@ -1,0 +1,330 @@
+// Stage 1 //
+
+You are working on Mini-Tipia, a pharmacy inventory management application built with React, TypeScript, and Tauri.
+
+Implement the following changes to the existing variant, packaging-level, and batch deletion workflows.
+
+Do not redesign the application, introduce SQLite, refactor unrelated features, or change accepted Sales and Receive Delivery workflows. Preserve existing uncommitted work.
+
+### 1. Deletion must be staged, reasoned, and committed only through Save Changes
+For deletion of:
+
+- A product variant.
+- A packaging level.
+- An inventory batch.
+The deletion workflow must follow this sequence:
+
+1. User requests deletion.
+2. Show the existing confirmation dialog pattern.
+3. User confirms.
+4. Stage the deletion in the current editing session only.
+5. Do not modify the actual product, packaging hierarchy, inventory records, or stock quantities yet.
+6. Require the user to enter a clear, non-empty deletion reason.
+7. Disable Save Changes until a valid reason has been provided.
+8. When Save Changes is clicked, commit the deletion and its associated inventory changes together.
+9. Record the deletion in Activity with the supplied reason and appropriate before-and-after snapshots.
+Cancelling the edit session or closing it without saving must discard staged deletions and leave the persisted application state unchanged.
+
+Do not treat clicking Delete or confirming the confirmation dialog as permission to immediately mutate application state.
+
+The reason must be validated using the existing validation conventions. Reject empty or whitespace-only input. Trim the reason before saving it.
+
+If multiple deletions can be staged in one editing session, ensure each deletion has its own clearly associated reason. Do not allow one reason to accidentally authorize unrelated deletions.
+
+### 2. Change draft protection from item-level to product-level
+This is a strict business rule.
+
+If a product is present in ANY active Sales draft or Receive Delivery draft, deletion of ANY variant, packaging level, or batch belonging to that product must be blocked.
+
+Do not check only whether the specific variant, packaging level, or batch being deleted is referenced by the draft.
+
+Determine whether the parent product is represented anywhere in an active draft. If it is, block all variant, packaging-level, and batch deletions belonging to that product.
+
+Example:
+
+Product: Panadol
+
+- Variant 1: Panadol 500mg Tablets
+- Variant 2: Panadol Extra Tablets
+If Variant 1 appears in an active Sales draft, deleting Variant 2 must also be blocked.
+
+Likewise, if any Panadol variant appears in an active Receive Delivery draft, deleting a batch or packaging level from another Panadol variant must be blocked.
+
+Apply the same product-wide rule regardless of which screen initiated the deletion.
+
+Required Sales draft message:
+
+"This product is currently in a Sales draft and cannot be modified by deleting its variants, packaging levels, or batches. Please complete or cancel the Sales draft before attempting this action."
+
+Required Receive Delivery draft message:
+
+"This product is currently in a Receive Delivery draft and cannot be modified by deleting its variants, packaging levels, or batches. Please complete or cancel the Receive Delivery draft before attempting this action."
+
+If the product is present in both draft types, display both explanations.
+
+Only active drafts should block deletion. Completed, cancelled, received, or otherwise inactive drafts must not block deletion.
+
+Apply this protection at both levels:
+
+- UI validation, before allowing the user to stage or confirm a deletion.
+- Application-state/reducer validation, immediately before committing the deletion.
+Do not silently remove the product or its items from a draft. Do not automatically cancel or complete drafts.
+
+### 3. Remove deletion controls from the specified edit modals
+In the Product Edit Modal:
+
+- Remove the Remove button.
+- Remove the Delete Batch button.
+In the Inventory Edit Modal:
+
+- Remove the Remove button.
+- Remove the Delete Batch button.
+Remove these controls without affecting other editing functionality, form fields, batch editing, stock editing, or Save Changes/Cancel behavior.
+
+Do not remove the underlying deletion functionality from the application. Preserve the appropriate deletion workflows in their intended management locations.
+
+### 4. Preserve data integrity
+Variant deletion must remove the variant and its associated batches and stock records only when the user saves the editing session.
+
+Packaging-level deletion must:
+
+- Remove the selected packaging level's associated stock quantities only on Save Changes.
+- Preserve quantities belonging to remaining packaging levels.
+- Repair the packaging hierarchy using the existing hierarchy-repair rules.
+- Preserve valid conversion relationships.
+- Reject unsafe conversion calculations without partially changing state.
+Batch deletion must remove the selected batch and its associated stock only on Save Changes.
+
+All deletion changes and their Activity events must be committed atomically. If validation fails, the original application state must remain unchanged.
+
+Do not introduce archive or soft-delete behavior.
+
+### 5. Activity records
+Reuse the existing Activity event infrastructure.
+
+Record:
+
+- What was deleted.
+- The parent product and relevant variant.
+- The relevant packaging or batch details.
+- The deletion reason.
+- Appropriate historical before-and-after snapshots.
+- The time of the committed change.
+Activity must record completed changes, not merely confirmation-dialog interactions or staged deletions.
+
+### 6. Tests
+Add focused tests proving:
+
+Staging and reason validation
+
+- Confirming deletion does not immediately modify application state.
+- Empty reason disables Save Changes.
+- Whitespace-only reason disables Save Changes.
+- A valid reason enables Save Changes.
+- Cancelling the editing session discards staged deletions.
+- Saving commits the intended deletion and reason.
+- Multiple staged deletions cannot share or accidentally reuse another deletion's reason.
+Product-wide draft protection
+
+- A Sales draft containing Variant 1 blocks deletion of Variant 2.
+- A Sales draft containing one variant blocks packaging deletion from another variant of the same product.
+- A Sales draft containing one variant blocks batch deletion from another variant of the same product.
+- Receive Delivery drafts enforce the same three cases.
+- A draft for a different product does not block deletion.
+- Completed, cancelled, received, and inactive drafts do not block deletion.
+- Both draft types produce both appropriate explanations.
+- Reducer validation rejects deletion even if the UI guard is bypassed.
+- Rejected operations leave the entire application state unchanged.
+Data integrity and Activity
+
+- Existing packaging hierarchy repair tests continue to pass.
+- Remaining packaging-level stock quantities are preserved.
+- Variant deletion removes only the intended variant and its associated inventory.
+- Batch deletion removes only the intended batch and its associated stock.
+- Activity records contain the correct reason and historical snapshots.
+- No Activity event is created for cancelled or unsaved deletions.
+UI
+
+- The specified Remove and Delete Batch buttons are absent from both edit modals.
+- Other editing controls remain functional.
+- Save Changes is disabled until all required deletion reasons are valid.
+
+### 7. Scope and verification
+First inspect the existing implementation and identify the exact files and workflows involved.
+
+Keep the implementation narrowly scoped. Reuse existing confirmation dialogs, state-management patterns, validation helpers, and Activity infrastructure where appropriate.
+
+Do not change Sales or Receive Delivery business behavior beyond the product-wide deletion protection.
+
+Run focused tests, the full test suite, build, lint, and git diff --check.
+
+Protect all existing unrelated changes. Do not reset, stash, discard, or overwrite uncommitted work.
+
+At the end, report:
+
+- Files changed.
+- Exact deletion workflows changed.
+- How staging and reason validation work.
+- How product-wide draft protection works.
+- Tests added and their results.
+- Build, lint, and diff-check results.
+- Any limitations or cases not verified.
+Do not claim completion based only on passing tests. Clearly distinguish automated verification from manual UI verification.
+// Stage 1//
+
+//Stage 2//
+IMPORTANT: Update the deletion and editing requirements to follow this final business rule.
+
+Mini-Tipia must temporarily lock a product's inventory and product structure whenever that product is involved in an active Sales draft or Receive Delivery draft.
+
+This requirement supersedes any earlier instruction that allowed inventory or product-structure changes while a product was in an active draft.
+1. What must be locked
+If a product appears in at least one active Sales draft or Receive Delivery draft, block all the following operations on that product:
+
+Inventory operations
+- Editing stock quantities.
+- Increasing or decreasing stock.
+- Adding a new batch.
+- Deleting an existing batch.
+- Editing batch details, including batch number and expiry date.
+- Any other operation that changes inventory records or stock quantities.
+Product structure operations
+- Adding or deleting a variant.
+- Editing or deleting a packaging level.
+- Adding a packaging level.
+- Changing packaging conversion quantities.
+- Changing packaging hierarchy relationships.
+- Any other operation that changes the product's variants or packaging structure.
+The lock applies to the entire product, not just the particular variant, batch, or packaging level referenced by the draft.
+
+Example:
+
+Panadol has two variants:
+- Panadol 500mg Tablets.
+- Panadol Extra Tablets.
+If Panadol 500mg Tablets appears in an active Sales draft, the entire Panadol product is locked.
+
+The user must not be able to edit stock, add batches, delete batches, add packaging levels, change conversion quantities, or delete the other variant, even if those particular records are not referenced by the draft.
+
+Apply exactly the same rule to active Receive Delivery drafts.
+2. What remains editable
+Do not freeze the entire product.
+
+The following non-stock descriptive changes remain allowed:
+- Product name.
+- Product description.
+- Other descriptive metadata that does not affect product identity, variant relationships, packaging, inventory, stock calculations, or draft references.
+Do not allow a supposedly descriptive field to be edited if it affects product identity or how Sales and Receive Delivery resolve product references.
+
+If uncertain whether a field is descriptive or structural, treat it as structural and block editing while the product is locked.
+3. User feedback
+When a user attempts a blocked operation, explain why the product is locked.
+
+For an active Sales draft, display:
+
+"This product is currently in a Sales draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+
+For an active Receive Delivery draft, display:
+
+"This product is currently in a Receive Delivery draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+
+If the product is in both types of active drafts, explain both restrictions.
+
+Do not silently ignore the user's action.
+4. Enforce the lock throughout the application
+This must not be implemented as a UI-only restriction.
+
+Apply the product-locking rule at:
+- The relevant UI editing entry points.
+- The application/workflow validation layer.
+- The application-state/reducer commit boundary.
+A user must not be able to bypass the restriction by invoking a different editing workflow or by bypassing the UI.
+
+Recheck the current active draft state when saving or committing an operation. Do not rely only on the draft status when an editing modal was first opened.
+
+The product lock must be lifted automatically when all relevant Sales and Receive Delivery drafts have been completed or cancelled.
+
+Completed Sales, received deliveries, cancelled drafts, and other inactive drafts must not keep a product locked.
+
+Do not automatically modify, cancel, or complete drafts to make an operation possible.
+5. Preserve the deletion-reason requirements
+This new locking policy does not remove the previously established deletion requirements.
+
+When no active draft locks the product:
+- Variant deletion must still be confirmed, staged, and require its own clear reason.
+- Packaging-level deletion must still be confirmed, staged, and require its own clear reason.
+- Batch deletion must still be confirmed, staged, and require its own clear reason.
+- Save Changes must remain disabled until all required deletion reasons are valid.
+- Actual changes must only be committed when Save Changes is clicked.
+- Cancelling the editing session must discard staged deletions without changing persisted product or inventory data.
+If an active draft exists, block the deletion before it can be staged or committed.
+6. Important implementation boundaries
+- Do not change the accepted Sales or Receive Delivery workflows unnecessarily.
+- Do not change how stock is calculated, allocated, broken down, or built up.
+- Do not introduce SQLite or new persistence architecture.
+- Do not introduce archiving or soft deletion.
+- Do not refactor unrelated functionality.
+- Preserve existing Activity snapshots and event integrity.
+- Continue recording only completed business changes in Activity.
+7. Required tests
+Add tests proving that an active Sales draft locks:
+- Stock quantity editing.
+- Batch creation and deletion.
+- Batch detail editing.
+- Variant addition and deletion.
+- Packaging-level addition and deletion.
+- Packaging conversion and hierarchy editing.
+Repeat the same coverage for active Receive Delivery drafts.
+
+Also prove:
+- A draft involving one variant locks every variant belonging to that product.
+- A draft for another product does not lock the current product.
+- Completed and cancelled drafts do not lock the product.
+- Product name and description can still be edited while the product is locked.
+- Structural or stock-affecting fields cannot be changed through the descriptive edit workflow.
+- The UI and reducer both enforce the restriction.
+- A draft becoming active after an editing modal opens is detected when the user attempts to save.
+- Cancelling or completing all relevant drafts lifts the lock.
+- Rejected operations leave the entire application state unchanged.
+- Existing deletion-reason and staged-deletion tests continue to pass.
+Run focused tests, the full test suite, build, lint, and git diff --check.
+
+Report the exact files changed, the operations blocked and allowed, tests added, results, and any unverified behavior.
+
+Do not claim completion based only on passing tests. Distinguish automated verification from manual UI verification
+
+//Stage2 //
+
+// Stage 3//
+
+8. Clarification: Restore and preserve the intended Delete buttons
+
+
+Restore and preserve the existing Delete buttons and their functionality in the appropriate locations:
+
+Products page
+- Keep the Delete Variant button in the variant management area.
+- Keep the Delete Packaging Level button in the packaging hierarchy management area.
+- Preserve their existing deletion workflows, including confirmation, staging, reason entry, Save Changes, draft protection, and Activity recording.
+Inventory page
+- Keep the Delete Batch button in the appropriate batch management area.
+- Preserve its existing deletion workflow, including confirmation, staging, reason entry, Save Changes, draft protection, and Activity recording.
+Product Edit Modal
+- Remove only the unnecessary generic Remove button.
+- Remove the unnecessary Delete Batch button from this modal.
+- Do not remove or break the intended variant and packaging deletion controls on the Products page.
+Inventory EdiThere was a misunderstanding in the earlier instruction about removing deletion buttons.
+
+I do NOT want the actual deletion functionality removed from Mini-Tipia.t Modal
+- Remove only the unnecessary generic Remove button and the Delete Batch button from this modal.
+- Do not remove the intended Delete Batch functionality from the Inventory page.
+The distinction is important:
+- Delete Variant belongs in the Products page.
+- Delete Packaging Level belongs in the Products page.
+- Delete Batch belongs in the Inventory page.
+- The unnecessary generic Remove and duplicate Delete Batch controls must not appear inside the specified edit modals.
+Do not create duplicate deletion controls or introduce a new deletion workflow if the existing page-level controls can be retained and updated.
+
+Before making changes, inspect the current UI and identify exactly which buttons are being removed, restored, or retained.
+
+Verify that the correct Delete buttons remain visible and functional when the product is not locked, and that they are appropriately disabled or blocked with an explanation when the product is in an active draft.

@@ -9,7 +9,8 @@ import {
     addDeliveryDraftItem,
     createDeliveryDraft,
     type DeliveryDraft,
-    type DeliveryDraftItem
+    type DeliveryDraftItem,
+    updateDeliveryDraftItem
 } from "./deliveryDraft";
 import { prepareDeliveryApproval } from "./deliveryApproval";
 import type { productStructure } from "../products/productStructure";
@@ -112,6 +113,14 @@ function makePlan(
             now: () => new Date("2026-11-08T12:00:00.000Z")
         }
     );
+}
+
+function makeApprovalEvent(
+    plan: ReturnType<typeof makePlan>
+) {
+    return prepareActivityEvents([plan.activity], {
+        now: () => new Date(plan.draft.updatedAt)
+    })[0]!;
 }
 
 describe("Delivery approval and stock-in", () => {
@@ -269,7 +278,7 @@ describe("Delivery approval and stock-in", () => {
             deliveryDrafts: [draft]
         };
         const plan = makePlan(draft, approvalState);
-        const [event] = prepareActivityEvents([plan.activity]);
+        const event = makeApprovalEvent(plan);
         const committed = applicationReducer(approvalState, {
             type: "delivery.approved",
             plan,
@@ -381,7 +390,7 @@ describe("Delivery approval and stock-in", () => {
         ]);
         const state = initialState([draft]);
         const plan = makePlan(draft, state);
-        const [event] = prepareActivityEvents([plan.activity]);
+        const event = makeApprovalEvent(plan);
         const action = {
             type: "delivery.approved" as const,
             plan,
@@ -432,8 +441,50 @@ describe("Delivery approval and stock-in", () => {
             }]
         });
         expect(Date.parse(committed.activityEvents[0].occurredAt)).not.toBeNaN();
+        expect(Date.parse(committed.activityEvents[0].occurredAt)).toBe(
+            Date.parse(committed.deliveryDrafts[0].updatedAt)
+        );
         expect(applicationReducer(committed, action)).toBe(committed);
         expect(committed.inventoryRecords[0].stockQuantities[0].quantity).toBe(3);
+    });
+
+    it("rechecks matching existing batches and exact inventory deltas at commit", () => {
+        const draft = withItems(makeDraft("delivery-existing-batch"), [
+            makeItem("item-1")
+        ]);
+        const batch = {
+            batchId: "batch-existing",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z")
+        };
+        const record = {
+            id: "inventory-existing",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: batch.batchId,
+            stockQuantities: [{ packagingLevelId: "box", quantity: 2 }]
+        };
+        const state = {
+            ...initialState([draft]),
+            inventoryRecords: [record],
+            inventoryBatches: [batch]
+        };
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const committed = applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event
+        });
+
+        expect(committed.inventoryBatches).toEqual([batch]);
+        expect(committed.inventoryRecords).toEqual([{
+            ...record,
+            stockQuantities: [{ packagingLevelId: "box", quantity: 5 }]
+        }]);
+        expect(committed.activityEvents).toHaveLength(1);
     });
 
     it("does not commit any state if the atomic approval action is invalid", () => {
@@ -442,10 +493,11 @@ describe("Delivery approval and stock-in", () => {
         ]);
         const state = initialState([draft]);
         const plan = makePlan(draft, state);
-        const [event] = prepareActivityEvents([plan.activity]);
+        const event = makeApprovalEvent(plan);
         if (event.type !== "delivery.received") {
             throw new Error("Expected a delivery completion event.");
         }
+        const before = structuredClone(state);
         expect(() => applicationReducer(state, {
             type: "delivery.approved",
             plan,
@@ -456,9 +508,156 @@ describe("Delivery approval and stock-in", () => {
             plan,
             event: { ...event, receivedBy: "Someone Else" }
         })).toThrow("Delivery approval does not match the active draft.");
-        expect(state.deliveryDrafts).toEqual([draft]);
-        expect(state.inventoryRecords).toEqual([]);
-        expect(state.inventoryBatches).toEqual([]);
-        expect(state.activityEvents).toEqual([]);
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: {
+                ...plan,
+                inventoryRecords: plan.inventoryRecords.map((record) => ({
+                    ...record,
+                    stockQuantities: record.stockQuantities.map((stock) => ({
+                        ...stock,
+                        quantity: stock.quantity + 1
+                    }))
+                }))
+            },
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: {
+                ...plan,
+                inventoryBatches: plan.inventoryBatches.map((batch) => ({
+                    ...batch,
+                    batchNumber: "FABRICATED-LOT"
+                }))
+            },
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: {
+                ...plan,
+                inventoryRecords: []
+            },
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: {
+                ...plan,
+                inventoryRecords: [
+                    ...plan.inventoryRecords,
+                    {
+                        id: "unrelated-inventory",
+                        productId: product.id,
+                        variantId: product.variant[0].id,
+                        batchId: null,
+                        stockQuantities: [{ packagingLevelId: "box", quantity: 99 }]
+                    }
+                ]
+            },
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event: {
+                ...event,
+                items: event.items.map((item) => ({
+                    ...item,
+                    stock: item.stock.map((stock) => ({
+                        ...stock,
+                        quantity: stock.quantity + 1
+                    }))
+                }))
+            }
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event: {
+                ...event,
+                occurredAt: new Date(
+                    Date.parse(event.occurredAt) + 1000
+                ).toISOString()
+            }
+        })).toThrow("Delivery approval contains invalid Activity metadata.");
+        expect(state).toEqual(before);
+
+        const cancelledState = {
+            ...state,
+            deliveryDrafts: [{ ...draft, status: "cancelled" as const }]
+        };
+        const cancelledBefore = structuredClone(cancelledState);
+        expect(() => applicationReducer(cancelledState, {
+            type: "delivery.approved",
+            plan,
+            event
+        })).toThrow("Cannot approve a cancelled delivery.");
+        expect(cancelledState).toEqual(cancelledBefore);
+    });
+
+    it("rejects an unrelated batch added to the submitted approval plan atomically", () => {
+        const draft = withItems(makeDraft("delivery-extra-batch"), [
+            makeItem("item-1")
+        ]);
+        const state = initialState([draft]);
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const before = structuredClone(state);
+        const action = {
+            type: "delivery.approved" as const,
+            plan: {
+                ...plan,
+                inventoryBatches: [
+                    ...plan.inventoryBatches,
+                    {
+                        batchId: "unrelated-batch",
+                        productId: product.id,
+                        variantId: product.variant[0].id,
+                        batchNumber: "UNRELATED-LOT",
+                        expiryDate: null
+                    }
+                ]
+            },
+            event
+        };
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "Delivery approval does not match the active draft."
+        );
+        expect(state).toEqual(before);
+    });
+
+    it("rejects a plan prepared before the draft is edited atomically", () => {
+        const draft = withItems(makeDraft("delivery-stale-plan"), [
+            makeItem("item-1")
+        ]);
+        const state = initialState([draft]);
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const editedDraft = updateDeliveryDraftItem(
+            draft,
+            "item-1",
+            { quantity: 4 },
+            "2026-11-07T10:02:00.000Z"
+        );
+        const editedState = {
+            ...state,
+            deliveryDrafts: [editedDraft]
+        };
+        const before = structuredClone(editedState);
+
+        expect(editedState.deliveryDrafts[0]).toMatchObject({
+            status: "draft",
+            updatedAt: "2026-11-07T10:02:00.000Z",
+            items: [{ quantity: 4 }]
+        });
+        expect(() => applicationReducer(editedState, {
+            type: "delivery.approved",
+            plan,
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(editedState).toEqual(before);
     });
 });

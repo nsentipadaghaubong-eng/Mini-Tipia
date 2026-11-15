@@ -4,6 +4,7 @@ import type { productStructure } from "../products/productStructure";
 import {
     assessPackagingLevelRemoval,
     preparePackagingHierarchyChange,
+    removePackagingLevelFromHierarchy,
     validatePackagingHierarchy
 } from "./packagingValidation";
 import {
@@ -97,6 +98,47 @@ describe("packaging hierarchy authority and integrity", () => {
             { packagingLevelId: "box", quantity: 3 },
             { packagingLevelId: "pack", quantity: 0 }
         ]);
+    });
+
+    it("repairs conversions when removing a packaging level", () => {
+        const hierarchy = [
+            { ...box, quantityofNextLevel: 10 },
+            {
+                id: "pack",
+                name: "Pack",
+                costPrice: null,
+                sellingPrice: null,
+                quantityofNextLevel: 5,
+                nextLevelId: "card"
+            },
+            {
+                id: "card",
+                name: "Card",
+                costPrice: null,
+                sellingPrice: null,
+                quantityofNextLevel: null,
+                nextLevelId: null
+            }
+        ];
+
+        const withoutPack = removePackagingLevelFromHierarchy(hierarchy, "pack");
+
+        expect(withoutPack).toEqual([
+            { ...hierarchy[0], nextLevelId: "card", quantityofNextLevel: 50 },
+            hierarchy[2]
+        ]);
+        expect(() => validatePackagingHierarchy(withoutPack)).not.toThrow();
+        expect(removePackagingLevelFromHierarchy([box, pack], "box")).toEqual([
+            pack
+        ]);
+        expect(removePackagingLevelFromHierarchy([box, pack], "pack")).toEqual([
+            { ...box, nextLevelId: null, quantityofNextLevel: null }
+        ]);
+        expect(() => removePackagingLevelFromHierarchy([
+            { ...hierarchy[0], quantityofNextLevel: Number.MAX_SAFE_INTEGER },
+            hierarchy[1],
+            hierarchy[2]
+        ], "pack")).toThrow(/invalid conversion quantity/);
     });
 
     it("adds a packaging level and edits conversions and prices without changing stock", () => {

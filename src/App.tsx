@@ -21,7 +21,11 @@ import type { ApplicationAction } from "./applicationState";
 import type { ProductCreationResult } from "./products/productCreation";
 import type { productStructure } from "./products/productStructure";
 import type { variant } from "./products/productStructure";
-import { getProductDeletionBlockMessages } from "./products/productDeletion";
+import {
+    getProductDeletionBlockMessages,
+    prepareProductRecordDeletionPlan,
+    type ProductRecordDeletionDraft
+} from "./products/productDeletion";
 import type { inventory } from "./inventory/inventoryStock";
 import type { inventoryBatch } from "./inventory/inventoryBatch";
 import type {
@@ -152,12 +156,14 @@ function App() {
     }
 
     function handleInventoryCommit(commit: InventoryCommit) {
-        dispatch({
+        const action = {
             type: "inventory.saved",
             inventoryRecords: commit.inventoryRecords,
             inventoryBatches: commit.inventoryBatches,
             events: prepareActivityEvents(commit.activityEvents)
-        });
+        } satisfies ApplicationAction;
+        applicationReducer(applicationState, action);
+        dispatch(action);
     }
 
     function handleDeliveryDraftDetailsUpdated(
@@ -241,7 +247,9 @@ function App() {
                 applicationState.inventoryRecords,
                 applicationState.inventoryBatches
             );
-            const [event] = prepareActivityEvents([plan.activity]);
+            const [event] = prepareActivityEvents([plan.activity], {
+                now: () => new Date(plan.draft.updatedAt)
+            });
             const action = {
                 type: "delivery.approved" as const,
                 plan,
@@ -389,13 +397,63 @@ function App() {
         product: productStructure,
         reason: string,
         nextInventoryRecords?: inventory[],
-        nextInventoryBatches?: inventoryBatch[]
+        nextInventoryBatches?: inventoryBatch[],
+        stagedDeletions: ProductRecordDeletionDraft[] = []
     ) {
         const previousProduct = applicationState.products.find(
             (current) => current.id === product.id
         );
         if (!previousProduct) {
             throw new Error(`Product not found: ${product.id}`);
+        }
+
+        if (stagedDeletions.length > 0) {
+            const requests = stagedDeletions.map((deletion) => ({
+                ...deletion,
+                operationId: crypto.randomUUID()
+            }));
+            const plan = prepareProductRecordDeletionPlan(
+                previousProduct,
+                applicationState.inventoryRecords,
+                applicationState.inventoryBatches,
+                requests
+            );
+            const updatedProduct = {
+                ...product,
+                variant: plan.product.variant
+            };
+            for (const record of plan.inventoryRecords) {
+                if (record.productId === updatedProduct.id) {
+                    validateInventoryPackagingRelationships(updatedProduct, record);
+                }
+            }
+            const events = [...plan.events];
+            const hasProductUpdate =
+                JSON.stringify(updatedProduct) !== JSON.stringify(plan.product);
+            if (hasProductUpdate) {
+                events.push(...buildProductUpdateActivityInputs(
+                    plan.product,
+                    updatedProduct,
+                    plan.inventoryRecords,
+                    plan.inventoryRecords,
+                    plan.inventoryBatches,
+                    `product.updated:${product.id}:${crypto.randomUUID()}`,
+                    reason
+                ));
+            }
+            const action = {
+                type: "product.records_deleted",
+                productId: product.id,
+                deletions: requests,
+                product: plan.product,
+                ...(hasProductUpdate ? { updatedProduct } : {}),
+                inventoryRecords: plan.inventoryRecords,
+                inventoryBatches: plan.inventoryBatches,
+                events: prepareActivityEvents(events)
+            } satisfies ApplicationAction;
+            applicationReducer(applicationState, action);
+            dispatch(action);
+            return;
         }
 
         const resolvedInventoryRecords =
@@ -510,6 +568,8 @@ function App() {
                     inventoryRecords={applicationState.inventoryRecords}
                     inventoryBatches={applicationState.inventoryBatches}
                     onInventoryCommit={handleInventoryCommit}
+                    saleDrafts={applicationState.saleDrafts}
+                    deliveryDrafts={applicationState.deliveryDrafts}
                     onNavigate={handleNavigation}
                     onNavigationConsumed={handleNavigationConsumed}
                     onNavigationDismissed={handleNavigationDismissed}
@@ -522,6 +582,7 @@ function App() {
                     inventoryRecords={applicationState.inventoryRecords}
                     inventoryBatches={applicationState.inventoryBatches}
                     deliveryDrafts={applicationState.deliveryDrafts}
+                    saleDrafts={applicationState.saleDrafts}
                     onDraftCreated={handleDeliveryDraftCreated}
                     onDraftDetailsUpdated={handleDeliveryDraftDetailsUpdated}
                     onDraftItemAdded={handleDeliveryDraftItemAdded}

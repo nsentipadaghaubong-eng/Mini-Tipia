@@ -13,6 +13,7 @@ interface StockQuantityDraft {
 interface BatchDraft {
     variantId: string;
     batchId: string;
+    isNew: boolean;
     batchNumber: string;
     expiryDate: string;
     inventoryId: string | null;
@@ -26,12 +27,27 @@ type UnbatchedDraft = Omit<unbatchedInventoryChange, "stockQuantities"> & {
 export interface EditProductChanges {
     operationId: string;
     reason: string;
+    deletedBatches: {
+        variantId: string;
+        batchId: string;
+        reason: string;
+    }[];
     batches: {
         variantId: string;
         batchId: string;
         batchNumber: string | null;
         expiryDate: Date | null;
         inventoryId: string | null;
+        stockQuantities: {
+            packagingLevelId: string;
+            quantity: number;
+        }[];
+    }[];
+    newBatches: {
+        variantId: string;
+        batchId: string;
+        batchNumber: string | null;
+        expiryDate: Date | null;
         stockQuantities: {
             packagingLevelId: string;
             quantity: number;
@@ -50,6 +66,7 @@ interface EditProductModalProps {
     onEditProductDetails: (variantId: string) => void;
     onClose: () => void;
     onSave: (changes: EditProductChanges) => void;
+    draftLockMessages?: string[];
 }
 
 function formatDateForInput(date: Date | null): string {
@@ -73,12 +90,21 @@ export default function EditProductModal({
     initialBatchId = null,
     onEditProductDetails,
     onClose,
-    onSave
+    onSave,
+    draftLockMessages = []
 }: EditProductModalProps) {
 
     const modalId = useId();
+    const isDraftLocked = draftLockMessages.length > 0;
     const [reason, setReason] = useState("");
     const [saveError, setSaveError] = useState<string | null>(null);
+    const [pendingBatchDeletion, setPendingBatchDeletion] = useState<string | null>(null);
+    const [stagedBatchDeletions, setStagedBatchDeletions] = useState<Array<{
+        id: string;
+        variantId: string;
+        batchId: string;
+        reason: string;
+    }>>([]);
 
     const [batchDrafts, setBatchDrafts] = useState<BatchDraft[]>(() =>
         product.variant.flatMap((variant) =>
@@ -110,6 +136,7 @@ export default function EditProductModal({
                 return {
                     variantId: variant.id,
                     batchId: batch.batchId,
+                    isNew: false,
                     batchNumber: batch.batchNumber ?? "",
                     expiryDate: formatDateForInput(batch.expiryDate),
                     inventoryId: matchingInventory?.inventoryId ?? null,
@@ -165,6 +192,32 @@ export default function EditProductModal({
                     : draft
             )
         );
+    }
+
+    function addBatch(variantId: string) {
+        const productVariant = product.variant.find(
+            (candidate) => candidate.id === variantId
+        );
+        if (!productVariant || productVariant.packagingHierarchy.length === 0) {
+            setSaveError("Add a packaging level to this variant before creating a batch.");
+            return;
+        }
+        setSaveError(null);
+        setBatchDrafts((currentDrafts) => [
+            ...currentDrafts,
+            {
+                variantId,
+                batchId: `batch-${crypto.randomUUID()}`,
+                isNew: true,
+                batchNumber: "",
+                expiryDate: "",
+                inventoryId: null,
+                stockQuantities: productVariant.packagingHierarchy.map((level) => ({
+                    packagingLevelId: level.id,
+                    quantity: "0"
+                }))
+            }
+        ]);
     }
 
     function updateStockQuantity(
@@ -242,7 +295,8 @@ export default function EditProductModal({
     const canSave =
         reason.trim().length > 0 &&
         validStockQuantities &&
-        validDates;
+        validDates &&
+        stagedBatchDeletions.every((deletion) => deletion.reason.trim() !== "");
 
     const unbatchedDraftsByVariant = new Map<string, UnbatchedDraft[]>();
     for (const draft of unbatchedDrafts) {
@@ -269,8 +323,20 @@ export default function EditProductModal({
         const changes: EditProductChanges = {
             operationId: crypto.randomUUID(),
             reason: reason.trim(),
+            deletedBatches: stagedBatchDeletions.map((deletion) => ({
+                variantId: deletion.variantId,
+                batchId: deletion.batchId,
+                reason: deletion.reason.trim()
+            })),
 
-            batches: batchDrafts.map((batch) => ({
+            batches: batchDrafts
+                .filter((batch) =>
+                    !batch.isNew &&
+                    !stagedBatchDeletions.some(
+                        (deletion) => deletion.batchId === batch.batchId
+                    )
+                )
+                .map((batch) => ({
                 variantId: batch.variantId,
                 batchId: batch.batchId,
                 batchNumber: batch.batchNumber.trim() || null,
@@ -282,7 +348,26 @@ export default function EditProductModal({
                     packagingLevelId: stock.packagingLevelId,
                     quantity: Number(stock.quantity)
                 }))
-            })),
+                })),
+            newBatches: batchDrafts
+                .filter((batch) =>
+                    batch.isNew &&
+                    !stagedBatchDeletions.some(
+                        (deletion) => deletion.batchId === batch.batchId
+                    )
+                )
+                .map((batch) => ({
+                    variantId: batch.variantId,
+                    batchId: batch.batchId,
+                    batchNumber: batch.batchNumber.trim() || null,
+                    expiryDate: batch.expiryDate
+                        ? new Date(`${batch.expiryDate}T00:00:00`)
+                        : null,
+                    stockQuantities: batch.stockQuantities.map((stock) => ({
+                        packagingLevelId: stock.packagingLevelId,
+                        quantity: Number(stock.quantity)
+                    }))
+                })),
             unbatched: unbatchedDrafts.map((draft) => ({
                 inventoryId: draft.inventoryId,
                 variantId: draft.variantId,
@@ -302,6 +387,56 @@ export default function EditProductModal({
                     : "Unable to save inventory changes."
             );
         }
+    }
+
+    function requestBatchDeletion(batch: BatchDraft) {
+        if (isDraftLocked) {
+            setSaveError(draftLockMessages.join(" "));
+            return;
+        }
+        setPendingBatchDeletion(batch.batchId);
+        setSaveError(null);
+    }
+
+    function confirmBatchDeletion() {
+        const batchId = pendingBatchDeletion;
+        if (!batchId) {
+            return;
+        }
+        if (isDraftLocked) {
+            setPendingBatchDeletion(null);
+            setSaveError(draftLockMessages.join(" "));
+            return;
+        }
+        const batch = batchDrafts.find(
+            (draft) => draft.batchId === batchId && !draft.isNew
+        );
+        if (!batch) {
+            setPendingBatchDeletion(null);
+            setSaveError("The batch is no longer available for deletion.");
+            return;
+        }
+        if (!stagedBatchDeletions.some((deletion) =>
+            deletion.variantId === batch.variantId &&
+            deletion.batchId === batch.batchId
+        )) {
+            setStagedBatchDeletions((current) => [
+                ...current,
+                {
+                    id: crypto.randomUUID(),
+                    variantId: batch.variantId,
+                    batchId: batch.batchId,
+                    reason: ""
+                }
+            ]);
+        }
+        setPendingBatchDeletion(null);
+    }
+
+    function updateBatchDeletionReason(id: string, value: string) {
+        setStagedBatchDeletions((current) => current.map((deletion) =>
+            deletion.id === id ? { ...deletion, reason: value } : deletion
+        ));
     }
 
     return (
@@ -349,6 +484,42 @@ export default function EditProductModal({
 
                     <section className="edit-product-section">
                         <h3>Variants and Inventory</h3>
+                        {isDraftLocked && (
+                            <p role="alert">
+                                {draftLockMessages.join(" ")}
+                            </p>
+                        )}
+                        {stagedBatchDeletions.length > 0 && (
+                            <section aria-label="Staged batch deletions">
+                                <h4>Staged batch deletions</h4>
+                                {stagedBatchDeletions.map((deletion) => {
+                                    const batch = batches.find(
+                                        (candidate) =>
+                                            candidate.batchId === deletion.batchId &&
+                                            candidate.variantId === deletion.variantId
+                                    );
+                                    const variant = product.variant.find(
+                                        (candidate) => candidate.id === deletion.variantId
+                                    );
+                                    const label =
+                                        `${variant?.variantName ?? "Variant"} / ${batch?.batchNumber ?? "Batch number not set"}`;
+                                    return (
+                                        <label className="product-edit-field" key={deletion.id}>
+                                            Reason for deleting {label}
+                                            <textarea
+                                                aria-label={`Reason for deleting ${label}`}
+                                                onChange={(event) => updateBatchDeletionReason(
+                                                    deletion.id,
+                                                    event.target.value
+                                                )}
+                                                rows={2}
+                                                value={deletion.reason}
+                                            />
+                                        </label>
+                                    );
+                                })}
+                            </section>
+                        )}
 
                         {orderedVariants.map((variant) => (
                             <div
@@ -360,6 +531,14 @@ export default function EditProductModal({
                                     <span>Read only</span>
                                     <button
                                         className="secondary-button"
+                                        onClick={() => addBatch(variant.id)}
+                                        disabled={isDraftLocked}
+                                        type="button"
+                                    >
+                                        Add batch
+                                    </button>
+                                    <button
+                                        className="secondary-button"
                                         onClick={() => onEditProductDetails(variant.id)}
                                         type="button"
                                     >
@@ -367,21 +546,16 @@ export default function EditProductModal({
                                     </button>
                                 </div>
 
-                                {batches
-                                    .filter(
-                                        (batch) =>
-                                            batch.productId === product.id &&
-                                            batch.variantId === variant.id
-                                    )
-                                    .map((batch) => {
-
-                                    const draft = batchDrafts.find(
-                                        (item) =>
-                                            item.variantId === variant.id &&
-                                            item.batchId === batch.batchId
+                                {batchDrafts
+                                    .filter((draft) => draft.variantId === variant.id)
+                                    .map((draft) => {
+                                    const batch = batches.find(
+                                        (candidate) =>
+                                            candidate.productId === product.id &&
+                                            candidate.variantId === variant.id &&
+                                            candidate.batchId === draft.batchId
                                     );
-
-                                    if (!draft) {
+                                    if (!draft.isNew && !batch) {
                                         return null;
                                     }
 
@@ -391,38 +565,58 @@ export default function EditProductModal({
                                                 (draft.inventoryId === null ||
                                                     record.inventoryId === draft.inventoryId) &&
                                                 record.productId === product.id &&
-                                                record.batchId === batch.batchId &&
+                                                record.batchId === draft.batchId &&
                                                 record.variantId === variant.id
                                         );
 
                                     return (
                                         <article
                                             className="edit-batch-card"
-                                            key={batch.batchId}
+                                            key={draft.batchId}
                                         >
 
                                             <div className="edit-batch-heading">
                                                 <h5>Batch information</h5>
+                                                {!draft.isNew && (
+                                                    <button
+                                                        className="product-delete-button"
+                                                        disabled={
+                                                            isDraftLocked ||
+                                                            stagedBatchDeletions.some(
+                                                                (deletion) =>
+                                                                    deletion.batchId === draft.batchId
+                                                            )
+                                                        }
+                                                        onClick={() => requestBatchDeletion(draft)}
+                                                        type="button"
+                                                    >
+                                                        {stagedBatchDeletions.some(
+                                                            (deletion) =>
+                                                                deletion.batchId === draft.batchId
+                                                        ) ? "Deletion staged" : "Delete Batch"}
+                                                    </button>
+                                                )}
                                             </div>
 
                                             <div className="edit-batch-fields">
 
                                                 <div className="edit-field">
                                                     <label
-                                                        htmlFor={`batch-number-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(batch.batchId)}`}
+                                                        htmlFor={`batch-number-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(draft.batchId)}`}
                                                     >
                                                         Batch number
                                                     </label>
 
                                                     <input
-                                                        id={`batch-number-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(batch.batchId)}`}
+                                                        id={`batch-number-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(draft.batchId)}`}
+                                                        disabled={isDraftLocked}
                                                         type="text"
                                                         value={draft.batchNumber}
                                                         placeholder="Enter batch number"
                                                         onChange={(event) =>
                                                             updateBatchDraft(
                                                                 variant.id,
-                                                                batch.batchId,
+                                                                draft.batchId,
                                                                 "batchNumber",
                                                                 event.target.value
                                                             )
@@ -432,19 +626,20 @@ export default function EditProductModal({
 
                                                 <div className="edit-field">
                                                     <label
-                                                        htmlFor={`expiry-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(batch.batchId)}`}
+                                                        htmlFor={`expiry-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(draft.batchId)}`}
                                                     >
                                                         Expiry date
                                                     </label>
 
                                                     <input
-                                                        id={`expiry-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(batch.batchId)}`}
+                                                        id={`expiry-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(draft.batchId)}`}
+                                                        disabled={isDraftLocked}
                                                         type="date"
                                                         value={draft.expiryDate}
                                                         onChange={(event) =>
                                                             updateBatchDraft(
                                                                 variant.id,
-                                                                batch.batchId,
+                                                                draft.batchId,
                                                                 "expiryDate",
                                                                 event.target.value
                                                             )
@@ -457,15 +652,15 @@ export default function EditProductModal({
                                             <div className="edit-stock-section">
                                                 <h5>Stock quantities</h5>
 
-                                                {matchingInventory ? (
+                                                {matchingInventory || draft.isNew ? (
 
                                                     draft.stockQuantities.map(
                                                         (stock) => {
-                                                            const packagingLevel =
-                                                                matchingInventory.packagingLevels.find(
-                                                                    (level) =>
-                                                                        level.id === stock.packagingLevelId
-                                                                );
+                                                                const packagingLevel =
+                                                                    variant.packagingHierarchy.find(
+                                                                        (level) =>
+                                                                            level.id === stock.packagingLevelId
+                                                                    );
 
                                                             return (
                                                                 <div
@@ -473,13 +668,14 @@ export default function EditProductModal({
                                                                     key={stock.packagingLevelId}
                                                                 >
                                                                     <label
-                                                                        htmlFor={`stock-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(batch.batchId)}-${encodeURIComponent(stock.packagingLevelId)}`}
+                                                                        htmlFor={`stock-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(draft.batchId)}-${encodeURIComponent(stock.packagingLevelId)}`}
                                                                     >
                                                                         {packagingLevel?.name ?? "Unknown packaging"}
                                                                     </label>
 
                                                                     <input
-                                                                        id={`stock-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(batch.batchId)}-${encodeURIComponent(stock.packagingLevelId)}`}
+                                                                        id={`stock-${modalId}-${encodeURIComponent(variant.id)}-${encodeURIComponent(draft.batchId)}-${encodeURIComponent(stock.packagingLevelId)}`}
+                                                                        disabled={isDraftLocked}
                                                                         type="number"
                                                                         min="0"
                                                                         step="1"
@@ -487,7 +683,7 @@ export default function EditProductModal({
                                                                         onChange={(event) =>
                                                                             updateStockQuantity(
                                                                                 variant.id,
-                                                                                batch.batchId,
+                                                                                draft.batchId,
                                                                                 stock.packagingLevelId,
                                                                                 event.target.value
                                                                             )
@@ -553,6 +749,7 @@ export default function EditProductModal({
                                                                     </label>
                                                                     <input
                                                                         id={inputId}
+                                                                        disabled={isDraftLocked}
                                                                         type="number"
                                                                         min="0"
                                                                         step="1"
@@ -617,14 +814,59 @@ export default function EditProductModal({
                     <button
                         className="edit-save-button"
                         type="button"
-                        disabled={!canSave}
+                        disabled={!canSave || isDraftLocked}
                         onClick={handleSave}
                     >
                         Save Changes
                     </button>
                 </footer>
-
             </section>
+            {pendingBatchDeletion && (
+                <div className="inventory-modal-overlay">
+                    <section
+                        aria-labelledby="inventory-batch-deletion-title"
+                        aria-modal="true"
+                        className="inventory-modal"
+                        role="alertdialog"
+                    >
+                        <header className="inventory-modal-header">
+                            <h2 id="inventory-batch-deletion-title">Delete batch?</h2>
+                        </header>
+                        <div className="inventory-modal-content">
+                            <p>
+                                {(() => {
+                                    const batch = batches.find(
+                                        (candidate) =>
+                                            candidate.batchId === pendingBatchDeletion &&
+                                            candidate.productId === product.id
+                                    );
+                                    return `Confirm deleting ${batch?.batchNumber ?? "this batch"}? Its batch and associated stock will only be removed when you save these changes.`;
+                                })()}
+                            </p>
+                            {isDraftLocked && (
+                                <p role="alert">{draftLockMessages.join(" ")}</p>
+                            )}
+                            <div className="product-deletion-actions">
+                                <button
+                                    className="secondary-button"
+                                    onClick={() => setPendingBatchDeletion(null)}
+                                    type="button"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    className="product-delete-button"
+                                    disabled={isDraftLocked}
+                                    onClick={confirmBatchDeletion}
+                                    type="button"
+                                >
+                                    Confirm Delete
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            )}
         </div>
     );
 }

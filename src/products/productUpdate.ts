@@ -26,6 +26,7 @@ export interface VariantUpdateDraft {
 export interface ProductUpdateDraft {
     id: string;
     name: string;
+    description: string;
     genericName: string;
     manufacturer: string;
     category: string;
@@ -41,6 +42,7 @@ export function createProductUpdateDraft(
     return {
         id: product.id,
         name: product.name,
+        description: product.description ?? "",
         genericName: product.genericName ?? "",
         manufacturer: product.manufacturer ?? "",
         category: product.category ?? "",
@@ -451,6 +453,9 @@ export function buildUpdatedProduct(
     return {
         ...original,
         name: draft.name.trim(),
+        ...(draft.description.trim() === ""
+            ? { description: undefined }
+            : { description: draft.description.trim() }),
         ...(draft.genericName.trim() === ""
             ? { genericName: undefined }
             : { genericName: draft.genericName.trim() }),

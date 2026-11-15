@@ -1,3 +1,5 @@
+import type { SaleDraft } from "../../../sales/salesDraft";
+import { getProductDraftLockMessages } from "../../../products/productDraftLock";
 import { useState } from "react";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
@@ -24,6 +26,7 @@ interface ReceiveDeliveryPageProps {
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
     deliveryDrafts: DeliveryDraft[];
+        saleDrafts?: SaleDraft[];
     onCatalogueProductCreated: (product: productStructure) => void;
     onVariantCreated: (productId: string, productVariant: variant) => void;
     onDraftCreated: (draft: DeliveryDraft) => void;
@@ -130,6 +133,7 @@ export default function ReceiveDeliveryPage({
     inventoryRecords,
     inventoryBatches,
     deliveryDrafts,
+        saleDrafts = [],
     onCatalogueProductCreated,
     onVariantCreated,
     onDraftCreated,
@@ -275,11 +279,37 @@ export default function ReceiveDeliveryPage({
         if (!selectedProduct || !canAddItems) {
             return;
         }
+        const blockers = getProductDraftLockMessages(
+            selectedProduct.id,
+            saleDrafts,
+            deliveryDrafts
+        );
+        if (blockers.length > 0) {
+            setFormMessage(blockers.join(" "));
+            return;
+        }
         onVariantCreated(selectedProduct.id, productVariant);
         setSelectedVariantId(productVariant.id);
         setEditingItem(undefined);
         setIsReceivingItem(true);
         setIsAddingVariant(false);
+    }
+
+    function requestAddVariant() {
+        if (!selectedProduct || !canAddItems) {
+            return;
+        }
+        const blockers = getProductDraftLockMessages(
+            selectedProduct.id,
+            saleDrafts,
+            deliveryDrafts
+        );
+        if (blockers.length > 0) {
+            setFormMessage(blockers.join(" "));
+            return;
+        }
+        setFormMessage("");
+        setIsAddingVariant(true);
     }
 
     function handleApproveDelivery() {
@@ -619,7 +649,7 @@ export default function ReceiveDeliveryPage({
                                 <button
                                     className="sales-variant-button"
                                     disabled={!canAddItems}
-                                    onClick={() => setIsAddingVariant(true)}
+                                    onClick={requestAddVariant}
                                     type="button"
                                 >
                                     Add New Variant

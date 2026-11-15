@@ -32,6 +32,18 @@ function expiryKey(value: Date | null): string | null {
     return value?.toISOString().slice(0, 10) ?? null;
 }
 
+export function deliveryDraftItemMatchesBatch(
+    item: DeliveryDraftItem,
+    draft: DeliveryDraft,
+    batch: inventoryBatch
+): boolean {
+    return batch.productId === item.productId &&
+        batch.variantId === item.variantId &&
+        batch.batchNumber === item.batchNumber &&
+        expiryKey(batch.expiryDate) === item.expiryDate &&
+        (item.batchNumber !== null || batch.receivedDate === draft.deliveryDate);
+}
+
 function findOrCreateBatch(
     item: DeliveryDraftItem,
     draft: DeliveryDraft,
@@ -42,11 +54,7 @@ function findOrCreateBatch(
 ): inventoryBatch {
     const itemExpiry = item.expiryDate;
     const matching = batches.filter((batch) =>
-        batch.productId === item.productId &&
-        batch.variantId === item.variantId &&
-        batch.batchNumber === item.batchNumber &&
-        expiryKey(batch.expiryDate) === itemExpiry &&
-        (item.batchNumber !== null || batch.receivedDate === draft.deliveryDate)
+        deliveryDraftItemMatchesBatch(item, draft, batch)
     );
     if (matching.length > 1) {
         throw new Error("More than one inventory batch matches this receipt.");

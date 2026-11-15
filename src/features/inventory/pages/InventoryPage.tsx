@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { getAllInventoryDisplay } from "../../../inventory/inventoryLookup";
 import { aggregateVariantStock } from "../../../inventory/inventoryAggregation";
 import { getStockQuantity } from "../../../inventory/inventoryStock";
+import { createInventory } from "../../../inventory/inventoryStock";
+import { validateInventoryPackagingRelationships } from "../../../inventory/inventoryValidation";
 import {
     adjustInventoryStock,
     applyUnbatchedInventoryChanges
@@ -11,6 +13,8 @@ import type { stockAdjustment } from "../../../inventory/inventoryAdjustment";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import {
+    buildBatchCreatedActivityInput,
+    buildBatchRemovalActivityInput,
     buildBatchUpdatedActivityInput,
     buildStockAdjustmentActivityInput,
     type ActivityEventInput
@@ -20,6 +24,9 @@ import type { aggregatedVariantStock } from "../../../inventory/inventoryAggrega
 import EditProductModal from "../components/EditProductModal";
 import type { EditProductChanges } from "../components/EditProductModal";
 import type { productStructure } from "../../../products/productStructure";
+import type { SaleDraft } from "../../../sales/salesDraft";
+import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
+import { getProductDraftLockMessages } from "../../../products/productDraftLock";
 import {
     createProductEditIntent,
     resolveInventoryManageTarget,
@@ -37,6 +44,8 @@ interface InventoryPageProps {
     onNavigate: (intent: NavigationIntent) => void;
     onNavigationConsumed: (requestId: number, handled: boolean) => void;
     onNavigationDismissed: (requestId: number) => void;
+    saleDrafts?: SaleDraft[];
+    deliveryDrafts?: DeliveryDraft[];
 }
 
 export interface InventoryCommit {
@@ -120,6 +129,34 @@ function groupInventoryRecords(
     return result;
 }
 
+function createEmptyVariantGroup(
+    product: productStructure,
+    productVariant: productStructure["variant"][number],
+    batches: readonly inventoryBatch[]
+): VariantGroup {
+    return {
+        variantId: productVariant.id,
+        variantName: productVariant.variantName,
+        records: [],
+        aggregatedStock: {
+            productId: product.id,
+            variantId: productVariant.id,
+            batchCount: batches.filter(
+                (batch) =>
+                    batch.productId === product.id &&
+                    batch.variantId === productVariant.id
+            ).length,
+            stockQuantities: productVariant.packagingHierarchy.map((level) => ({
+                packagingLevelId: level.id,
+                quantity: 0
+            })),
+            packagingLevels: productVariant.packagingHierarchy.map((level) => ({
+                ...level
+            }))
+        }
+    };
+}
+
 function describeStockGrouping(records: inventoryDisplay[], batchCount: number): string {
     const hasUnbatchedStock = records.some((record) => record.batchId === null);
     if (hasUnbatchedStock && batchCount === 0) {
@@ -139,7 +176,9 @@ export default function InventoryPage({
     navigationRequest,
     onNavigate,
     onNavigationConsumed,
-    onNavigationDismissed
+    onNavigationDismissed,
+    saleDrafts = [],
+    deliveryDrafts = []
 }: InventoryPageProps) {
     const [searchTerm, setSearchTerm] = useState("");
 
@@ -151,6 +190,7 @@ export default function InventoryPage({
 
     const [editingProductId, setEditingProductId] =
     useState<string | null>(null);
+    const [inventoryLockMessages, setInventoryLockMessages] = useState<string[]>([]);
     const handledNavigationRequestId = useRef<number | null>(null);
 
     useEffect(() => {
@@ -188,6 +228,22 @@ export default function InventoryPage({
 
     // Build product and variant groups using all inventory records.
     const productGroups = groupInventoryRecords(inventoryRecords);
+    for (const product of productsState) {
+        let group = productGroups.find((candidate) => candidate.productId === product.id);
+        if (!group) {
+            group = {
+                productId: product.id,
+                productName: product.name,
+                records: [],
+                variants: []
+            };
+            productGroups.push(group);
+        }
+        group.variants = product.variant.map((productVariant) =>
+            group?.variants.find((candidate) => candidate.variantId === productVariant.id) ??
+            createEmptyVariantGroup(product, productVariant, inventoryBatchesState)
+        );
+    }
 
     const inventoryNavigationIntent =
         navigationRequest?.intent.type === "inventory.manage"
@@ -214,13 +270,18 @@ export default function InventoryPage({
     const normalizedSearch = searchTerm.trim().toLowerCase();
 
     const filteredProducts = productGroups.filter((product) =>
-        product.records.some((record) =>
+        product.records.length === 0
+            ? product.productName.toLowerCase().includes(normalizedSearch) ||
+                product.variants.some((variant) =>
+                    variant.variantName.toLowerCase().includes(normalizedSearch)
+                )
+            : product.records.some((record) =>
             record.productName.toLowerCase().includes(normalizedSearch) ||
             record.variantName.toLowerCase().includes(normalizedSearch) ||
             (record.batchNumber ?? "")
                 .toLowerCase()
                 .includes(normalizedSearch)
-        )
+            )
     );
 
     const selectedProduct = productGroups.find(
@@ -234,6 +295,13 @@ export default function InventoryPage({
             variant.variantId ===
             (inventoryNavigationTarget?.inventoryRecord.variantId ?? selectedVariantId)
     );
+    const selectedVariantBatches = selectedProduct && selectedVariant
+        ? inventoryBatchesState.filter(
+            (batch) =>
+                batch.productId === selectedProduct.productId &&
+                batch.variantId === selectedVariant.variantId
+        )
+        : [];
 
     function openProduct(productId: string) {
         setSelectedProductId(productId);
@@ -243,6 +311,7 @@ export default function InventoryPage({
     function closeProduct() {
         setSelectedProductId(null);
         setSelectedVariantId(null);
+        setInventoryLockMessages([]);
     }
 
     function handleSaveInventoryChanges(changes: EditProductChanges) {
@@ -261,8 +330,42 @@ export default function InventoryPage({
             throw new Error(`Product not found: ${productId}`);
         }
 
+        const draftLockMessages = getProductDraftLockMessages(
+            productId,
+            saleDrafts,
+            deliveryDrafts
+        );
+        if (draftLockMessages.length > 0) {
+            throw new Error(draftLockMessages.join(" "));
+        }
+
         if (changes.reason.trim() === "") {
             throw new Error("An adjustment reason is required.");
+        }
+
+        const deletionKeys = new Set<string>();
+        for (const deletion of changes.deletedBatches) {
+            const key = JSON.stringify([
+                productId,
+                deletion.variantId,
+                deletion.batchId
+            ]);
+            if (deletion.reason.trim() === "") {
+                throw new Error("A reason is required for every deletion.");
+            }
+            if (deletionKeys.has(key)) {
+                throw new Error("A batch can only be deleted once per save.");
+            }
+            const matches = inventoryBatchesState.filter(
+                (batch) =>
+                    batch.productId === productId &&
+                    batch.variantId === deletion.variantId &&
+                    batch.batchId === deletion.batchId
+            );
+            if (matches.length !== 1) {
+                throw new Error(`Batch not found: ${deletion.batchId}`);
+            }
+            deletionKeys.add(key);
         }
 
         if (inventoryNavigationTarget) {
@@ -274,6 +377,10 @@ export default function InventoryPage({
                 )
                 : changes.batches.some(
                     (item) => item.inventoryId === target.id &&
+                        item.variantId === target.variantId &&
+                        item.batchId === target.batchId
+                ) || changes.deletedBatches.some(
+                    (item) =>
                         item.variantId === target.variantId &&
                         item.batchId === target.batchId
                 );
@@ -385,9 +492,89 @@ export default function InventoryPage({
                     ? null
                     : new Date(batchChanges.expiryDate)
             };
-        });
+        }).filter((batch) => !deletionKeys.has(JSON.stringify([
+            batch.productId,
+            batch.variantId,
+            batch.batchId
+        ])));
 
-        const nextInventory = [...inventoryState];
+        const nextInventory = inventoryState.filter((record) =>
+            record.batchId === null ||
+            !deletionKeys.has(JSON.stringify([
+                record.productId,
+                record.variantId,
+                record.batchId
+            ]))
+        );
+        const createdBatchIds = new Set<string>();
+        const createdBatches: inventoryBatch[] = [];
+        const createdInventoryRecords: inventory[] = [];
+        for (const newBatch of changes.newBatches) {
+            const productVariant = currentProduct.variant.find(
+                (variant) => variant.id === newBatch.variantId
+            );
+            if (!productVariant || newBatch.batchId.trim() === "") {
+                throw new Error("A new batch requires a valid variant and batch ID.");
+            }
+            if (
+                inventoryBatchesState.some((batch) => batch.batchId === newBatch.batchId) ||
+                createdBatchIds.has(newBatch.batchId)
+            ) {
+                throw new Error(`Duplicate batch ID: ${newBatch.batchId}`);
+            }
+            createdBatchIds.add(newBatch.batchId);
+            if (
+                newBatch.batchNumber !== null &&
+                typeof newBatch.batchNumber !== "string"
+            ) {
+                throw new Error(`Invalid batch number for batch: ${newBatch.batchId}`);
+            }
+            if (
+                newBatch.expiryDate !== null &&
+                (!(newBatch.expiryDate instanceof Date) ||
+                    Number.isNaN(newBatch.expiryDate.getTime()))
+            ) {
+                throw new Error(`Invalid expiry date for batch: ${newBatch.batchId}`);
+            }
+            const seenPackagingLevels = new Set<string>();
+            for (const stock of newBatch.stockQuantities) {
+                if (!productVariant.packagingHierarchy.some(
+                    (level) => level.id === stock.packagingLevelId
+                )) {
+                    throw new Error(
+                        `Packaging level not found: ${stock.packagingLevelId}`
+                    );
+                }
+                if (
+                    seenPackagingLevels.has(stock.packagingLevelId) ||
+                    !Number.isSafeInteger(stock.quantity) ||
+                    stock.quantity < 0
+                ) {
+                    throw new Error("New batch stock quantities must use unique packaging levels and non-negative whole numbers.");
+                }
+                seenPackagingLevels.add(stock.packagingLevelId);
+            }
+            const batch: inventoryBatch = {
+                batchId: newBatch.batchId,
+                productId,
+                variantId: newBatch.variantId,
+                batchNumber: newBatch.batchNumber,
+                expiryDate: newBatch.expiryDate === null
+                    ? null
+                    : new Date(newBatch.expiryDate)
+            };
+            const record = createInventory(
+                productId,
+                newBatch.variantId,
+                newBatch.batchId,
+                newBatch.stockQuantities
+            );
+            validateInventoryPackagingRelationships(currentProduct, record);
+            createdBatches.push(batch);
+            createdInventoryRecords.push(record);
+            nextInventoryBatches.push(batch);
+            nextInventory.push(record);
+        }
         const newAdjustments: stockAdjustment[] = [];
         const seenInventoryIds = new Set<string>();
 
@@ -455,6 +642,44 @@ export default function InventoryPage({
 
         const activityEvents: ActivityEventInput[] = [];
 
+        for (const deletion of changes.deletedBatches) {
+            const batch = inventoryBatchesState.find(
+                (candidate) =>
+                    candidate.productId === productId &&
+                    candidate.variantId === deletion.variantId &&
+                    candidate.batchId === deletion.batchId
+            );
+            if (!batch) {
+                throw new Error(`Batch not found: ${deletion.batchId}`);
+            }
+            activityEvents.push(
+                buildBatchRemovalActivityInput(
+                    changes.operationId,
+                    currentProduct,
+                    batch,
+                    inventoryState,
+                    inventoryBatchesState,
+                    deletion.reason.trim()
+                )
+            );
+        }
+
+        for (let index = 0; index < createdBatches.length; index += 1) {
+            const batch = createdBatches[index];
+            const record = createdInventoryRecords[index];
+            if (!batch || !record) {
+                throw new Error("A new batch is missing its inventory snapshot.");
+            }
+            activityEvents.push(
+                buildBatchCreatedActivityInput(
+                    changes.operationId,
+                    currentProduct,
+                    batch,
+                    record
+                )
+            );
+        }
+
         for (const batchChanges of changes.batches) {
             const previousBatch = inventoryBatchesState.find(
                 (batch) =>
@@ -499,7 +724,14 @@ export default function InventoryPage({
 
         if (activityEvents.length > 0) {
             onInventoryCommit({
-                inventoryRecords: unbatchedResult.updatedInventory,
+                inventoryRecords: unbatchedResult.updatedInventory.filter((record) =>
+                    record.batchId === null ||
+                    !deletionKeys.has(JSON.stringify([
+                        record.productId,
+                        record.variantId,
+                        record.batchId
+                    ]))
+                ),
                 inventoryBatches: nextInventoryBatches,
                 activityEvents
             });
@@ -514,6 +746,16 @@ export default function InventoryPage({
     }
 
     function openInventoryEditor(productId: string) {
+        const blockers = getProductDraftLockMessages(
+            productId,
+            saleDrafts,
+            deliveryDrafts
+        );
+        if (blockers.length > 0) {
+            setInventoryLockMessages(blockers);
+            return;
+        }
+        setInventoryLockMessages([]);
         setEditingProductId(productId);
     }
 
@@ -600,6 +842,10 @@ export default function InventoryPage({
                 </select>
 
             </div>
+
+            {inventoryLockMessages.length > 0 && (
+                <p role="alert">{inventoryLockMessages.join(" ")}</p>
+            )}
 
             {/* Product cards */}
 
@@ -761,8 +1007,9 @@ export default function InventoryPage({
                                                     </div>
 
                                                     <div className="aggregated-stock">
-
-                                                        {displayStock(
+                                                        {variant.records.length === 0
+                                                            ? <span>No stock recorded</span>
+                                                            : displayStock(
                                                             variant.aggregatedStock.stockQuantities,
                                                             variant.aggregatedStock.packagingLevels
                                                         )}
@@ -810,8 +1057,9 @@ export default function InventoryPage({
                                         </p>
 
                                         <div className="aggregated-stock">
-
-                                            {displayStock(
+                                            {selectedVariant.records.length === 0
+                                                ? <span>No stock recorded</span>
+                                                : displayStock(
                                                 selectedVariant.aggregatedStock.stockQuantities,
                                                 selectedVariant.aggregatedStock.packagingLevels
                                             )}
@@ -872,6 +1120,24 @@ export default function InventoryPage({
                                             )
                                         )}
 
+                                        {selectedVariantBatches
+                                            .filter((batch) => !selectedVariant.records.some(
+                                                (record) => record.batchId === batch.batchId
+                                            ))
+                                            .map((batch) => (
+                                                <article className="batch-card" key={batch.batchId}>
+                                                    <div className="batch-card-heading">
+                                                        <strong>{batch.batchNumber ?? "Batch number not set"}</strong>
+                                                        {batch.expiryDate && (
+                                                            <span>
+                                                                Expires: {batch.expiryDate.toLocaleDateString()}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <p>No inventory record is associated with this batch.</p>
+                                                </article>
+                                            ))}
+
                                     </div>
 
                                 </>
@@ -906,6 +1172,11 @@ export default function InventoryPage({
                         setEditingProductId(null);
                     }}
                     onSave={handleSaveInventoryChanges}
+                    draftLockMessages={getProductDraftLockMessages(
+                        editingProduct.id,
+                        saleDrafts,
+                        deliveryDrafts
+                    )}
                 />
             )}
 

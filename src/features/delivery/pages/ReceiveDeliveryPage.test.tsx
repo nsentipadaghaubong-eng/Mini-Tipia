@@ -112,6 +112,7 @@ function renderPage(
                 inventoryRecords={state.inventoryRecords}
                 inventoryBatches={state.inventoryBatches}
                 deliveryDrafts={state.deliveryDrafts}
+                saleDrafts={state.saleDrafts}
                 onDraftDetailsUpdated={(deliveryId, changes, updatedAt) =>
                     dispatch({
                         type: "delivery.draft_details_updated",
@@ -170,7 +171,9 @@ function renderPage(
                             state.inventoryRecords,
                             state.inventoryBatches
                         );
-                        const [event] = prepareActivityEvents([plan.activity]);
+                        const [event] = prepareActivityEvents([plan.activity], {
+                            now: () => new Date(plan.draft.updatedAt)
+                        });
                         const action = {
                             type: "delivery.approved" as const,
                             plan,
@@ -854,6 +857,54 @@ describe("Receive Delivery page", () => {
         expect(page.state.deliveryDrafts).toEqual([]);
     });
 
+    it.each(["sales", "delivery"] as const)(
+        "blocks adding a variant to a product in an active %s draft",
+        (draftType) => {
+            const deliveryDrafts = draftType === "delivery"
+                ? [draftWithItem("active-delivery", "Supplier")]
+                : [];
+            const saleDraft = {
+                draftId: "active-sale",
+                status: "draft" as const,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                items: [{
+                    lineId: "sale-item",
+                    productId: "product-1",
+                    variantId: "variant-1",
+                    inventoryRecordId: "inventory-1",
+                    batchId: null,
+                    packagingLevelId: "box",
+                    quantity: 1,
+                    defaultSellingPrice: 12,
+                    appliedSellingPrice: 12,
+                    discountAmount: 0
+                }]
+            };
+            const initialState = {
+                ...makeState(deliveryDrafts),
+                saleDrafts: draftType === "sales" ? [saleDraft] : []
+            };
+            renderPage(initialState);
+
+            fireEvent.change(screen.getByLabelText("Search products"), {
+                target: { value: "Example medicine" }
+            });
+            fireEvent.click(screen.getByRole("option", {
+                name: "Select product Example medicine"
+            }));
+            fireEvent.click(screen.getByRole("button", { name: "Add New Variant" }));
+
+            expect(screen.queryByRole("dialog", { name: "Add Variant" }))
+                .not.toBeInTheDocument();
+            expect(screen.getByRole("alert")).toHaveTextContent(
+                draftType === "sales"
+                    ? "This product is currently in a Sales draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+                    : "This product is currently in a Receive Delivery draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+            );
+        }
+    );
+
     it("validates Received By and Delivery Date only on approval", () => {
         const draft = draftWithItem("delivery-validation", "Supplier");
         const initial = makeState([draft]);
@@ -1012,52 +1063,13 @@ describe("Receive Delivery page", () => {
         });
 
         fireEvent.click(screen.getByRole("button", { name: "Add New Variant" }));
-        const addVariantDialog = screen.getByRole("dialog", { name: "Add Variant" });
-        fireEvent.change(within(addVariantDialog).getByLabelText(
-            /Name or description/
-        ), { target: { value: "Capsules" } });
-        fireEvent.click(within(addVariantDialog).getByRole("button", {
-            name: "Add Packaging Level"
-        }));
-        fireEvent.change(within(addVariantDialog).getByLabelText(
-            /Packaging name/
-        ), { target: { value: "Bottle" } });
-        fireEvent.change(within(addVariantDialog).getByLabelText(
-            "Selling price"
-        ), { target: { value: "20" } });
-        fireEvent.click(within(addVariantDialog).getByRole("button", {
-            name: "Add Variant"
-        }));
-
-        const newVariantModal = screen.getByRole("dialog", {
-            name: "Receive Item"
-        });
-        fireEvent.change(within(newVariantModal).getByLabelText(
-            "Packaging level received"
-        ), {
-            target: {
-                value: page.state.products[0].variant.find(
-                    (productVariant) => productVariant.variantName === "Capsules"
-                )?.packagingHierarchy[0].id
-            }
-        });
-        fireEvent.change(within(newVariantModal).getByLabelText(
-            "Quantity received"
-        ), { target: { value: "3" } });
-        fireEvent.change(within(newVariantModal).getByLabelText(
-            "Batch number"
-        ), { target: { value: "LOT-CAPSULES" } });
-        fireEvent.change(within(newVariantModal).getByLabelText(
-            "Expiry date"
-        ), { target: { value: "2028-02-28" } });
-        fireEvent.click(within(newVariantModal).getByRole("button", {
-            name: "Add to Delivery"
-        }));
-
-        expect(page.state.products[0].variant).toHaveLength(2);
-        expect(page.state.deliveryDrafts[1].items).toHaveLength(2);
-        expect(page.state.deliveryDrafts[1].items[1].variantId)
-            .toBe(page.state.products[0].variant[1].id);
+        expect(screen.queryByRole("dialog", { name: "Add Variant" }))
+            .not.toBeInTheDocument();
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "This product is currently in a Receive Delivery draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+        );
+        expect(page.state.products[0].variant).toHaveLength(1);
+        expect(page.state.deliveryDrafts[1].items).toHaveLength(1);
 
         fireEvent.click(screen.getByRole("button", { name: "Approve Delivery" }));
 
@@ -1075,7 +1087,7 @@ describe("Receive Delivery page", () => {
                 0
             ),
             0
-        )).toBe(9);
+        )).toBe(6);
         expect(page.state.activityEvents.filter(
             (event) => event.type === "delivery.received"
         )).toHaveLength(2);

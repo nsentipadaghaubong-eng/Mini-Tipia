@@ -21,6 +21,7 @@ import {
     createInventoryManageIntent,
     resolveInventoryManageTarget
 } from "../../../navigation/navigationIntent";
+import type { ProductRecordDeletionDraft } from "../../../products/productDeletion";
 import "./ProductEditModal.css";
 
 interface ProductEditModalProps {
@@ -33,24 +34,15 @@ interface ProductEditModalProps {
         inventoryId: string,
         batchId: string | null
     ) => void;
-    onArchiveVariant?: (variantId: string, variantName: string) => void;
-    onArchivePackagingLevel?: (
-        variantId: string,
-        packagingLevelId: string,
-        packagingLevelName: string
-    ) => void;
-    onArchiveBatch?: (
-        variantId: string,
-        batchId: string,
-        batchNumber: string | null
-    ) => void;
     onClose: () => void;
     onSave: (
         product: productStructure,
         reason: string,
         inventoryRecords?: inventory[],
-        inventoryBatches?: inventoryBatch[]
+        inventoryBatches?: inventoryBatch[],
+        deletions?: ProductRecordDeletionDraft[]
     ) => void;
+    draftLockMessages?: string[];
 }
 
 function fieldError(errors: ProductUpdateErrors, key: string) {
@@ -91,25 +83,31 @@ export default function ProductEditModal({
     inventoryBatches,
     initialVariantId = null,
     onManageStock,
-    onArchiveVariant,
-    onArchivePackagingLevel,
-    onArchiveBatch,
     onClose,
-    onSave
+    onSave,
+    draftLockMessages = []
 }: ProductEditModalProps) {
     const [draft, setDraft] = useState(() => createProductUpdateDraft(product));
     const [saveError, setSaveError] = useState<string | null>(null);
-    const [archiveTarget, setArchiveTarget] = useState<{
-        kind: "variant" | "packaging" | "batch";
-        variantId: string;
-        batchId?: string | null;
-        packagingLevelId?: string;
-        title: string;
-        description: string;
-        quantitySummary: string;
-    } | null>(null);
+    const [pendingDeletion, setPendingDeletion] =
+        useState<ProductRecordDeletionDraft | null>(null);
+    const [stagedDeletions, setStagedDeletions] = useState<Array<{
+        id: string;
+        deletion: ProductRecordDeletionDraft;
+    }>>([]);
     const errors = validateProductUpdateDraft(draft, product);
     const hasErrors = Object.keys(errors).length > 0;
+    const isDraftLocked = draftLockMessages.length > 0;
+    const isProductStructureReadOnly =
+        isDraftLocked || stagedDeletions.length > 0;
+    const originalVariantDraft = createProductUpdateDraft(product).variants;
+    const hasStructuralChanges =
+        JSON.stringify(draft.variants) !== JSON.stringify(originalVariantDraft);
+    const saveDisabled =
+        hasErrors ||
+        (isDraftLocked &&
+            (hasStructuralChanges || stagedDeletions.length > 0)) ||
+        stagedDeletions.some(({ deletion }) => deletion.reason.trim() === "");
     const orderedVariants = initialVariantId
         ? [...draft.variants].sort((first, second) =>
             first.id === initialVariantId
@@ -167,47 +165,6 @@ export default function ProductEditModal({
         ) !== undefined;
     }
 
-    function getPackagingQuantityForRecord(
-        record: inventory,
-        packagingLevelId: string
-    ): number {
-        return record.stockQuantities.find(
-            (stock) => stock.packagingLevelId === packagingLevelId
-        )?.quantity ?? 0;
-    }
-
-    function getArchiveSummary(
-        variantId: string,
-        batchId: string | null,
-        packagingLevelId?: string
-    ): string {
-        const records = inventoryRecords.filter(
-            (record) =>
-                record.productId === product.id &&
-                record.variantId === variantId &&
-                (batchId === null ? record.batchId === null : record.batchId === batchId)
-        );
-
-        if (records.length === 0) {
-            return "0 units";
-        }
-
-        if (packagingLevelId) {
-            const total = records.reduce(
-                (sum, record) => sum + getPackagingQuantityForRecord(record, packagingLevelId),
-                0
-            );
-            const level = product.variant
-                .find((item) => item.id === variantId)
-                ?.packagingHierarchy.find((candidate) => candidate.id === packagingLevelId);
-            return `${total} ${level?.name ?? "unit"}${total === 1 ? "" : "s"}`;
-        }
-
-        const quantities = records.flatMap((record) => record.stockQuantities);
-        const total = quantities.reduce((sum, stock) => sum + stock.quantity, 0);
-        return `${total} total units`;
-    }
-
     function updateDraft(update: (current: ProductUpdateDraft) => ProductUpdateDraft) {
         setDraft(update);
         setSaveError(null);
@@ -239,9 +196,68 @@ export default function ProductEditModal({
         }
     }
 
+    function requestDeletion(deletion: ProductRecordDeletionDraft) {
+        if (isDraftLocked) {
+            setSaveError(draftLockMessages.join(" "));
+            return;
+        }
+        if (hasStructuralChanges) {
+            setSaveError(
+                "Save or cancel product structure changes before staging a deletion."
+            );
+            return;
+        }
+        const alreadyStaged = stagedDeletions.some(({ deletion: staged }) =>
+            staged.variantId === deletion.variantId &&
+            (staged.type === "variant" ||
+                (deletion.type === "packaging" &&
+                    staged.packagingLevelId === deletion.packagingLevelId))
+        );
+        if (alreadyStaged) {
+            return;
+        }
+        setSaveError(null);
+        setPendingDeletion(deletion);
+    }
+
+    function confirmDeletion() {
+        if (!pendingDeletion) {
+            return;
+        }
+        if (isDraftLocked) {
+            setPendingDeletion(null);
+            setSaveError(draftLockMessages.join(" "));
+            return;
+        }
+        setStagedDeletions((current) => [
+            ...current,
+            { id: crypto.randomUUID(), deletion: pendingDeletion }
+        ]);
+        setPendingDeletion(null);
+    }
+
+    function updateDeletionReason(id: string, reason: string) {
+        setStagedDeletions((current) => current.map((staged) =>
+            staged.id === id
+                ? { ...staged, deletion: { ...staged.deletion, reason } }
+                : staged
+        ));
+        setSaveError(null);
+    }
+
     function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        if (
+            isDraftLocked &&
+            (hasStructuralChanges || stagedDeletions.length > 0)
+        ) {
+            setSaveError(draftLockMessages.join(" "));
+            return;
+        }
         if (hasErrors) {
+            return;
+        }
+        if (stagedDeletions.some(({ deletion }) => deletion.reason.trim() === "")) {
             return;
         }
 
@@ -290,7 +306,11 @@ export default function ProductEditModal({
                 updatedProduct,
                 draft.reason.trim(),
                 nextInventoryRecords,
-                nextInventoryBatches
+                nextInventoryBatches,
+                stagedDeletions.map(({ deletion }) => ({
+                    ...deletion,
+                    reason: deletion.reason.trim()
+                }))
             );
             onClose();
         } catch (error) {
@@ -350,6 +370,17 @@ export default function ProductEditModal({
                                 />
                                 {fieldError(errors, "name")}
                             </label>
+                            <label className="product-edit-field">
+                                Description
+                                <textarea
+                                    onChange={(event) => updateDraft((current) => ({
+                                        ...current,
+                                        description: event.target.value
+                                    }))}
+                                    rows={2}
+                                    value={draft.description}
+                                />
+                            </label>
                             <div className="product-edit-field-grid">
                                 <label className="product-edit-field">
                                     Generic name
@@ -392,6 +423,7 @@ export default function ProductEditModal({
                                 <button
                                     className="secondary-button"
                                     onClick={addVariant}
+                                    disabled={isProductStructureReadOnly}
                                     type="button"
                                 >
                                     Add variant
@@ -415,34 +447,33 @@ export default function ProductEditModal({
                                     >
                                         <div className="product-edit-variant-heading">
                                             <h4>{productVariant.name || "New variant"}</h4>
-                                            <div className="product-edit-actions">
+                                            {product.variant.some(
+                                                (item) => item.id === productVariant.id
+                                            ) && (
                                                 <button
-                                                    aria-label={`Remove ${productVariant.name} variant`}
-                                                    className="product-edit-remove"
-                                                    disabled
-                                                    title="Variant removal and inventory dependency handling are not available yet."
-                                                    type="button"
-                                                >
-                                                    Remove variant
-                                                </button>
-                                                <button
-                                                    className="secondary-button"
-                                                    onClick={() => setArchiveTarget({
-                                                        kind: "variant",
+                                                    className="product-delete-button"
+                                                    disabled={
+                                                        isDraftLocked ||
+                                                        stagedDeletions.some(
+                                                            ({ deletion }) =>
+                                                                deletion.variantId === productVariant.id
+                                                        )
+                                                    }
+                                                    onClick={() => requestDeletion({
+                                                        type: "variant",
                                                         variantId: productVariant.id,
-                                                        title: `Delete this variant permanently?`,
-                                                        description: `This action permanently removes the selected variant and all of its active stock records. Stock will not be transferred to another variant. The deletion reason is required.`,
-                                                        quantitySummary: getArchiveSummary(productVariant.id, null)
+                                                        reason: ""
                                                     })}
                                                     type="button"
                                                 >
-                                                    Delete variant
+                                                    Delete Variant
                                                 </button>
-                                            </div>
+                                            )}
                                         </div>
                                         <label className="product-edit-field">
                                             Variant name
                                             <input
+                                                disabled={isProductStructureReadOnly}
                                                 onChange={(event) => updateDraft((current) =>
                                                     updateVariant(
                                                         current,
@@ -463,6 +494,7 @@ export default function ProductEditModal({
                                         <label className="product-edit-field">
                                             NAFDAC registration number
                                             <input
+                                                disabled={isProductStructureReadOnly}
                                                 onChange={(event) => updateDraft((current) =>
                                                     updateVariant(
                                                         current,
@@ -517,6 +549,7 @@ export default function ProductEditModal({
                                                         {canManageStock(productVariant.id, record) && (
                                                             <button
                                                                 className="secondary-button"
+                                                                disabled={isProductStructureReadOnly}
                                                                 onClick={() => onManageStock(
                                                                     productVariant.id,
                                                                     record.id,
@@ -527,22 +560,6 @@ export default function ProductEditModal({
                                                                 Manage Stock
                                                             </button>
                                                         )}
-                                                        {record.batchId !== null && (
-                                                            <button
-                                                                className="secondary-button"
-                                                                onClick={() => setArchiveTarget({
-                                                                    kind: "batch",
-                                                                    variantId: productVariant.id,
-                                                                    batchId: record.batchId ?? undefined,
-                                                                    title: "Delete this batch permanently?",
-                                                                    description: "Deleting this batch permanently removes its active stock records. Stock will not be transferred to another batch or packaging level.",
-                                                                    quantitySummary: getArchiveSummary(productVariant.id, record.batchId)
-                                                                })}
-                                                                type="button"
-                                                            >
-                                                                Delete batch
-                                                            </button>
-                                                        )}
                                                     </div>
                                                 ))
                                             )}
@@ -551,6 +568,7 @@ export default function ProductEditModal({
                                             <h5>Packaging hierarchy</h5>
                                             <button
                                                 className="secondary-button"
+                                                disabled={isProductStructureReadOnly}
                                                 onClick={() => addPackagingLevel(variantIndex)}
                                                 type="button"
                                             >
@@ -579,36 +597,35 @@ export default function ProductEditModal({
                                                         <strong>
                                                             {level.name || "Packaging level"}
                                                         </strong>
-                                                        <div className="product-edit-actions">
-                                                            <button
-                                                                aria-label={`Remove ${level.name || "packaging"} level`}
-                                                                className="product-edit-remove"
-                                                                disabled
-                                                                title="Packaging removal and stock dependency handling are not available yet."
-                                                                type="button"
-                                                            >
-                                                                Remove
-                                                            </button>
+                                                        {productVariant.packaging.some(
+                                                            (item) => item.id === level.id
+                                                        ) && (
                                                             <button
                                                                 className="secondary-button"
-                                                                onClick={() => setArchiveTarget({
-                                                                    kind: "packaging",
+                                                                disabled={
+                                                                    isDraftLocked ||
+                                                                    stagedDeletions.some(
+                                                                        ({ deletion }) =>
+                                                                            deletion.variantId === productVariant.id
+                                                                    )
+                                                                }
+                                                                onClick={() => requestDeletion({
+                                                                    type: "packaging",
                                                                     variantId: productVariant.id,
                                                                     packagingLevelId: level.id,
-                                                                    title: "Delete this packaging level permanently?",
-                                                                    description: "Deleting this packaging level permanently removes its active stock records. Stock will not be transferred to another packaging level.",
-                                                                    quantitySummary: getArchiveSummary(productVariant.id, null, level.id)
+                                                                    reason: ""
                                                                 })}
                                                                 type="button"
                                                             >
-                                                                Delete
+                                                                Delete Packaging Level
                                                             </button>
-                                                        </div>
+                                                        )}
                                                     </div>
                                                     <div className="product-edit-field-grid">
                                                         <label className="product-edit-field">
                                                             Packaging level name
                                                             <input
+                                                                disabled={isProductStructureReadOnly}
                                                                 onChange={(event) => updateDraft((current) =>
                                                                     updateVariant(
                                                                         current,
@@ -633,6 +650,7 @@ export default function ProductEditModal({
                                                         <label className="product-edit-field">
                                                             Next packaging level
                                                             <select
+                                                                disabled={isProductStructureReadOnly}
                                                                 onChange={(event) => updateDraft((current) =>
                                                                     updateVariant(
                                                                         current,
@@ -673,7 +691,7 @@ export default function ProductEditModal({
                                                         <label className="product-edit-field">
                                                             Quantity of next level
                                                             <input
-                                                                disabled={level.nextLevelId === ""}
+                                                                disabled={isProductStructureReadOnly || level.nextLevelId === ""}
                                                                 min="1"
                                                                 onChange={(event) => updateDraft((current) =>
                                                                     updateVariant(
@@ -701,6 +719,7 @@ export default function ProductEditModal({
                                                         <label className="product-edit-field">
                                                             Cost price
                                                             <input
+                                                                disabled={isProductStructureReadOnly}
                                                                 min="0"
                                                                 onChange={(event) => updateDraft((current) =>
                                                                     updateVariant(
@@ -728,6 +747,7 @@ export default function ProductEditModal({
                                                         <label className="product-edit-field">
                                                             Selling price
                                                             <input
+                                                                disabled={isProductStructureReadOnly}
                                                                 min="0"
                                                                 onChange={(event) => updateDraft((current) =>
                                                                     updateVariant(
@@ -755,6 +775,7 @@ export default function ProductEditModal({
                                                         <label className="product-edit-field">
                                                             Initial stock quantity
                                                             <input
+                                                                disabled={isProductStructureReadOnly}
                                                                 min="0"
                                                                 onChange={(event) => updateDraft((current) =>
                                                                     updateVariant(
@@ -787,6 +808,7 @@ export default function ProductEditModal({
                                                             <label className="product-edit-field">
                                                                 Initial stock batch
                                                                 <select
+                                                                    disabled={isProductStructureReadOnly}
                                                                     onChange={(event) => updateDraft((current) =>
                                                                         updateVariant(
                                                                             current,
@@ -850,87 +872,53 @@ export default function ProductEditModal({
                             {fieldError(errors, "reason")}
                         </label>
 
+                        {stagedDeletions.length > 0 && (
+                            <section aria-label="Staged deletions">
+                                <h3 className="modal-section-title">Staged deletions</h3>
+                                {stagedDeletions.map(({ id, deletion }) => {
+                                    const productVariant = product.variant.find(
+                                        (item) => item.id === deletion.variantId
+                                    );
+                                    const packagingName =
+                                        deletion.type === "packaging"
+                                            ? productVariant?.packagingHierarchy.find(
+                                                (level) =>
+                                                    level.id === deletion.packagingLevelId
+                                            )?.name ?? "packaging level"
+                                            : null;
+                                    const targetName = deletion.type === "variant"
+                                        ? productVariant?.variantName ?? "variant"
+                                        : `${packagingName} packaging level`;
+                                    return (
+                                        <label className="product-edit-field" key={id}>
+                                            Reason for deleting {targetName}
+                                            <textarea
+                                                aria-label={`Reason for deleting ${targetName}`}
+                                                onChange={(event) => updateDeletionReason(
+                                                    id,
+                                                    event.target.value
+                                                )}
+                                                rows={2}
+                                                value={deletion.reason}
+                                            />
+                                        </label>
+                                    );
+                                })}
+                            </section>
+                        )}
+
                         {saveError && (
                             <p className="product-edit-save-error" role="alert">
                                 {saveError}
                             </p>
                         )}
+                        {isDraftLocked && (
+                            <p className="product-edit-save-error" role="alert">
+                                {draftLockMessages.join(" ")}
+                            </p>
+                        )}
                     </div>
 
-                    {archiveTarget && (
-                        <div
-                            className="inventory-modal-overlay"
-                            onClick={(event) => {
-                                if (event.target === event.currentTarget) {
-                                    setArchiveTarget(null);
-                                }
-                            }}
-                        >
-                            <section
-                                aria-labelledby="archive-product-item-title"
-                                aria-modal="true"
-                                className="inventory-modal"
-                                role="dialog"
-                            >
-                                <header className="inventory-modal-header">
-                                    <div>
-                                        <h3 id="archive-product-item-title">
-                                            {archiveTarget.title}
-                                        </h3>
-                                    </div>
-                                </header>
-                                <div className="inventory-modal-content">
-                                    <p>{archiveTarget.description}</p>
-                                    <p>
-                                        <strong>Stock that will be permanently removed:</strong> {archiveTarget.quantitySummary}
-                                    </p>
-                                    <p>
-                                        Deleting this item permanently removes the active inventory records and associated quantities. This operation cannot be undone.
-                                    </p>
-                                </div>
-                                <footer className="product-edit-footer">
-                                    <button
-                                        className="secondary-button"
-                                        onClick={() => setArchiveTarget(null)}
-                                        type="button"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        className="primary-button"
-                                        onClick={() => {
-                                            if (archiveTarget.kind === "variant") {
-                                                onArchiveVariant?.(
-                                                    archiveTarget.variantId,
-                                                    product.variant.find((item) => item.id === archiveTarget.variantId)?.variantName ?? "Variant"
-                                                );
-                                            }
-                                            if (archiveTarget.kind === "packaging") {
-                                                onArchivePackagingLevel?.(
-                                                    archiveTarget.variantId,
-                                                    archiveTarget.packagingLevelId ?? "",
-                                                    product.variant
-                                                        .find((item) => item.id === archiveTarget.variantId)
-                                                        ?.packagingHierarchy.find((candidate) => candidate.id === archiveTarget.packagingLevelId)?.name ?? "Packaging level"
-                                                );
-                                            }
-                                            if (archiveTarget.kind === "batch") {
-                                                onArchiveBatch?.(
-                                                    archiveTarget.variantId,
-                                                    archiveTarget.batchId ?? "",
-                                                    getBatch(archiveTarget.variantId, archiveTarget.batchId ?? null)?.batchNumber ?? null
-                                                );
-                                            }
-                                            setArchiveTarget(null);
-                                        }}
-                                        type="button"
-                                    >
-                                        Permanently Delete
-                                    </button>
-                                </footer>
-                            </section>
-                        </div>
-                    )}
                     <footer className="product-edit-footer">
                         <button
                             className="secondary-button"
@@ -941,7 +929,7 @@ export default function ProductEditModal({
                         </button>
                         <button
                             className="primary-button"
-                            disabled={hasErrors}
+                            disabled={saveDisabled}
                             type="submit"
                         >
                             Save Changes
@@ -949,6 +937,69 @@ export default function ProductEditModal({
                     </footer>
                 </form>
             </section>
+            {pendingDeletion && (
+                <div className="inventory-modal-overlay">
+                    <section
+                        aria-labelledby="product-record-deletion-title"
+                        aria-modal="true"
+                        className="inventory-modal product-deletion-dialog"
+                        role="alertdialog"
+                    >
+                        {(() => {
+                            const productVariant = product.variant.find(
+                                (item) => item.id === pendingDeletion.variantId
+                            );
+                            const packagingLevel =
+                                pendingDeletion.type === "packaging"
+                                    ? productVariant?.packagingHierarchy.find(
+                                        (level) =>
+                                            level.id === pendingDeletion.packagingLevelId
+                                    )
+                                    : undefined;
+                            const targetLabel =
+                                pendingDeletion.type === "variant"
+                                    ? productVariant?.variantName ?? "variant"
+                                    : `${packagingLevel?.name ?? "packaging level"} packaging level`;
+                            return (
+                                <>
+                        <div className="inventory-modal-header">
+                            <h2 id="product-record-deletion-title">
+                                Delete {targetLabel}?
+                            </h2>
+                        </div>
+                        <div className="inventory-modal-content">
+                            <p>
+                                {pendingDeletion.type === "variant"
+                                    ? `${targetLabel}, its batches, inventory records, and stock quantities will be deleted when you save these changes.`
+                                    : `${targetLabel} and its associated stock quantities will be deleted when you save these changes.`}
+                            </p>
+                            {isDraftLocked && (
+                                <p role="alert">{draftLockMessages.join(" ")}</p>
+                            )}
+                            <div className="product-deletion-actions">
+                                <button
+                                    className="secondary-button"
+                                    onClick={() => setPendingDeletion(null)}
+                                    type="button"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    className="product-delete-button"
+                                    disabled={isDraftLocked}
+                                    onClick={confirmDeletion}
+                                    type="button"
+                                >
+                                    Confirm Delete
+                                </button>
+                            </div>
+                        </div>
+                                </>
+                            );
+                        })()}
+                    </section>
+                </div>
+            )}
         </div>
     );
 }

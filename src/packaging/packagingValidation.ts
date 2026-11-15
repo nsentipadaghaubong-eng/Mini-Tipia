@@ -162,6 +162,48 @@ export function validatePackagingHierarchy(
     }
 }
 
+export function removePackagingLevelFromHierarchy(
+    levels: readonly packagingLevel[],
+    packagingLevelId: string
+): packagingLevel[] {
+    validatePackagingHierarchy(levels);
+    const target = levels.find((level) => level.id === packagingLevelId);
+    if (!target) {
+        throw new Error("Packaging level does not belong to this variant.");
+    }
+
+    const parent = levels.find((level) => level.nextLevelId === target.id);
+    const remaining = levels
+        .filter((level) => level.id !== target.id)
+        .map((level) => {
+            if (level.id !== parent?.id) {
+                return { ...level };
+            }
+            if (target.nextLevelId === null) {
+                return {
+                    ...level,
+                    nextLevelId: null,
+                    quantityofNextLevel: null
+                };
+            }
+
+            const combinedQuantity =
+                (level.quantityofNextLevel ?? 0) *
+                (target.quantityofNextLevel ?? 0);
+            if (!Number.isSafeInteger(combinedQuantity) || combinedQuantity <= 0) {
+                throw new Error("Removing this packaging level would create an invalid conversion quantity.");
+            }
+            return {
+                ...level,
+                nextLevelId: target.nextLevelId,
+                quantityofNextLevel: combinedQuantity
+            };
+        });
+
+    validatePackagingHierarchy(remaining);
+    return remaining;
+}
+
 export function getPackagingLevelFromHierarchy(
     levels: readonly packagingLevel[],
     packagingLevelId: string

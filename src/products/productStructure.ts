@@ -3,6 +3,7 @@ import type { packagingLevel } from "../packaging/packagingHierarchy";
 export interface productStructure {
     id: string;
     name: string;
+    description?: string;
     genericName?: string;
     manufacturer?: string;
     category?: string;

@@ -1,14 +1,23 @@
 import {
     appendActivityEvents,
+    buildBatchCreatedActivityInput,
+    buildBatchRemovalActivityInput,
+    buildBatchUpdatedActivityInput,
+    buildPackagingRemovalActivityInput,
+    buildStockAdjustmentActivityInput,
+    buildVariantRemovalActivityInput,
     buildProductDeletionActivityInput,
+    buildProductCreationActivityInputs,
+    buildProductUpdateActivityInputs,
     snapshotBatch,
     snapshotPackagingLevel,
     snapshotProduct,
     snapshotVariant,
-    type ActivityEvent
+    type ActivityEvent,
+    type ActivityEventInput
 } from "./activity/activity";
 import type { inventory } from "./inventory/inventoryStock";
-import { getStockQuantityOrZero } from "./inventory/inventoryStock";
+import { adjustInventoryStock } from "./inventory/inventoryAdjustment";
 import type { inventoryBatch } from "./inventory/inventoryBatch";
 import { validateInventoryRelationships } from "./inventory/inventoryValidation";
 import { demoInventory, demoInventoryBatches, demoProducts } from "./data/demoInventory";
@@ -17,6 +26,7 @@ import type { productStructure } from "./products/productStructure";
 import type { variant } from "./products/productStructure";
 import { getPackagingLevelById, getVariantById } from "./products/productValidation";
 import { validatePackagingHierarchy } from "./packaging/packagingValidation";
+import { removePackagingLevelFromHierarchy } from "./packaging/packagingValidation";
 import {
     prepareSaleDraft,
     type CompletedSale,
@@ -45,8 +55,25 @@ import {
     type DeliveryDraftItem,
     type DeliveryDraftItemChanges
 } from "./deliveries/deliveryDraft";
-import type { DeliveryApprovalPlan } from "./deliveries/deliveryApproval";
-import { getProductDeletionBlockMessages } from "./products/productDeletion";
+import {
+    prepareDeliveryApproval,
+    type DeliveryApprovalPlan
+} from "./deliveries/deliveryApproval";
+import {
+    getProductDeletionBlockMessages,
+    getProductRecordDeletionBlockMessages,
+    prepareProductRecordDeletionPlan,
+    type ProductRecordDeletionRequest
+} from "./products/productDeletion";
+import {
+    buildUpdatedProduct,
+    validateProductUpdateDraft,
+    type ProductUpdateDraft
+} from "./products/productUpdate";
+import {
+    getChangedInventoryProductIds,
+    getProductDraftLockMessages
+} from "./products/productDraftLock";
 
 export interface ApplicationState {
     products: productStructure[];
@@ -100,6 +127,16 @@ export type ApplicationAction =
         product: productStructure;
         variantId: string;
         packagingLevelId: string;
+        inventoryRecords: inventory[];
+        inventoryBatches: inventoryBatch[];
+        events: ActivityEvent[];
+    }
+    | {
+        type: "product.records_deleted";
+        productId: string;
+        deletions: ProductRecordDeletionRequest[];
+        product: productStructure;
+        updatedProduct?: productStructure;
         inventoryRecords: inventory[];
         inventoryBatches: inventoryBatch[];
         events: ActivityEvent[];
@@ -204,26 +241,780 @@ export function createInitialApplicationState(): ApplicationState {
     };
 }
 
+function getRemovalOperationId(
+    operationKey: string,
+    prefix: string,
+    recordId: string
+): string {
+    const suffix = `:${recordId}`;
+    if (
+        !operationKey.startsWith(prefix) ||
+        !operationKey.endsWith(suffix) ||
+        operationKey.length <= prefix.length + suffix.length
+    ) {
+        throw new Error("Removal Activity has an invalid operation key.");
+    }
+    return operationKey.slice(prefix.length, -suffix.length);
+}
+
+function inventoryBatchFromSnapshot(
+    snapshot: Extract<ActivityEvent, { type: "inventory.batch_removed" }>["removedBatch"]
+): inventoryBatch {
+    return {
+        batchId: snapshot.batchId,
+        productId: snapshot.productId,
+        variantId: snapshot.variantId,
+        batchNumber: snapshot.batchNumber,
+        expiryDate: snapshot.expiryDate === null
+            ? null
+            : new Date(snapshot.expiryDate),
+        ...(snapshot.receivedDate === undefined
+            ? {}
+            : { receivedDate: snapshot.receivedDate }),
+        ...(snapshot.receivedPricing === undefined
+            ? {}
+            : { receivedPricing: { ...snapshot.receivedPricing } })
+    };
+}
+
+function inventoryRecordFromSnapshot(
+    snapshot: Extract<ActivityEvent, { type: "inventory.batch_removed" }>[
+        "affectedInventory"
+    ][number]
+): inventory {
+    return {
+        id: snapshot.inventoryId,
+        productId: snapshot.productId,
+        variantId: snapshot.variantId,
+        batchId: snapshot.batch?.batchId ?? null,
+        stockQuantities: snapshot.stock.map((stock) => ({
+            packagingLevelId: stock.packagingLevel.packagingLevelId,
+            quantity: stock.quantity
+        }))
+    };
+}
+
+function validateInventoryDraftLocks(
+    state: ApplicationState,
+    nextInventoryRecords: readonly inventory[],
+    nextInventoryBatches: readonly inventoryBatch[]
+): void {
+    const changedProductIds = getChangedInventoryProductIds(
+        state.inventoryRecords,
+        state.inventoryBatches,
+        nextInventoryRecords,
+        nextInventoryBatches
+    );
+    for (const productId of changedProductIds) {
+        const messages = getProductDraftLockMessages(
+            productId,
+            state.saleDrafts,
+            state.deliveryDrafts
+        );
+        if (messages.length > 0) {
+            throw new Error(messages.join(" "));
+        }
+    }
+}
+
+function activityInputFromEvent(event: ActivityEvent): ActivityEventInput {
+    const input = { ...event };
+    Reflect.deleteProperty(input, "eventId");
+    Reflect.deleteProperty(input, "occurredAt");
+    return input;
+}
+
+function assertActivityInputMatches(
+    event: ActivityEvent,
+    expected: ActivityEventInput,
+    message: string
+): void {
+    if (JSON.stringify(activityInputFromEvent(event)) !== JSON.stringify(expected)) {
+        throw new Error(message);
+    }
+}
+
+function validateInventorySave(
+    state: ApplicationState,
+    action: Extract<ApplicationAction, { type: "inventory.saved" }>
+): void {
+    const existingEventIds = new Set(
+        state.activityEvents.map((event) => event.eventId)
+    );
+    const existingOperationKeys = new Set(
+        state.activityEvents.map((event) => event.operationKey)
+    );
+    const seenEventIds = new Set<string>();
+    const seenOperationKeys = new Set<string>();
+    for (const event of action.events) {
+        if (
+            !event.eventId.trim() ||
+            existingEventIds.has(event.eventId) ||
+            seenEventIds.has(event.eventId) ||
+            !Number.isFinite(Date.parse(event.occurredAt)) ||
+            !event.operationKey.trim() ||
+            existingOperationKeys.has(event.operationKey) ||
+            seenOperationKeys.has(event.operationKey)
+        ) {
+            throw new Error("Inventory Activity contains invalid or duplicate metadata.");
+        }
+        seenEventIds.add(event.eventId);
+        seenOperationKeys.add(event.operationKey);
+        if (
+            event.type !== "inventory.batch_removed" &&
+            event.type !== "inventory.batch_created" &&
+            event.type !== "inventory.batch_updated" &&
+            event.type !== "inventory.stock_adjusted"
+        ) {
+            throw new Error("Inventory save contains unsupported Activity.");
+        }
+    }
+
+    const removalEvents = action.events.filter(
+        (event) => event.type === "inventory.batch_removed"
+    );
+    const removedBatchKeys = new Set<string>();
+    for (const event of removalEvents) {
+        if (event.reason.trim() === "" || event.reason !== event.reason.trim()) {
+            throw new Error("A reason is required for every deletion.");
+        }
+        const key = JSON.stringify([
+            event.removedBatch.productId,
+            event.removedBatch.variantId,
+            event.removedBatch.batchId
+        ]);
+        if (removedBatchKeys.has(key)) {
+            throw new Error("An inventory batch can only be removed once per save.");
+        }
+        removedBatchKeys.add(key);
+
+        const blockers = getProductRecordDeletionBlockMessages(
+            {
+                kind: "batch",
+                productId: event.removedBatch.productId,
+                variantId: event.removedBatch.variantId,
+                batchId: event.removedBatch.batchId
+            },
+            state.saleDrafts,
+            state.deliveryDrafts,
+            state.inventoryBatches
+        );
+        if (blockers.length > 0) {
+            throw new Error(blockers.join(" "));
+        }
+        if (state.activityEvents.some(
+            (existing) => existing.operationKey === event.operationKey
+        )) {
+            throw new Error("Batch removal Activity was already recorded.");
+        }
+
+        const matchingProducts = state.products.filter(
+            (product) => product.id === event.removedBatch.productId
+        );
+        const matchingBatches = state.inventoryBatches.filter(
+            (batch) =>
+                batch.productId === event.removedBatch.productId &&
+                batch.variantId === event.removedBatch.variantId &&
+                batch.batchId === event.removedBatch.batchId
+        );
+        if (matchingProducts.length !== 1 || matchingBatches.length !== 1) {
+            throw new Error(`Batch not found: ${event.removedBatch.batchId}`);
+        }
+        const expectedEvent = buildBatchRemovalActivityInput(
+            getRemovalOperationId(
+                event.operationKey,
+                "inventory.batch_removed:",
+                event.removedBatch.batchId
+            ),
+            matchingProducts[0],
+            matchingBatches[0],
+            state.inventoryRecords,
+            state.inventoryBatches,
+            event.reason
+        );
+        if (expectedEvent.type !== "inventory.batch_removed") {
+            throw new Error("Batch removal Activity could not be validated.");
+        }
+        assertActivityInputMatches(
+            event,
+            expectedEvent,
+            "Batch removal Activity does not match current stock."
+        );
+    }
+
+    const expectedBatches = state.inventoryBatches.filter((batch) =>
+        !removedBatchKeys.has(JSON.stringify([
+            batch.productId,
+            batch.variantId,
+            batch.batchId
+        ]))
+    );
+    const batchIds = new Set(state.inventoryBatches.map((batch) => batch.batchId));
+    const updatedBatchIds = new Set<string>();
+
+    for (const event of action.events) {
+        if (event.type !== "inventory.batch_updated") {
+            continue;
+        }
+        const matches = expectedBatches.filter(
+            (batch) =>
+                batch.productId === event.before.productId &&
+                batch.variantId === event.before.variantId &&
+                batch.batchId === event.before.batchId
+        );
+        const product = state.products.find(
+            (candidate) => candidate.id === event.before.productId
+        );
+        if (
+            matches.length !== 1 ||
+            !product ||
+            updatedBatchIds.has(event.before.batchId) ||
+            event.reason.trim() === "" ||
+            event.reason !== event.reason.trim()
+        ) {
+            throw new Error(`Batch not found or updated more than once: ${event.before.batchId}`);
+        }
+        const currentBatch = matches[0];
+        const before = snapshotBatch(currentBatch, product);
+        const updatedBatch: inventoryBatch = {
+            ...currentBatch,
+            batchNumber: event.after.batchNumber,
+            expiryDate: event.after.expiryDate === null
+                ? null
+                : new Date(event.after.expiryDate)
+        };
+        const operationId = getRemovalOperationId(
+            event.operationKey,
+            "inventory.batch_updated:",
+            event.before.batchId
+        );
+        const expectedEvent = buildBatchUpdatedActivityInput(
+            operationId,
+            currentBatch,
+            updatedBatch,
+            product,
+            event.reason
+        );
+        if (
+            JSON.stringify(event.before) !== JSON.stringify(before) ||
+            !expectedEvent ||
+            event.after.productId !== event.before.productId ||
+            event.after.variantId !== event.before.variantId ||
+            event.after.batchId !== event.before.batchId
+        ) {
+            throw new Error("Batch update Activity does not match current inventory.");
+        }
+        assertActivityInputMatches(
+            event,
+            expectedEvent,
+            "Batch update Activity does not match current inventory."
+        );
+        const index = expectedBatches.findIndex(
+            (batch) =>
+                batch.productId === currentBatch.productId &&
+                batch.variantId === currentBatch.variantId &&
+                batch.batchId === currentBatch.batchId
+        );
+        expectedBatches[index] = updatedBatch;
+        updatedBatchIds.add(event.before.batchId);
+    }
+
+    const expectedRecords = state.inventoryRecords.filter((record) =>
+        record.batchId === null || !removedBatchKeys.has(JSON.stringify([
+            record.productId,
+            record.variantId,
+            record.batchId
+        ]))
+    );
+    const recordIds = new Set(state.inventoryRecords.map((record) => record.id));
+    const reservedIds = new Set([
+        ...state.products.flatMap((product) => [
+            product.id,
+            ...product.variant.flatMap((item) => [
+                item.id,
+                ...item.packagingHierarchy.map((level) => level.id)
+            ])
+        ]),
+        ...state.inventoryRecords.map((record) => record.id),
+        ...state.inventoryBatches.map((batch) => batch.batchId)
+    ]);
+
+    for (const event of action.events) {
+        if (event.type !== "inventory.batch_created") {
+            continue;
+        }
+        if (
+            event.source !== "inventory_edit" ||
+            !event.inventory ||
+            batchIds.has(event.batch.batchId) ||
+            !event.batch.batchId.trim() ||
+            recordIds.has(event.inventory.inventoryId) ||
+            !event.inventory.inventoryId.trim() ||
+            reservedIds.has(event.batch.batchId) ||
+            reservedIds.has(event.inventory.inventoryId) ||
+            event.batch.batchId === event.inventory.inventoryId
+        ) {
+            throw new Error("A new Inventory batch requires unique batch and stock snapshots.");
+        }
+        const product = state.products.find(
+            (candidate) => candidate.id === event.batch.productId
+        );
+        const productVariant = product?.variant.find(
+            (candidate) => candidate.id === event.batch.variantId
+        );
+        if (
+            !product ||
+            !productVariant ||
+            event.batch.productName !== product.name ||
+            event.batch.variantName !== productVariant.variantName ||
+            event.inventory.productId !== event.batch.productId ||
+            event.inventory.variantId !== event.batch.variantId ||
+            event.inventory.batch?.batchId !== event.batch.batchId ||
+            expectedRecords.some((record) =>
+                record.productId === event.batch.productId &&
+                record.variantId === event.batch.variantId &&
+                record.batchId === event.batch.batchId
+            )
+        ) {
+            throw new Error("New batch Activity does not match its inventory snapshot.");
+        }
+        const operationId = getRemovalOperationId(
+            event.operationKey,
+            "inventory.batch_created:",
+            event.batch.batchId
+        );
+        const batch = inventoryBatchFromSnapshot(event.batch);
+        const record = inventoryRecordFromSnapshot(event.inventory);
+        validateInventoryRelationships(product, record, [
+            ...expectedBatches,
+            batch
+        ]);
+        assertActivityInputMatches(
+            event,
+            buildBatchCreatedActivityInput(operationId, product, batch, record),
+            "New batch Activity does not match its inventory snapshot."
+        );
+        batchIds.add(batch.batchId);
+        recordIds.add(record.id);
+        reservedIds.add(batch.batchId);
+        reservedIds.add(record.id);
+        expectedBatches.push(batch);
+        expectedRecords.push(record);
+    }
+
+    const changedStock = new Set<string>();
+    for (const event of action.events) {
+        if (event.type !== "inventory.stock_adjusted") {
+            continue;
+        }
+        if (event.reason.trim() === "" || event.reason !== event.reason.trim()) {
+            throw new Error("A reason is required for every stock adjustment.");
+        }
+        const key = JSON.stringify([
+            event.inventoryId,
+            event.packagingLevel.packagingLevelId
+        ]);
+        if (changedStock.has(key)) {
+            throw new Error("Stock can only be adjusted once per packaging level in a save.");
+        }
+        changedStock.add(key);
+        const recordIndex = expectedRecords.findIndex(
+            (record) => record.id === event.inventoryId
+        );
+        const product = state.products.find(
+            (candidate) => candidate.id === event.productId
+        );
+        const record = expectedRecords[recordIndex];
+        if (
+            recordIndex === -1 ||
+            !product ||
+            record.productId !== event.productId ||
+            record.variantId !== event.variantId
+        ) {
+            throw new Error(`Inventory record not found: ${event.inventoryId}`);
+        }
+        const operationId = getRemovalOperationId(
+            event.operationKey,
+            "inventory.stock_adjusted:",
+            `${event.inventoryId}:${event.packagingLevel.packagingLevelId}`
+        );
+        const adjustment = adjustInventoryStock(
+            product,
+            record,
+            event.packagingLevel.packagingLevelId,
+            event.newQuantity,
+            event.reason
+        );
+        if (
+            adjustment.adjustment.previousQuantity !== event.previousQuantity ||
+            adjustment.adjustment.quantityDifference !== event.quantityDifference
+        ) {
+            throw new Error("Stock adjustment Activity does not match current quantity.");
+        }
+        assertActivityInputMatches(
+            event,
+            buildStockAdjustmentActivityInput(
+                adjustment.adjustment,
+                product,
+                state.inventoryBatches,
+                operationId
+            ),
+            "Stock adjustment Activity does not match current inventory."
+        );
+        expectedRecords[recordIndex] = adjustment.updatedInventory;
+    }
+
+    if (
+        JSON.stringify(action.inventoryBatches) !== JSON.stringify(expectedBatches) ||
+        JSON.stringify(action.inventoryRecords) !== JSON.stringify(expectedRecords)
+    ) {
+        throw new Error("Inventory save would remove or alter unrelated records.");
+    }
+}
+
+function getProductStructureIds(product: productStructure): string[] {
+    return [
+        product.id,
+        ...product.variant.flatMap((productVariant) => [
+            productVariant.id,
+            ...productVariant.packagingHierarchy.map((level) => level.id)
+        ])
+    ];
+}
+
+function getApplicationEntityIds(state: ApplicationState): Set<string> {
+    return new Set([
+        ...state.products.flatMap(getProductStructureIds),
+        ...state.inventoryRecords.map((record) => record.id),
+        ...state.inventoryBatches.map((batch) => batch.batchId)
+    ]);
+}
+
+function validateProductStructure(product: productStructure): void {
+    const ids = getProductStructureIds(product);
+    if (
+        !product.id.trim() ||
+        product.id !== product.id.trim() ||
+        !product.name.trim() ||
+        product.name !== product.name.trim() ||
+        [
+            product.description,
+            product.genericName,
+            product.manufacturer,
+            product.category
+        ].some((value) =>
+            value !== undefined && value !== value.trim()
+        ) ||
+        ids.some((id) => !id.trim() || id !== id.trim()) ||
+        new Set(ids).size !== ids.length
+    ) {
+        throw new Error("Product contains invalid or duplicate identifiers.");
+    }
+
+    for (const productVariant of product.variant) {
+        if (
+            !productVariant.variantName.trim() ||
+            productVariant.variantName !== productVariant.variantName.trim() ||
+            (productVariant.nafdacRegistrationNumber !== undefined &&
+                (!productVariant.nafdacRegistrationNumber.trim() ||
+                    productVariant.nafdacRegistrationNumber !==
+                        productVariant.nafdacRegistrationNumber.trim())) ||
+            productVariant.id === product.id
+        ) {
+            throw new Error("Product contains an invalid variant.");
+        }
+        if (productVariant.packagingHierarchy.some(
+            (level) => level.name !== level.name.trim()
+        )) {
+            throw new Error("Packaging level names must be trimmed.");
+        }
+        validatePackagingHierarchy(productVariant.packagingHierarchy);
+    }
+}
+
+function validateFreshActivityEvents(
+    state: ApplicationState,
+    events: readonly ActivityEvent[]
+): void {
+    const eventIds = new Set(state.activityEvents.map((event) => event.eventId));
+    const operationKeys = new Set(
+        state.activityEvents.map((event) => event.operationKey)
+    );
+    for (const event of events) {
+        if (
+            !event.eventId.trim() ||
+            !Number.isFinite(Date.parse(event.occurredAt)) ||
+            !event.operationKey.trim() ||
+            eventIds.has(event.eventId) ||
+            operationKeys.has(event.operationKey)
+        ) {
+            throw new Error("Product Activity contains invalid or duplicate metadata.");
+        }
+        eventIds.add(event.eventId);
+        operationKeys.add(event.operationKey);
+    }
+}
+
+function validateProductCreationPayload(
+    state: ApplicationState,
+    product: productStructure,
+    inventoryRecords: readonly inventory[],
+    inventoryBatches: readonly inventoryBatch[],
+    errorPrefix: string
+): void {
+    validateProductStructure(product);
+    const existingIds = getApplicationEntityIds(state);
+    const newIds = [
+        ...getProductStructureIds(product),
+        ...inventoryRecords.map((record) => record.id),
+        ...inventoryBatches.map((batch) => batch.batchId)
+    ];
+    if (
+        newIds.some((id) =>
+            !id.trim() ||
+            id !== id.trim() ||
+            existingIds.has(id)
+        ) ||
+        new Set(newIds).size !== newIds.length
+    ) {
+        throw new Error(`${errorPrefix} contains an invalid or duplicate ID.`);
+    }
+
+    const batchIds = new Set<string>();
+    for (const batch of inventoryBatches) {
+        if (
+            batch.productId !== product.id ||
+            batchIds.has(batch.batchId) ||
+            !product.variant.some((item) => item.id === batch.variantId) ||
+            (batch.batchNumber !== null &&
+                (!batch.batchNumber.trim() ||
+                    batch.batchNumber !== batch.batchNumber.trim())) ||
+            (batch.expiryDate !== null &&
+                (!(batch.expiryDate instanceof Date) ||
+                    !Number.isFinite(batch.expiryDate.getTime())))
+        ) {
+            throw new Error(`${errorPrefix} contains an invalid batch relationship.`);
+        }
+        const productVariant = getVariantById(product, batch.variantId);
+        if (
+            batch.receivedPricing &&
+            (!productVariant.packagingHierarchy.some(
+                (level) => level.id === batch.receivedPricing?.packagingLevelId
+            ) ||
+                !Number.isFinite(batch.receivedPricing.sellingPrice) ||
+                batch.receivedPricing.sellingPrice < 0)
+        ) {
+            throw new Error(`${errorPrefix} contains invalid batch pricing.`);
+        }
+        snapshotBatch(batch, product);
+        batchIds.add(batch.batchId);
+    }
+
+    const inventoryLocations = new Set<string>();
+    for (const record of inventoryRecords) {
+        if (
+            record.productId !== product.id ||
+            record.stockQuantities.length === 0
+        ) {
+            throw new Error(`${errorPrefix} contains an invalid inventory record.`);
+        }
+        const location = JSON.stringify([record.variantId, record.batchId]);
+        if (inventoryLocations.has(location)) {
+            throw new Error(`${errorPrefix} contains duplicate inventory locations.`);
+        }
+        inventoryLocations.add(location);
+        validateInventoryRelationships(product, record, [...inventoryBatches]);
+    }
+}
+
+function createProductUpdateDraftFromProduct(
+    product: productStructure,
+    reason: string
+): ProductUpdateDraft {
+    return {
+        id: product.id,
+        name: product.name,
+        description: product.description ?? "",
+        genericName: product.genericName ?? "",
+        manufacturer: product.manufacturer ?? "",
+        category: product.category ?? "",
+        reason,
+        variants: product.variant.map((productVariant) => ({
+            id: productVariant.id,
+            name: productVariant.variantName,
+            nafdacRegistrationNumber:
+                productVariant.nafdacRegistrationNumber ?? "",
+            packaging: productVariant.packagingHierarchy.map((level) => ({
+                id: level.id,
+                name: level.name,
+                nextLevelId: level.nextLevelId ?? "",
+                quantityofNextLevel: level.quantityofNextLevel === null
+                    ? ""
+                    : String(level.quantityofNextLevel),
+                costPrice: level.costPrice === null
+                    ? ""
+                    : String(level.costPrice),
+                sellingPrice: level.sellingPrice === null
+                    ? ""
+                    : String(level.sellingPrice),
+                initialStock: "0",
+                initialStockBatchId: ""
+            }))
+        }))
+    };
+}
+
+function validateProductUpdateInventory(
+    state: ApplicationState,
+    previousProduct: productStructure,
+    product: productStructure,
+    nextInventoryRecords: readonly inventory[],
+    nextInventoryBatches: readonly inventoryBatch[]
+): void {
+    if (
+        JSON.stringify(nextInventoryBatches) !==
+        JSON.stringify(state.inventoryBatches)
+    ) {
+        throw new Error("Product update cannot modify or omit inventory batches.");
+    }
+    if (nextInventoryRecords.length < state.inventoryRecords.length) {
+        throw new Error("Product update cannot remove inventory records.");
+    }
+
+    const previousPackagingIds = new Set(
+        previousProduct.variant.flatMap((productVariant) =>
+            productVariant.packagingHierarchy.map((level) => level.id)
+        )
+    );
+    const newPackagingIds = new Set(
+        product.variant.flatMap((productVariant) =>
+            productVariant.packagingHierarchy
+                .filter((level) => !previousPackagingIds.has(level.id))
+                .map((level) => level.id)
+        )
+    );
+    const existingIds = getApplicationEntityIds(state);
+    const inventoryIds = new Set<string>();
+    const inventoryLocations = new Set<string>();
+
+    for (let index = 0; index < state.inventoryRecords.length; index += 1) {
+        const previousRecord = state.inventoryRecords[index];
+        const nextRecord = nextInventoryRecords[index];
+        if (!nextRecord || nextRecord.id !== previousRecord.id) {
+            throw new Error("Product update cannot reorder or omit inventory records.");
+        }
+        if (inventoryIds.has(nextRecord.id)) {
+            throw new Error("Product update contains duplicate inventory IDs.");
+        }
+        inventoryIds.add(nextRecord.id);
+
+        if (previousRecord.productId !== product.id) {
+            if (JSON.stringify(nextRecord) !== JSON.stringify(previousRecord)) {
+                throw new Error("Product update cannot alter unrelated inventory records.");
+            }
+            continue;
+        }
+
+        if (
+            previousRecord.productId !== nextRecord.productId ||
+            previousRecord.variantId !== nextRecord.variantId ||
+            previousRecord.batchId !== nextRecord.batchId
+        ) {
+            throw new Error("Product update cannot change inventory ownership.");
+        }
+        validateInventoryRelationships(
+            previousProduct,
+            previousRecord,
+            state.inventoryBatches
+        );
+        const addedStock = nextRecord.stockQuantities.slice(
+            previousRecord.stockQuantities.length
+        );
+        if (
+            JSON.stringify(nextRecord.stockQuantities.slice(
+                0,
+                previousRecord.stockQuantities.length
+            )) !== JSON.stringify(previousRecord.stockQuantities) ||
+            addedStock.some((stock) =>
+                !newPackagingIds.has(stock.packagingLevelId) ||
+                !Number.isSafeInteger(stock.quantity) ||
+                stock.quantity <= 0 ||
+                previousRecord.stockQuantities.some(
+                    (existing) =>
+                        existing.packagingLevelId === stock.packagingLevelId
+                )
+            ) ||
+            JSON.stringify(nextRecord) !== JSON.stringify({
+                ...previousRecord,
+                stockQuantities: [
+                    ...previousRecord.stockQuantities,
+                    ...addedStock
+                ]
+            })
+        ) {
+            throw new Error(
+                "Product update may only add initial stock for new packaging levels."
+            );
+        }
+        validateInventoryRelationships(product, nextRecord, state.inventoryBatches);
+        const location = JSON.stringify([
+            nextRecord.variantId,
+            nextRecord.batchId
+        ]);
+        if (inventoryLocations.has(location)) {
+            throw new Error("Product update contains duplicate inventory locations.");
+        }
+        inventoryLocations.add(location);
+    }
+
+    for (
+        let index = state.inventoryRecords.length;
+        index < nextInventoryRecords.length;
+        index += 1
+    ) {
+        const record = nextInventoryRecords[index];
+        if (
+            record.productId !== product.id ||
+            !record.id.trim() ||
+            record.id !== record.id.trim() ||
+            existingIds.has(record.id) ||
+            inventoryIds.has(record.id) ||
+            record.stockQuantities.length === 0 ||
+            record.stockQuantities.some((stock) =>
+                !newPackagingIds.has(stock.packagingLevelId) ||
+                !Number.isSafeInteger(stock.quantity) ||
+                stock.quantity <= 0
+            )
+        ) {
+            throw new Error("Product update contains an invalid new inventory record.");
+        }
+        inventoryIds.add(record.id);
+        const canonicalRecord: inventory = {
+            id: record.id,
+            productId: record.productId,
+            variantId: record.variantId,
+            batchId: record.batchId,
+            stockQuantities: record.stockQuantities.map((stock) => ({ ...stock }))
+        };
+        if (JSON.stringify(record) !== JSON.stringify(canonicalRecord)) {
+            throw new Error("Product update contains an invalid new inventory record.");
+        }
+        validateInventoryRelationships(product, record, state.inventoryBatches);
+        const location = JSON.stringify([record.variantId, record.batchId]);
+        if (inventoryLocations.has(location)) {
+            throw new Error("Product update contains duplicate inventory locations.");
+        }
+        inventoryLocations.add(location);
+    }
+}
+
 export function applicationReducer(
     state: ApplicationState,
     action: ApplicationAction
 ): ApplicationState {
     switch (action.type) {
         case "product.catalogue_created": {
-            const event = action.events[0];
             const operationKey = `product.created:${action.product.id}`;
-            if (
-                action.events.length !== 1 ||
-                event?.type !== "product.created" ||
-                event.operationKey !== operationKey ||
-                event.initialInventory.length !== 0 ||
-                JSON.stringify(event.product) !==
-                    JSON.stringify(snapshotProduct(action.product))
-            ) {
-                throw new Error(
-                    "A catalogue product creation requires matching product Activity."
-                );
-            }
             const alreadyRecorded = state.activityEvents.some(
                 (existing) => existing.operationKey === operationKey
             );
@@ -234,33 +1025,41 @@ export function applicationReducer(
                 return state;
             }
 
-            const existingIds = new Set([
-                ...state.products.flatMap((product) => [
-                    product.id,
-                    ...product.variant.flatMap((item) => [
-                        item.id,
-                        ...item.packagingHierarchy.map((level) => level.id)
-                    ])
-                ]),
-                ...state.inventoryRecords.map((record) => record.id),
-                ...state.inventoryBatches.map((batch) => batch.batchId)
-            ]);
-            const productIds = [
-                action.product.id,
-                ...action.product.variant.flatMap((item) => [
-                    item.id,
-                    ...item.packagingHierarchy.map((level) => level.id)
-                ])
-            ];
-            if (productIds.some((id) => !id.trim() || existingIds.has(id))) {
-                throw new Error("Catalogue product contains an invalid or duplicate ID.");
-            }
-            if (new Set(productIds).size !== productIds.length) {
-                throw new Error("Catalogue product contains duplicate IDs.");
-            }
-            action.product.variant.forEach((item) =>
-                validatePackagingHierarchy(item.packagingHierarchy)
+            validateProductCreationPayload(
+                state,
+                action.product,
+                [],
+                [],
+                "Catalogue product"
             );
+            const draftLockMessages = getProductDraftLockMessages(
+                action.product.id,
+                state.saleDrafts,
+                state.deliveryDrafts
+            );
+            if (draftLockMessages.length > 0) {
+                throw new Error(draftLockMessages.join(" "));
+            }
+
+            const expectedEvents = buildProductCreationActivityInputs(
+                action.product,
+                [],
+                []
+            );
+            if (action.events.length !== expectedEvents.length) {
+                throw new Error(
+                    "A catalogue product creation requires matching product Activity."
+                );
+            }
+            validateFreshActivityEvents(state, action.events);
+            action.events.forEach((event, index) =>
+                assertActivityInputMatches(
+                    event,
+                    expectedEvents[index],
+                    "A catalogue product creation requires matching product Activity."
+                )
+            );
+
             return {
                 ...state,
                 products: [action.product, ...state.products],
@@ -301,6 +1100,14 @@ export function applicationReducer(
             );
             if (alreadyRecorded && variantAlreadyExists) {
                 return state;
+            }
+            const draftLockMessages = getProductDraftLockMessages(
+                action.productId,
+                state.saleDrafts,
+                state.deliveryDrafts
+            );
+            if (draftLockMessages.length > 0) {
+                throw new Error(draftLockMessages.join(" "));
             }
             if (event.productName !== product.name) {
                 throw new Error(
@@ -360,6 +1167,39 @@ export function applicationReducer(
                     `Product already exists: ${action.result.product.id}`
                 );
             }
+            validateProductCreationPayload(
+                state,
+                action.result.product,
+                action.result.inventoryRecords,
+                action.result.inventoryBatches,
+                "Product creation"
+            );
+            const draftLockMessages = getProductDraftLockMessages(
+                action.result.product.id,
+                state.saleDrafts,
+                state.deliveryDrafts
+            );
+            if (draftLockMessages.length > 0) {
+                throw new Error(draftLockMessages.join(" "));
+            }
+            const expectedEvents = buildProductCreationActivityInputs(
+                action.result.product,
+                action.result.inventoryRecords,
+                action.result.inventoryBatches
+            );
+            if (action.events.length !== expectedEvents.length) {
+                throw new Error(
+                    "Product creation requires matching product and initial inventory Activity."
+                );
+            }
+            validateFreshActivityEvents(state, action.events);
+            action.events.forEach((event, index) =>
+                assertActivityInputMatches(
+                    event,
+                    expectedEvents[index],
+                    "Product creation requires matching product and initial inventory Activity."
+                )
+            );
 
             return {
                 ...state,
@@ -484,101 +1324,114 @@ export function applicationReducer(
                 return state;
             }
 
-            const productIndex = state.products.findIndex(
+            const productMatches = state.products.filter(
                 (product) => product.id === action.product.id
             );
-            if (productIndex === -1) {
+            if (productMatches.length !== 1) {
                 throw new Error(`Product not found: ${action.product.id}`);
+            }
+            const previousProduct = productMatches[0];
+            const [updateEvent] = updateEvents;
+            if (
+                updateEvent.type !== "product.updated" ||
+                !updateEvent.reason.trim()
+            ) {
+                throw new Error("A product update requires matching update Activity.");
+            }
+
+            validateProductStructure(action.product);
+            const updateDraft = createProductUpdateDraftFromProduct(
+                action.product,
+                updateEvent.reason
+            );
+            const updateErrors = validateProductUpdateDraft(
+                updateDraft,
+                previousProduct
+            );
+            if (Object.keys(updateErrors).length > 0) {
+                throw new Error(Object.values(updateErrors)[0]);
+            }
+            const validatedProduct = buildUpdatedProduct(
+                previousProduct,
+                updateDraft
+            );
+            if (
+                JSON.stringify(snapshotProduct(validatedProduct)) !==
+                JSON.stringify(snapshotProduct(action.product))
+            ) {
+                throw new Error("Product update contains invalid product data.");
+            }
+
+            const previousProductIds = new Set(
+                getProductStructureIds(previousProduct)
+            );
+            const existingIds = getApplicationEntityIds(state);
+            if (getProductStructureIds(action.product).some(
+                (id) => !previousProductIds.has(id) && existingIds.has(id)
+            )) {
+                throw new Error("Product update contains a duplicate identifier.");
             }
 
             const nextInventoryRecords =
                 action.inventoryRecords ?? state.inventoryRecords;
             const nextInventoryBatches =
                 action.inventoryBatches ?? state.inventoryBatches;
-            const previousProduct = state.products[productIndex];
-            for (const event of action.events) {
-                if (event.type !== "inventory.stock_adjusted") {
-                    continue;
-                }
-
-                const record = nextInventoryRecords.find(
-                    (candidate) => candidate.id === event.inventoryId
+            const changedInventoryProductIds = getChangedInventoryProductIds(
+                state.inventoryRecords,
+                state.inventoryBatches,
+                nextInventoryRecords,
+                nextInventoryBatches
+            );
+            const affectedProductIds = new Set(changedInventoryProductIds);
+            if (JSON.stringify(previousProduct.variant) !==
+                JSON.stringify(action.product.variant)) {
+                affectedProductIds.add(action.product.id);
+            }
+            for (const productId of affectedProductIds) {
+                const draftLockMessages = getProductDraftLockMessages(
+                    productId,
+                    state.saleDrafts,
+                    state.deliveryDrafts
                 );
-                const previousRecord = state.inventoryRecords.find(
-                    (candidate) => candidate.id === event.inventoryId
-                );
-                const productVariant = action.product.variant.find(
-                    (candidate) => candidate.id === event.variantId
-                );
-                const previousVariant = previousProduct.variant.find(
-                    (candidate) => candidate.id === event.variantId
-                );
-                const packagingLevel = productVariant?.packagingHierarchy.find(
-                    (candidate) =>
-                        candidate.id === event.packagingLevel.packagingLevelId
-                );
-                const wasExistingPackaging = previousVariant?.packagingHierarchy.some(
-                    (candidate) => candidate.id === event.packagingLevel.packagingLevelId
-                ) ?? false;
-                const batch = record?.batchId === null
-                    ? null
-                    : nextInventoryBatches.find(
-                        (candidate) =>
-                            candidate.batchId === record?.batchId &&
-                            candidate.productId === event.productId &&
-                            candidate.variantId === event.variantId
-                    );
-                if (
-                    !record ||
-                    !productVariant ||
-                    !packagingLevel ||
-                    wasExistingPackaging ||
-                    record.productId !== action.product.id ||
-                    record.variantId !== event.variantId ||
-                    event.productId !== action.product.id ||
-                    event.productName !== action.product.name ||
-                    event.variantName !== productVariant.variantName ||
-                    (record.batchId !== null && !batch) ||
-                    !event.operationKey.startsWith("inventory.stock_adjusted:") ||
-                    !event.operationKey.endsWith(
-                        `:${record.id}:${packagingLevel.id}`
-                    ) ||
-                    !event.reason.trim() ||
-                    JSON.stringify(event.packagingLevel) !==
-                        JSON.stringify(snapshotPackagingLevel(
-                            packagingLevel,
-                            productVariant.packagingHierarchy
-                        )) ||
-                    JSON.stringify(event.batch) !==
-                        JSON.stringify(batch ? snapshotBatch(batch, action.product) : null)
-                ) {
-                    throw new Error(
-                        "A packaging stock change requires matching inventory Activity."
-                    );
-                }
-
-                const previousQuantity = previousRecord
-                    ? getStockQuantityOrZero(
-                        previousRecord,
-                        packagingLevel.id
-                    )
-                    : 0;
-                const newQuantity = getStockQuantityOrZero(
-                    record,
-                    packagingLevel.id
-                );
-                if (
-                    event.previousQuantity !== previousQuantity ||
-                    event.newQuantity !== newQuantity ||
-                    event.quantityDifference !== newQuantity - previousQuantity ||
-                    event.quantityDifference === 0
-                ) {
-                    throw new Error(
-                        "Packaging stock Activity does not match the committed quantity."
-                    );
+                if (draftLockMessages.length > 0) {
+                    throw new Error(draftLockMessages.join(" "));
                 }
             }
+            validateProductUpdateInventory(
+                state,
+                previousProduct,
+                action.product,
+                nextInventoryRecords,
+                nextInventoryBatches
+            );
+            validateFreshActivityEvents(state, action.events);
+            const expectedEvents = buildProductUpdateActivityInputs(
+                previousProduct,
+                action.product,
+                state.inventoryRecords,
+                nextInventoryRecords,
+                nextInventoryBatches,
+                updateEvent.operationKey,
+                updateEvent.reason
+            );
+            if (action.events.length !== expectedEvents.length) {
+                throw new Error("Product update Activity does not match the committed changes.");
+            }
+            action.events.forEach((event, index) => {
+                const expectedEvent = expectedEvents[index];
+                if (!expectedEvent) {
+                    throw new Error("Product update Activity does not match the committed changes.");
+                }
+                assertActivityInputMatches(
+                    event,
+                    expectedEvent,
+                    "Product update Activity does not match the committed changes."
+                );
+            });
 
+            const productIndex = state.products.findIndex(
+                (product) => product.id === action.product.id
+            );
             const products = [...state.products];
             products[productIndex] = action.product;
 
@@ -595,11 +1448,15 @@ export function applicationReducer(
         }
         case "product.variant_removed": {
             if (
-                action.events.length === 0 ||
+                action.events.length !== 1 ||
                 action.events.some(
                     (event) =>
                         event.type !== "product.variant_removed" ||
-                        event.removedVariant.variantId !== action.variantId
+                        event.productId !== action.product.id ||
+                        event.removedVariant.variantId !== action.variantId ||
+                        state.activityEvents.some(
+                            (existing) => existing.operationKey === event.operationKey
+                        )
                 )
             ) {
                 throw new Error("A variant removal requires matching removal Activity.");
@@ -611,11 +1468,80 @@ export function applicationReducer(
             if (productIndex === -1) {
                 throw new Error(`Product not found: ${action.product.id}`);
             }
+            if (!state.products[productIndex].variant.some(
+                (productVariant) => productVariant.id === action.variantId
+            )) {
+                throw new Error(`Variant not found: ${action.variantId}`);
+            }
+            const variantBlockers = getProductRecordDeletionBlockMessages(
+                {
+                    kind: "variant",
+                    productId: action.product.id,
+                    variantId: action.variantId
+                },
+                state.saleDrafts,
+                state.deliveryDrafts,
+                state.inventoryBatches
+            );
+            if (variantBlockers.length > 0) {
+                throw new Error(variantBlockers.join(" "));
+            }
+
+            const currentProduct = state.products[productIndex];
+            const currentVariant = currentProduct.variant.find(
+                (productVariant) => productVariant.id === action.variantId
+            );
+            const [event] = action.events;
+            if (!currentVariant || event.type !== "product.variant_removed") {
+                throw new Error("Variant removal Activity does not match the current product.");
+            }
+            if (event.reason.trim() === "") {
+                throw new Error("A reason is required for every deletion.");
+            }
+            const expectedEvent = buildVariantRemovalActivityInput(
+                getRemovalOperationId(
+                    event.operationKey,
+                    "product.variant_removed:",
+                    action.variantId
+                ),
+                currentProduct,
+                currentVariant,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                event.reason
+            );
+            if (expectedEvent.type !== "product.variant_removed") {
+                throw new Error("Variant removal Activity could not be reconstructed.");
+            }
+            if (
+                event.operationKey !== expectedEvent.operationKey ||
+                JSON.stringify(event.removedVariant) !== JSON.stringify(expectedEvent.removedVariant) ||
+                JSON.stringify(event.removedBatches) !== JSON.stringify(expectedEvent.removedBatches) ||
+                JSON.stringify(event.affectedInventory) !== JSON.stringify(expectedEvent.affectedInventory)
+            ) {
+                throw new Error("Variant removal Activity does not match current inventory.");
+            }
+            const expectedRecords = state.inventoryRecords.filter(
+                (record) =>
+                    record.productId !== action.product.id ||
+                    record.variantId !== action.variantId
+            );
+            const expectedBatches = state.inventoryBatches.filter(
+                (batch) =>
+                    batch.productId !== action.product.id ||
+                    batch.variantId !== action.variantId
+            );
+            if (
+                JSON.stringify(action.inventoryRecords) !== JSON.stringify(expectedRecords) ||
+                JSON.stringify(action.inventoryBatches) !== JSON.stringify(expectedBatches)
+            ) {
+                throw new Error("Variant removal does not match its inventory records.");
+            }
 
             const products = [...state.products];
             products[productIndex] = {
-                ...action.product,
-                variant: action.product.variant.filter(
+                ...currentProduct,
+                variant: currentProduct.variant.filter(
                     (productVariant) => productVariant.id !== action.variantId
                 )
             };
@@ -633,11 +1559,16 @@ export function applicationReducer(
         }
         case "product.packaging_removed": {
             if (
-                action.events.length === 0 ||
+                action.events.length !== 1 ||
                 action.events.some(
                     (event) =>
                         event.type !== "product.packaging_removed" ||
-                        event.removedPackaging.packagingLevelId !== action.packagingLevelId
+                        event.productId !== action.product.id ||
+                        event.variantId !== action.variantId ||
+                        event.removedPackaging.packagingLevelId !== action.packagingLevelId ||
+                        state.activityEvents.some(
+                            (existing) => existing.operationKey === event.operationKey
+                        )
                 )
             ) {
                 throw new Error("A packaging removal requires matching removal Activity.");
@@ -649,18 +1580,101 @@ export function applicationReducer(
             if (productIndex === -1) {
                 throw new Error(`Product not found: ${action.product.id}`);
             }
+            const currentVariant = state.products[productIndex].variant.find(
+                (productVariant) => productVariant.id === action.variantId
+            );
+            if (!currentVariant?.packagingHierarchy.some(
+                (level) => level.id === action.packagingLevelId
+            )) {
+                throw new Error(`Packaging level not found: ${action.packagingLevelId}`);
+            }
+            const packagingBlockers = getProductRecordDeletionBlockMessages(
+                {
+                    kind: "packaging",
+                    productId: action.product.id,
+                    variantId: action.variantId,
+                    packagingLevelId: action.packagingLevelId
+                },
+                state.saleDrafts,
+                state.deliveryDrafts
+            );
+            if (packagingBlockers.length > 0) {
+                throw new Error(packagingBlockers.join(" "));
+            }
+
+            const currentProduct = state.products[productIndex];
+            const nextHierarchy = removePackagingLevelFromHierarchy(
+                currentVariant.packagingHierarchy,
+                action.packagingLevelId
+            );
+            const [event] = action.events;
+            if (event.type !== "product.packaging_removed") {
+                throw new Error("Packaging removal Activity does not match the current product.");
+            }
+            if (event.reason.trim() === "") {
+                throw new Error("A reason is required for every deletion.");
+            }
+            const expectedEvent = buildPackagingRemovalActivityInput(
+                getRemovalOperationId(
+                    event.operationKey,
+                    "product.packaging_removed:",
+                    action.packagingLevelId
+                ),
+                currentProduct,
+                currentVariant,
+                currentVariant.packagingHierarchy.find(
+                    (level) => level.id === action.packagingLevelId
+                )!,
+                nextHierarchy,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                event.reason
+            );
+            if (expectedEvent.type !== "product.packaging_removed") {
+                throw new Error("Packaging removal Activity could not be reconstructed.");
+            }
+            if (
+                event.operationKey !== expectedEvent.operationKey ||
+                JSON.stringify(event.removedPackaging) !== JSON.stringify(expectedEvent.removedPackaging) ||
+                JSON.stringify(event.beforeHierarchy) !== JSON.stringify(expectedEvent.beforeHierarchy) ||
+                JSON.stringify(event.afterHierarchy) !== JSON.stringify(expectedEvent.afterHierarchy) ||
+                JSON.stringify(event.removedStock) !== JSON.stringify(expectedEvent.removedStock)
+            ) {
+                throw new Error("Packaging removal Activity does not match current inventory.");
+            }
+            const expectedRecords = state.inventoryRecords.flatMap((record) => {
+                if (
+                    record.productId !== action.product.id ||
+                    record.variantId !== action.variantId ||
+                    !record.stockQuantities.some(
+                        (stock) => stock.packagingLevelId === action.packagingLevelId
+                    )
+                ) {
+                    return [record];
+                }
+                const stockQuantities = record.stockQuantities.filter(
+                    (stock) => stock.packagingLevelId !== action.packagingLevelId
+                );
+                return stockQuantities.length > 0
+                    ? [{ ...record, stockQuantities }]
+                    : [];
+            });
+            if (
+                JSON.stringify(action.inventoryRecords) !== JSON.stringify(expectedRecords) ||
+                JSON.stringify(action.inventoryBatches) !== JSON.stringify(state.inventoryBatches)
+            ) {
+                throw new Error("Packaging removal does not match its inventory records.");
+            }
 
             const products = [...state.products];
             products[productIndex] = {
-                ...action.product,
-                variant: action.product.variant.map((productVariant) =>
+                ...currentProduct,
+                variant: currentProduct.variant.map((productVariant) =>
                     productVariant.id !== action.variantId
                         ? productVariant
                         : {
                             ...productVariant,
-                            packagingHierarchy: productVariant.packagingHierarchy.filter(
-                                (level) => level.id !== action.packagingLevelId
-                            )
+                            packagingHierarchy: nextHierarchy
                         }
                 )
             };
@@ -676,16 +1690,231 @@ export function applicationReducer(
                 )
             };
         }
+        case "product.records_deleted": {
+            const productMatches = state.products.filter(
+                (product) => product.id === action.productId
+            );
+            if (productMatches.length !== 1) {
+                throw new Error(`Product not found: ${action.productId}`);
+            }
+            const hasProductUpdate = action.updatedProduct !== undefined;
+            if (
+                action.deletions.length === 0 ||
+                action.events.length !==
+                    action.deletions.length + (hasProductUpdate ? 1 : 0)
+            ) {
+                throw new Error("Every staged deletion requires matching Activity.");
+            }
+            const firstDeletion = action.deletions[0];
+            const blockers = getProductRecordDeletionBlockMessages(
+                firstDeletion.type === "variant"
+                    ? {
+                        kind: "variant",
+                        productId: action.productId,
+                        variantId: firstDeletion.variantId
+                    }
+                    : {
+                        kind: "packaging",
+                        productId: action.productId,
+                        variantId: firstDeletion.variantId,
+                        packagingLevelId: firstDeletion.packagingLevelId
+                    },
+                state.saleDrafts,
+                state.deliveryDrafts
+            );
+            if (blockers.length > 0) {
+                throw new Error(blockers.join(" "));
+            }
+
+            const plan = prepareProductRecordDeletionPlan(
+                productMatches[0],
+                state.inventoryRecords,
+                state.inventoryBatches,
+                action.deletions
+            );
+            const operationKeys = new Set<string>();
+            for (let index = 0; index < action.deletions.length; index += 1) {
+                const event = action.events[index];
+                const expected = plan.events[index];
+                if (!event) {
+                    throw new Error("Deletion Activity does not match the staged changes.");
+                }
+                const { eventId, occurredAt, ...eventInput } = event;
+                if (
+                    !eventId.trim() ||
+                    !Number.isFinite(Date.parse(occurredAt)) ||
+                    operationKeys.has(event.operationKey) ||
+                    state.activityEvents.some(
+                        (existing) => existing.operationKey === event.operationKey
+                    ) ||
+                    JSON.stringify(eventInput) !== JSON.stringify(expected)
+                ) {
+                    throw new Error("Deletion Activity does not match the staged changes.");
+                }
+                operationKeys.add(event.operationKey);
+            }
+            if (action.updatedProduct) {
+                const updateEvent = action.events[action.deletions.length];
+                if (
+                    action.updatedProduct.id !== action.productId ||
+                    JSON.stringify(action.updatedProduct.variant) !==
+                        JSON.stringify(plan.product.variant) ||
+                    updateEvent?.type !== "product.updated" ||
+                    updateEvent.productId !== action.productId ||
+                    !updateEvent.reason.trim() ||
+                    operationKeys.has(updateEvent.operationKey) ||
+                    state.activityEvents.some(
+                        (existing) =>
+                            existing.operationKey === updateEvent.operationKey
+                    )
+                ) {
+                    throw new Error(
+                        "A product update accompanying deletion must preserve the deletion plan."
+                    );
+                }
+                const expectedUpdateEvents = buildProductUpdateActivityInputs(
+                    plan.product,
+                    action.updatedProduct,
+                    plan.inventoryRecords,
+                    plan.inventoryRecords,
+                    plan.inventoryBatches,
+                    updateEvent.operationKey,
+                    updateEvent.reason
+                );
+                const { eventId, occurredAt, ...eventInput } = updateEvent;
+                if (
+                    expectedUpdateEvents.length !== 1 ||
+                    !eventId.trim() ||
+                    !Number.isFinite(Date.parse(occurredAt)) ||
+                    JSON.stringify(eventInput) !==
+                        JSON.stringify(expectedUpdateEvents[0])
+                ) {
+                    throw new Error(
+                        "Product update Activity does not match the staged deletion."
+                    );
+                }
+                operationKeys.add(updateEvent.operationKey);
+            }
+            const nextActivityEvents = appendActivityEvents(
+                state.activityEvents,
+                action.events
+            );
+            if (nextActivityEvents.length !== state.activityEvents.length + action.events.length) {
+                throw new Error("Deletion Activity could not be recorded.");
+            }
+            if (
+                JSON.stringify(action.product) !== JSON.stringify(plan.product) ||
+                JSON.stringify(action.inventoryRecords) !== JSON.stringify(plan.inventoryRecords) ||
+                JSON.stringify(action.inventoryBatches) !== JSON.stringify(plan.inventoryBatches)
+            ) {
+                throw new Error("Deletion plan does not match current product inventory.");
+            }
+
+            const products = [...state.products];
+            const productIndex = state.products.findIndex(
+                (product) => product.id === action.productId
+            );
+            products[productIndex] = action.updatedProduct ?? plan.product;
+            return {
+                ...state,
+                products,
+                inventoryRecords: plan.inventoryRecords,
+                inventoryBatches: plan.inventoryBatches,
+                activityEvents: nextActivityEvents
+            };
+        }
         case "inventory.batch_removed": {
             if (
-                action.events.length === 0 ||
+                action.events.length !== 1 ||
                 action.events.some(
                     (event) =>
                         event.type !== "inventory.batch_removed" ||
-                        event.removedBatch.batchId !== action.batchId
+                        event.removedBatch.productId !== action.productId ||
+                        event.removedBatch.variantId !== action.variantId ||
+                        event.removedBatch.batchId !== action.batchId ||
+                        state.activityEvents.some(
+                            (existing) => existing.operationKey === event.operationKey
+                        )
                 )
             ) {
                 throw new Error("A batch removal requires matching removal Activity.");
+            }
+            if (!state.inventoryBatches.some(
+                (batch) =>
+                    batch.productId === action.productId &&
+                    batch.variantId === action.variantId &&
+                    batch.batchId === action.batchId
+            )) {
+                throw new Error(`Batch not found: ${action.batchId}`);
+            }
+            const batchBlockers = getProductRecordDeletionBlockMessages(
+                {
+                    kind: "batch",
+                    productId: action.productId,
+                    variantId: action.variantId,
+                    batchId: action.batchId
+                },
+                state.saleDrafts,
+                state.deliveryDrafts
+            );
+            if (batchBlockers.length > 0) {
+                throw new Error(batchBlockers.join(" "));
+            }
+            const currentProduct = state.products.find(
+                (product) => product.id === action.productId
+            );
+            const currentBatch = state.inventoryBatches.find(
+                (batch) =>
+                    batch.productId === action.productId &&
+                    batch.variantId === action.variantId &&
+                    batch.batchId === action.batchId
+            );
+            const [event] = action.events;
+            if (!currentProduct || !currentBatch || event.type !== "inventory.batch_removed") {
+                throw new Error("Batch removal Activity does not match the current inventory.");
+            }
+            if (event.reason.trim() === "") {
+                throw new Error("A reason is required for every deletion.");
+            }
+            const expectedEvent = buildBatchRemovalActivityInput(
+                getRemovalOperationId(
+                    event.operationKey,
+                    "inventory.batch_removed:",
+                    action.batchId
+                ),
+                currentProduct,
+                currentBatch,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                event.reason
+            );
+            if (expectedEvent.type !== "inventory.batch_removed") {
+                throw new Error("Batch removal Activity could not be reconstructed.");
+            }
+            if (
+                event.operationKey !== expectedEvent.operationKey ||
+                JSON.stringify(event.removedBatch) !== JSON.stringify(expectedEvent.removedBatch) ||
+                JSON.stringify(event.affectedInventory) !== JSON.stringify(expectedEvent.affectedInventory)
+            ) {
+                throw new Error("Batch removal Activity does not match current stock.");
+            }
+            const expectedRecords = state.inventoryRecords.filter(
+                (record) =>
+                    record.productId !== action.productId ||
+                    record.variantId !== action.variantId ||
+                    record.batchId !== action.batchId
+            );
+            const expectedBatches = state.inventoryBatches.filter(
+                (batch) =>
+                    batch.productId !== action.productId ||
+                    batch.variantId !== action.variantId ||
+                    batch.batchId !== action.batchId
+            );
+            if (
+                JSON.stringify(action.inventoryRecords) !== JSON.stringify(expectedRecords) ||
+                JSON.stringify(action.inventoryBatches) !== JSON.stringify(expectedBatches)
+            ) {
+                throw new Error("Batch removal does not match its inventory records.");
             }
 
             return {
@@ -703,13 +1932,18 @@ export function applicationReducer(
                 action.events.length > 0 &&
                 action.events.every((event) =>
                     state.activityEvents.some(
-                        (existing) =>
-                            existing.operationKey === event.operationKey
+                        (existing) => existing.operationKey === event.operationKey
                     )
                 )
             ) {
                 return state;
             }
+            validateInventoryDraftLocks(
+                state,
+                action.inventoryRecords,
+                action.inventoryBatches
+            );
+            validateInventorySave(state, action);
 
             return {
                 ...state,
@@ -1315,74 +2549,152 @@ export function applicationReducer(
             if (currentDraft.status !== "draft") {
                 throw new Error(`Cannot approve a ${currentDraft.status} delivery.`);
             }
-            const receivedDraft = validateDeliveryDraft(plan.draft);
+            const approvalTimestamp = Date.parse(plan.draft.updatedAt);
             if (
-                receivedDraft.status !== "received" ||
-                JSON.stringify(receivedDraft.items) !==
-                    JSON.stringify(currentDraft.items) ||
-                receivedDraft.deliveryId !== currentDraft.deliveryId ||
-                receivedDraft.deliveryDate !== currentDraft.deliveryDate ||
-                receivedDraft.receivedBy !== currentDraft.receivedBy ||
-                receivedDraft.supplier !== currentDraft.supplier ||
-                receivedDraft.invoiceNumber !== currentDraft.invoiceNumber ||
-                event.type !== "delivery.received" ||
-                event.deliveryId !== currentDraft.deliveryId ||
-                event.deliveryDate !== currentDraft.deliveryDate ||
-                event.receivedBy !== currentDraft.receivedBy ||
-                event.supplierName !== (currentDraft.supplier ?? null) ||
-                event.invoiceNumber !== (currentDraft.invoiceNumber ?? null) ||
-                event.operationKey !== `delivery.received:${currentDraft.deliveryId}` ||
+                !Number.isFinite(approvalTimestamp) ||
+                !event.eventId.trim() ||
+                state.activityEvents.some(
+                    (existing) =>
+                        existing.eventId === event.eventId ||
+                        existing.operationKey === event.operationKey
+                ) ||
                 !Number.isFinite(Date.parse(event.occurredAt)) ||
-                event.items.length !== currentDraft.items.length ||
-                !event.items.every((activityItem, index) => {
-                    const draftItem = currentDraft.items[index];
-                    if (!draftItem) {
-                        return false;
-                    }
-                    const product = state.products.find(
-                        (candidate) => candidate.id === draftItem.productId
-                    );
-                    const productVariant = product?.variant.find(
-                        (candidate) => candidate.id === draftItem.variantId
-                    );
-                    const packagingLevel = productVariant?.packagingHierarchy.find(
-                        (candidate) => candidate.id === draftItem.packagingLevelId
-                    );
-                    const batch = plan.inventoryBatches.find(
-                        (candidate) => candidate.batchId === activityItem.batch?.batchId
-                    );
-                    const stock = activityItem.stock[0];
-                    if (!product || !productVariant || !packagingLevel || !batch || !stock) {
-                        return false;
-                    }
-                    return (
-                        activityItem.productId === draftItem.productId &&
-                        activityItem.productName === product.name &&
-                        activityItem.variantId === draftItem.variantId &&
-                        activityItem.variantName === productVariant.variantName &&
-                        activityItem.stock.length === 1 &&
-                        stock.packagingLevel.packagingLevelId ===
-                            draftItem.packagingLevelId &&
-                        JSON.stringify(stock.packagingLevel) ===
-                            JSON.stringify(snapshotPackagingLevel(
-                                packagingLevel,
-                                productVariant.packagingHierarchy
-                            )) &&
-                        stock.quantity === draftItem.quantity &&
-                        batch.productId === draftItem.productId &&
-                        batch.variantId === draftItem.variantId &&
-                        batch.batchNumber === draftItem.batchNumber &&
-                        (batch.expiryDate?.toISOString().slice(0, 10) ?? null) ===
-                            draftItem.expiryDate &&
-                        JSON.stringify(activityItem.batch) ===
-                            JSON.stringify(snapshotBatch(batch, product))
-                    );
-                })
+                Date.parse(event.occurredAt) !== approvalTimestamp
+            ) {
+                throw new Error("Delivery approval contains invalid Activity metadata.");
+            }
+
+            const reservedIds = new Set([
+                ...state.products.flatMap((product) => [
+                    product.id,
+                    ...product.variant.flatMap((productVariant) => [
+                        productVariant.id,
+                        ...productVariant.packagingHierarchy.map((level) => level.id)
+                    ])
+                ]),
+                ...state.inventoryRecords.map((record) => record.id),
+                ...state.inventoryBatches.map((batch) => batch.batchId)
+            ]);
+            let generatedIdIndex = 0;
+            const expectedPlan = prepareDeliveryApproval(
+                currentDraft,
+                state.products,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                {
+                    makeId: () => {
+                        let candidate: string;
+                        do {
+                            candidate =
+                                `__approval_validation_${currentDraft.deliveryId}_${generatedIdIndex++}`;
+                        } while (reservedIds.has(candidate));
+                        reservedIds.add(candidate);
+                        return candidate;
+                    },
+                    now: () => new Date(approvalTimestamp)
+                }
+            );
+
+            const existingBatchIds = new Set(
+                state.inventoryBatches.map((batch) => batch.batchId)
+            );
+            const existingRecordIds = new Set(
+                state.inventoryRecords.map((record) => record.id)
+            );
+            const expectedNewBatches = expectedPlan.inventoryBatches.filter(
+                (batch) => !existingBatchIds.has(batch.batchId)
+            );
+            const submittedNewBatches = plan.inventoryBatches.filter(
+                (batch) => !existingBatchIds.has(batch.batchId)
+            );
+            const expectedNewRecords = expectedPlan.inventoryRecords.filter(
+                (record) => !existingRecordIds.has(record.id)
+            );
+            const submittedNewRecords = plan.inventoryRecords.filter(
+                (record) => !existingRecordIds.has(record.id)
+            );
+            if (
+                expectedNewBatches.length !== submittedNewBatches.length ||
+                expectedNewRecords.length !== submittedNewRecords.length
             ) {
                 throw new Error("Delivery approval does not match the active draft.");
             }
 
-            for (const record of plan.inventoryRecords) {
+            const submittedGeneratedIds = new Set(reservedIds);
+            const submittedBatchIdMap = new Map<string, string>();
+            expectedNewBatches.forEach((batch, index) => {
+                const submittedBatch = submittedNewBatches[index];
+                if (
+                    !submittedBatch?.batchId.trim() ||
+                    submittedBatch.batchId !== submittedBatch.batchId.trim() ||
+                    submittedGeneratedIds.has(submittedBatch.batchId)
+                ) {
+                    throw new Error("Delivery approval contains duplicate generated IDs.");
+                }
+                submittedGeneratedIds.add(submittedBatch.batchId);
+                submittedBatchIdMap.set(batch.batchId, submittedBatch.batchId);
+            });
+            const submittedRecordIdMap = new Map<string, string>();
+            expectedNewRecords.forEach((record, index) => {
+                const submittedRecord = submittedNewRecords[index];
+                if (
+                    !submittedRecord?.id.trim() ||
+                    submittedRecord.id !== submittedRecord.id.trim() ||
+                    submittedGeneratedIds.has(submittedRecord.id)
+                ) {
+                    throw new Error("Delivery approval contains duplicate generated IDs.");
+                }
+                submittedGeneratedIds.add(submittedRecord.id);
+                submittedRecordIdMap.set(record.id, submittedRecord.id);
+            });
+
+            const expectedInventoryBatches = expectedPlan.inventoryBatches.map(
+                (batch) => ({
+                    ...batch,
+                    batchId: submittedBatchIdMap.get(batch.batchId) ?? batch.batchId
+                })
+            );
+            const expectedInventoryRecords = expectedPlan.inventoryRecords.map(
+                (record) => ({
+                    ...record,
+                    id: submittedRecordIdMap.get(record.id) ?? record.id,
+                    batchId: record.batchId === null
+                        ? null
+                        : submittedBatchIdMap.get(record.batchId) ?? record.batchId
+                })
+            );
+            if (expectedPlan.activity.type !== "delivery.received") {
+                throw new Error("Delivery approval planner returned an invalid Activity.");
+            }
+            const expectedActivity: ActivityEventInput = {
+                ...expectedPlan.activity,
+                items: expectedPlan.activity.items.map((item) => ({
+                    ...item,
+                    batch: item.batch === null
+                        ? null
+                        : {
+                            ...item.batch,
+                            batchId:
+                                submittedBatchIdMap.get(item.batch.batchId) ??
+                                item.batch.batchId
+                        }
+                }))
+            };
+            const receivedDraft = validateDeliveryDraft(plan.draft);
+            if (
+                JSON.stringify(receivedDraft) !== JSON.stringify(expectedPlan.draft) ||
+                JSON.stringify(plan.inventoryBatches) !==
+                    JSON.stringify(expectedInventoryBatches) ||
+                JSON.stringify(plan.inventoryRecords) !==
+                    JSON.stringify(expectedInventoryRecords) ||
+                event.type !== "delivery.received" ||
+                JSON.stringify(activityInputFromEvent(event)) !==
+                    JSON.stringify(expectedActivity)
+            ) {
+                throw new Error("Delivery approval does not match the active draft.");
+            }
+
+            for (const record of expectedInventoryRecords) {
                 const product = state.products.find(
                     (candidate) => candidate.id === record.productId
                 );
@@ -1394,7 +2706,7 @@ export function applicationReducer(
                 validateInventoryRelationships(
                     product,
                     record,
-                    plan.inventoryBatches
+                    expectedInventoryBatches
                 );
             }
 
@@ -1406,8 +2718,8 @@ export function applicationReducer(
             deliveryDrafts[draftIndex] = receivedDraft;
             return {
                 ...state,
-                inventoryRecords: plan.inventoryRecords,
-                inventoryBatches: plan.inventoryBatches,
+                inventoryRecords: expectedInventoryRecords,
+                inventoryBatches: expectedInventoryBatches,
                 deliveryDrafts,
                 activityEvents
             };

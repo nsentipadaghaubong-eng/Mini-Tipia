@@ -22,7 +22,11 @@ import ProductEditModal from "../components/ProductEditModal";
 import type { ProductCreationResult } from "../../../products/productCreation";
 import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
 import type { SaleDraft } from "../../../sales/salesDraft";
-import { getProductDeletionBlockMessages } from "../../../products/productDeletion";
+import {
+    getProductDeletionBlockMessages,
+    type ProductRecordDeletionDraft,
+} from "../../../products/productDeletion";
+import { getProductDraftLockMessages } from "../../../products/productDraftLock";
 import {
     createInventoryManageIntent,
     isProductEditContextValid,
@@ -40,7 +44,13 @@ interface ProductsPageProps {
     onDeleteProduct: (
         productId: string
     ) => { success: true } | { success: false; error: string };
-    onUpdateProduct: (product: productStructure, reason: string) => void;
+    onUpdateProduct: (
+        product: productStructure,
+        reason: string,
+        inventoryRecords?: inventory[],
+        inventoryBatches?: inventoryBatch[],
+        deletions?: ProductRecordDeletionDraft[]
+    ) => void;
     saleDrafts: SaleDraft[];
     deliveryDrafts: DeliveryDraft[];
     navigationRequest: NavigationRequest | null;
@@ -206,7 +216,9 @@ export function VariantDetails({
 
     return (
         <section className="products-variant">
-            <h3 className="modal-section-title">{productVariant.variantName}</h3>
+            <div className="products-variant-heading">
+                <h3 className="modal-section-title">{productVariant.variantName}</h3>
+            </div>
             {nafdacRegistrationNumber && (
                 <dl className="products-prices products-variant-registration">
                     <div>
@@ -872,6 +884,11 @@ export default function ProductsPage({
                     onClose={closeProductEdit}
                     onSave={onUpdateProduct}
                     product={editingProduct}
+                    draftLockMessages={getProductDraftLockMessages(
+                        editingProduct.id,
+                        saleDrafts,
+                        deliveryDrafts
+                    )}
                 />
             )}
         </div>

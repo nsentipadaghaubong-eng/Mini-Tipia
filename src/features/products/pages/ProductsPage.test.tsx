@@ -18,6 +18,7 @@ import type { packagingLevel } from "../../../packaging/packagingHierarchy";
 import type { NavigationRequest } from "../../../navigation/navigationIntent";
 import type { SaleDraft } from "../../../sales/salesDraft";
 import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
+import type { ProductRecordDeletionDraft } from "../../../products/productDeletion";
 import {
     ProductInformation,
     VariantDetails
@@ -102,6 +103,13 @@ function renderProductsPage(
         onDeleteProduct?: (
             productId: string
         ) => { success: true } | { success: false; error: string };
+        onUpdateProduct?: (
+            product: productStructure,
+            reason: string,
+            inventoryRecords?: inventory[],
+            inventoryBatches?: inventoryBatch[],
+            deletions?: ProductRecordDeletionDraft[]
+        ) => void;
     } = {}
 ) {
     return renderToStaticMarkup(createElement(ProductsPage, {
@@ -110,7 +118,7 @@ function renderProductsPage(
         inventoryBatches,
         onCreateProduct: () => undefined,
         onDeleteProduct: deletionOptions.onDeleteProduct ?? (() => ({ success: true })),
-        onUpdateProduct: () => undefined,
+        onUpdateProduct: deletionOptions.onUpdateProduct ?? (() => undefined),
         saleDrafts: deletionOptions.saleDrafts ?? [],
         deliveryDrafts: deletionOptions.deliveryDrafts ?? [],
         navigationRequest,
@@ -172,6 +180,13 @@ function renderInteractiveProductsPage(
         onDeleteProduct?: (
             productId: string
         ) => { success: true } | { success: false; error: string };
+        onUpdateProduct?: (
+            product: productStructure,
+            reason: string,
+            inventoryRecords?: inventory[],
+            inventoryBatches?: inventoryBatch[],
+            deletions?: ProductRecordDeletionDraft[]
+        ) => void;
     } = {}
 ) {
     return render(createElement(ProductsPage, {
@@ -180,7 +195,7 @@ function renderInteractiveProductsPage(
         inventoryBatches: [],
         onCreateProduct: () => undefined,
         onDeleteProduct: deletionOptions.onDeleteProduct ?? (() => ({ success: true })),
-        onUpdateProduct: () => undefined,
+        onUpdateProduct: deletionOptions.onUpdateProduct ?? (() => undefined),
         saleDrafts: deletionOptions.saleDrafts ?? [],
         deliveryDrafts: deletionOptions.deliveryDrafts ?? [],
         navigationRequest: null,
@@ -572,9 +587,9 @@ describe("ProductsPage deletion", () => {
 
     it("blocks deletion for active Sales and Receive Delivery drafts", () => {
         const salesMessage =
-            "This product is currently in a Sales draft and cannot be deleted. Please complete or cancel the Sales draft before attempting to delete this product.";
+            "This product is currently in a Sales draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description.";
         const deliveryMessage =
-            "This product is currently in a Receive Delivery draft and cannot be deleted. Please complete or cancel the Receive Delivery draft before attempting to delete this product.";
+            "This product is currently in a Receive Delivery draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description.";
         const onDeleteProduct = vi.fn(() => ({ success: true as const }));
 
         const { unmount } = renderInteractiveProductsPage(product, {
@@ -623,10 +638,10 @@ describe("ProductsPage deletion", () => {
         });
         expect(dialog).toBeVisible();
         expect(dialog).toHaveTextContent(
-            "This product is currently in a Sales draft and cannot be deleted. Please complete or cancel the Sales draft before attempting to delete this product."
+            "This product is currently in a Sales draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
         );
         expect(dialog).toHaveTextContent(
-            "This product is currently in a Receive Delivery draft and cannot be deleted. Please complete or cancel the Receive Delivery draft before attempting to delete this product."
+            "This product is currently in a Receive Delivery draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
         );
         expect(onDeleteProduct).not.toHaveBeenCalled();
         fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -650,5 +665,151 @@ describe("ProductsPage deletion", () => {
             "The product could not be deleted."
         );
         expect(screen.getByRole("alertdialog")).toHaveTextContent("Cancel");
+    });
+
+    it("keeps deletion controls out of View and places them in Product Edit", () => {
+        const productWithVariants = createProduct([
+            createVariant("variant-1", "Tablets", undefined, [
+                createLevel("box", "Box")
+            ]),
+            createVariant("variant-2", "Syrup", undefined, [
+                createLevel("bottle", "Bottle")
+            ])
+        ]);
+        renderInteractiveProductsPage(productWithVariants);
+
+        fireEvent.click(screen.getByRole("button", { name: "View" }));
+        expect(screen.queryByRole("button", { name: "Delete Variant" }))
+            .not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Delete Packaging Level" }))
+            .not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Close product details" }));
+        fireEvent.click(screen.getByRole("button", { name: "Edit Medicine" }));
+
+        expect(screen.getByRole("dialog", { name: "Edit Product" })).toBeVisible();
+        expect(screen.getAllByRole("button", { name: "Delete Variant" })).toHaveLength(2);
+        expect(screen.getAllByRole("button", {
+            name: "Delete Packaging Level"
+        })).toHaveLength(2);
+    });
+
+    it("confirms and stages deletions in the Product Edit session with separate reasons", () => {
+        const productWithVariants = createProduct([
+            createVariant("variant-1", "Tablets", undefined, [
+                createLevel("box", "Box")
+            ]),
+            createVariant("variant-2", "Syrup", undefined, [
+                createLevel("bottle", "Bottle")
+            ])
+        ]);
+        const onUpdateProduct = vi.fn();
+        renderInteractiveProductsPage(productWithVariants, { onUpdateProduct });
+        fireEvent.click(screen.getByRole("button", { name: "Edit Medicine" }));
+
+        fireEvent.click(screen.getAllByRole("button", { name: "Delete Variant" })[0]);
+        let confirmation = screen.getByRole("alertdialog", { name: "Delete Tablets?" });
+        fireEvent.click(within(confirmation).getByRole("button", { name: "Cancel" }));
+        expect(screen.queryByLabelText("Reason for deleting Tablets"))
+            .not.toBeInTheDocument();
+        expect(onUpdateProduct).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "Delete Variant" })[0]);
+        confirmation = screen.getByRole("alertdialog", { name: "Delete Tablets?" });
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Confirm Delete"
+        }));
+        expect(onUpdateProduct).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Delete Packaging Level"
+        })[1]);
+        confirmation = screen.getByRole("alertdialog", {
+            name: "Delete Bottle packaging level?"
+        });
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Confirm Delete"
+        }));
+
+        const saveButton = screen.getByRole("button", { name: "Save Changes" });
+        expect(saveButton).toBeDisabled();
+        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets"), {
+            target: { value: "   " }
+        });
+        fireEvent.change(screen.getByLabelText("Reason for deleting Bottle packaging level"), {
+            target: { value: "Remove obsolete container" }
+        });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Update product details" }
+        });
+        expect(saveButton).toBeDisabled();
+        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets"), {
+            target: { value: "  Discontinue tablet variant  " }
+        });
+        expect(saveButton).toBeEnabled();
+        fireEvent.click(saveButton);
+
+        expect(onUpdateProduct).toHaveBeenCalledOnce();
+        expect(onUpdateProduct.mock.calls[0][4]).toEqual([
+            {
+                type: "variant",
+                variantId: "variant-1",
+                reason: "Discontinue tablet variant"
+            },
+            {
+                type: "packaging",
+                variantId: "variant-2",
+                packagingLevelId: "bottle",
+                reason: "Remove obsolete container"
+            }
+        ]);
+    });
+
+    it("discards staged product deletions when Product Edit is cancelled", () => {
+        const onUpdateProduct = vi.fn();
+        renderInteractiveProductsPage(product, { onUpdateProduct });
+
+        fireEvent.click(screen.getByRole("button", { name: "Edit Medicine" }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete Variant" }));
+        const confirmation = screen.getByRole("alertdialog", { name: "Delete Tablets?" });
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Confirm Delete"
+        }));
+        expect(screen.getByLabelText("Reason for deleting Tablets")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+        expect(onUpdateProduct).not.toHaveBeenCalled();
+        expect(screen.queryByRole("dialog", { name: "Edit Product" })).not.toBeInTheDocument();
+    });
+
+    it("disables all product deletion controls when any variant is in an active draft", () => {
+        const productWithVariants = createProduct([
+            createVariant("variant-1", "Tablets", undefined, [
+                createLevel("box", "Box")
+            ]),
+            createVariant("variant-2", "Syrup", undefined, [
+                createLevel("bottle", "Bottle")
+            ])
+        ]);
+        const onUpdateProduct = vi.fn();
+        const saleDraft = makeSaleDraft(productWithVariants.id);
+        saleDraft.items[0].variantId = "variant-1";
+        renderInteractiveProductsPage(productWithVariants, {
+            saleDrafts: [saleDraft],
+            onUpdateProduct
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Edit Medicine" }));
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "This product is currently in a Sales draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+        );
+        expect(screen.getAllByRole("button", { name: "Delete Variant" }).every(
+            (button) => (button as HTMLButtonElement).disabled
+        )).toBe(true);
+        expect(screen.getAllByRole("button", {
+            name: "Delete Packaging Level"
+        }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        expect(onUpdateProduct).not.toHaveBeenCalled();
     });
 });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { useReducer } from "react";
+import { useReducer, useState } from "react";
 import {
     act,
     cleanup,
@@ -108,17 +108,17 @@ function renderSales(initialState = makeState()) {
     let latestState = initialState;
     let updateInventoryRecords: (records: inventory[]) => void = () => undefined;
     function Harness() {
-        const [state, dispatch] = useReducer(
+        const [reducerState, dispatch] = useReducer(
             applicationReducer,
             initialState
         );
+        const [externalInventoryRecords, setExternalInventoryRecords] =
+            useState<inventory[] | null>(null);
+        const state = externalInventoryRecords === null
+            ? reducerState
+            : { ...reducerState, inventoryRecords: externalInventoryRecords };
         latestState = state;
-        updateInventoryRecords = (records) => dispatch({
-            type: "inventory.saved",
-            inventoryRecords: records,
-            inventoryBatches: latestState.inventoryBatches,
-            events: []
-        });
+        updateInventoryRecords = setExternalInventoryRecords;
         return (
             <SalesPage
                 products={state.products}

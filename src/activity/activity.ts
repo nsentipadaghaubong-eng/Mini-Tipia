@@ -26,6 +26,7 @@ export interface ActivityVariantSnapshot {
 export interface ActivityProductSnapshot {
     readonly productId: string;
     readonly productName: string;
+    readonly description?: string;
     readonly genericName?: string;
     readonly manufacturer?: string;
     readonly category?: string;
@@ -115,6 +116,7 @@ export type ActivityEventInput = ActivityBaseInput & (
         readonly productId: string;
         readonly productName: string;
         readonly removedVariant: ActivityVariantSnapshot;
+        readonly removedBatches: readonly ActivityBatchSnapshot[];
         readonly affectedInventory: readonly ActivityInventorySnapshot[];
         readonly reason: string;
     }
@@ -144,13 +146,16 @@ export type ActivityEventInput = ActivityBaseInput & (
         readonly variantId: string;
         readonly variantName: string;
         readonly removedPackaging: ActivityPackagingSnapshot;
+        readonly beforeHierarchy: readonly ActivityPackagingSnapshot[];
+        readonly afterHierarchy: readonly ActivityPackagingSnapshot[];
         readonly removedStock: readonly ActivityRemovedPackagingStockSnapshot[];
         readonly reason: string;
     }
     | {
         readonly type: "inventory.batch_created";
-        readonly source: "product_creation";
+        readonly source: "product_creation" | "inventory_edit";
         readonly batch: ActivityBatchSnapshot;
+        readonly inventory?: ActivityInventorySnapshot;
     }
     | {
         readonly type: "inventory.batch_updated";
@@ -282,6 +287,9 @@ export function snapshotProduct(
     return {
         productId: product.id,
         productName: product.name,
+        ...(product.description === undefined
+            ? {}
+            : { description: product.description }),
         ...(product.genericName === undefined
             ? {}
             : { genericName: product.genericName }),
@@ -430,6 +438,21 @@ export function buildProductCreationActivityInputs(
                 batch: snapshotBatch(batch, product)
             }))
     ];
+}
+
+export function buildBatchCreatedActivityInput(
+    operationId: string,
+    product: productStructure,
+    batch: inventoryBatch,
+    inventoryRecord: inventory
+): ActivityEventInput {
+    return {
+        type: "inventory.batch_created",
+        operationKey: `inventory.batch_created:${operationId}:${batch.batchId}`,
+        source: "inventory_edit",
+        batch: snapshotBatch(batch, product),
+        inventory: snapshotInventory(inventoryRecord, product, [batch])
+    };
 }
 
 export function buildStockAdjustmentActivityInput(
@@ -612,6 +635,11 @@ export function buildVariantRemovalActivityInput(
         productId: product.id,
         productName: product.name,
         removedVariant: variantSnapshot,
+        removedBatches: batches
+            .filter((batch) =>
+                batch.productId === product.id && batch.variantId === variant.id
+            )
+            .map((batch) => snapshotBatch(batch, product)),
         affectedInventory: inventorySnapshots,
         reason: reason.trim()
     };
@@ -622,6 +650,7 @@ export function buildPackagingRemovalActivityInput(
     product: productStructure,
     variant: variant,
     level: packagingLevel,
+    nextHierarchy: readonly packagingLevel[],
     inventoryRecords: readonly inventory[],
     batches: readonly inventoryBatch[],
     reason: string
@@ -665,6 +694,12 @@ export function buildPackagingRemovalActivityInput(
         variantId: variant.id,
         variantName: variant.variantName,
         removedPackaging: snapshotPackagingLevel(level, variant.packagingHierarchy),
+        beforeHierarchy: variant.packagingHierarchy.map((packaging) =>
+            snapshotPackagingLevel(packaging, variant.packagingHierarchy)
+        ),
+        afterHierarchy: nextHierarchy.map((packaging) =>
+            snapshotPackagingLevel(packaging, nextHierarchy)
+        ),
         removedStock,
         reason: reason.trim()
     };
@@ -680,7 +715,11 @@ export function buildBatchRemovalActivityInput(
 ): ActivityEventInput {
     const batchSnapshot = snapshotBatch(batch, product);
     const inventorySnapshots = affectedInventory
-        .filter((record) => record.productId === product.id && record.batchId === batch.batchId)
+        .filter((record) =>
+            record.productId === product.id &&
+            record.variantId === batch.variantId &&
+            record.batchId === batch.batchId
+        )
         .map((record) => snapshotInventory(record, product, batches));
 
     return {
