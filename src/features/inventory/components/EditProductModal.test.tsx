@@ -77,6 +77,39 @@ function renderModal(inventoryRecords: inventoryDisplay[]) {
 }
 
 describe("EditProductModal unbatched inventory display", () => {
+    it("keeps the reason section outside the independently scrollable editor", () => {
+        render(createElement(EditProductModal, {
+            product,
+            batches,
+            inventoryRecords: [inventoryRecord("batch-record", "batch-1", 4)],
+            onEditProductDetails: () => undefined,
+            onClose: () => undefined,
+            onSave: () => undefined
+        }));
+
+        const reasonInput = screen.getByLabelText(
+            "Why are you making these changes?"
+        );
+        const reasonLabel = reasonInput.closest(".edit-field")?.querySelector("label");
+        const reasonSection = reasonInput.closest("section");
+        const dialog = reasonSection?.parentElement;
+        const content = dialog?.querySelector<HTMLElement>(".edit-modal-content");
+
+        expect(reasonSection).not.toBeNull();
+        expect(reasonLabel).not.toBeNull();
+        expect(dialog).not.toBeNull();
+        expect(content).not.toBeNull();
+        expect(reasonSection).toHaveClass("edit-reason-section");
+        expect(reasonLabel!).toHaveClass("edit-reason-label");
+        expect(reasonSection?.nextElementSibling).toBe(content);
+        expect(content).not.toContainElement(reasonSection);
+        expect(content!).toHaveClass("edit-modal-content");
+
+        content!.scrollTop = 200;
+        fireEvent.scroll(content!);
+        expect(reasonInput).toBeVisible();
+    });
+
     it("renders unbatched packaging and current quantity separately from batch cards", () => {
         const markup = renderModal([
             inventoryRecord("batch-record", "batch-1", 4),

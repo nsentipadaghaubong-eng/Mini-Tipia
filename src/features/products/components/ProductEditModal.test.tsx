@@ -22,7 +22,10 @@ import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { productStructure } from "../../../products/productStructure";
 import ProductEditModal from "./ProductEditModal";
 
-afterEach(cleanup);
+afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+});
 
 const product: productStructure = {
     id: "product-1",
@@ -110,18 +113,95 @@ describe("ProductEditModal", () => {
         expect(markup).toContain('disabled="" type="submit"');
     });
 
-    it("allows descriptive edits while locking product structure", () => {
-        const onSave = vi.fn();
+    it("disables saving for an empty or whitespace-only reason", () => {
         render(createElement(ProductEditModal, {
             product,
             inventoryRecords: [],
             inventoryBatches: [],
             onManageStock: () => undefined,
             onClose: () => undefined,
+            onSave: () => undefined
+        }));
+
+        const saveButton = screen.getByRole("button", { name: "Save Changes" });
+        const reasonInput = screen.getByRole("textbox", {
+            name: /Reason for update/
+        });
+
+        expect(saveButton).toBeDisabled();
+        fireEvent.change(reasonInput, { target: { value: "   " } });
+        expect(saveButton).toBeDisabled();
+        fireEvent.change(reasonInput, { target: { value: "Correct product details" } });
+        expect(saveButton).toBeEnabled();
+        fireEvent.change(reasonInput, { target: { value: "" } });
+        expect(saveButton).toBeDisabled();
+        fireEvent.change(reasonInput, { target: { value: "   " } });
+        expect(saveButton).toBeDisabled();
+    });
+
+    it("keeps the reason section outside the independently scrollable editor", () => {
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave: () => undefined
+        }));
+
+        const reasonInput = screen.getByRole("textbox", {
+            name: /Reason for update/
+        });
+        const reasonLabel = reasonInput.closest("label");
+        const reasonSection = reasonInput.closest("section");
+        const form = reasonSection?.parentElement;
+        const content = form?.querySelector<HTMLElement>(".product-edit-content");
+
+        expect(reasonSection).not.toBeNull();
+        expect(reasonLabel).not.toBeNull();
+        expect(form).not.toBeNull();
+        expect(content).not.toBeNull();
+        expect(reasonSection).toHaveClass("product-edit-reason");
+        expect(reasonLabel!).toHaveClass("product-edit-reason-label");
+        expect(form?.firstElementChild).toBe(reasonSection);
+        expect(content).not.toContainElement(reasonSection);
+        expect(content!).toHaveClass("product-edit-content");
+
+        content!.scrollTop = 200;
+        fireEvent.scroll(content!);
+        expect(reasonInput).toBeVisible();
+    });
+
+    it.each([
+        [
+            "Sales",
+            "This product is currently in a Sales draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+        ],
+        [
+            "Receive Delivery",
+            "This product is currently in a Receive Delivery draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
+        ]
+    ])("allows descriptive edits with stock while a %s draft locks structure", (
+        _draftType,
+        draftLockMessage
+    ) => {
+        const inventoryRecords: inventory[] = [{
+            id: "inventory-1",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: null,
+            stockQuantities: [{ packagingLevelId: "box", quantity: 12 }]
+        }];
+        const before = structuredClone(inventoryRecords);
+        const onSave = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords,
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
             onSave,
-            draftLockMessages: [
-                "This product is currently in a Sales draft. Its inventory and product structure cannot be modified until the draft is completed or cancelled. You can still edit its name and description."
-            ]
+            draftLockMessages: [draftLockMessage]
         }));
 
         expect(screen.getByLabelText("Product name")).toBeEnabled();
@@ -132,6 +212,8 @@ describe("ProductEditModal", () => {
         expect(screen.getByRole("button", { name: "Add variant" })).toBeDisabled();
         expect(screen.getAllByRole("button", { name: "Add packaging level" })[0])
             .toBeDisabled();
+        expect(screen.getAllByLabelText(/Current total stock/)[0]).toHaveValue(12);
+        expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
         expect(screen.getByRole("alert")).toHaveTextContent(
             "Its inventory and product structure cannot be modified"
         );
@@ -145,6 +227,7 @@ describe("ProductEditModal", () => {
         fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
             target: { value: "Correct product description" }
         });
+        expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled();
         fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
 
         expect(onSave).toHaveBeenCalledOnce();
@@ -153,6 +236,9 @@ describe("ProductEditModal", () => {
             description: "Descriptive update",
             variant: product.variant
         });
+        expect(onSave.mock.calls[0][1]).toBe("Correct product description");
+        expect(onSave.mock.calls[0][2]).toEqual(before);
+        expect(inventoryRecords).toEqual(before);
         expect(screen.getAllByRole("button", { name: "Delete Variant" })
             .every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
     });
@@ -207,7 +293,7 @@ describe("ProductEditModal", () => {
         const before = structuredClone(records);
         const onSave = vi.fn();
 
-        renderToStaticMarkup(createElement(ProductEditModal, {
+        render(createElement(ProductEditModal, {
             product,
             inventoryRecords: records,
             inventoryBatches: [],
@@ -218,6 +304,201 @@ describe("ProductEditModal", () => {
 
         expect(records).toEqual(before);
         expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("shows a clear total for each existing packaging level across matching batches and variants", () => {
+        const productWithMultipleVariants: productStructure = {
+            ...product,
+            variant: [
+                product.variant[0],
+                {
+                    ...product.variant[1],
+                    packagingHierarchy: [{
+                        id: "bottle",
+                        name: "Bottle",
+                        costPrice: null,
+                        sellingPrice: 20,
+                        quantityofNextLevel: null,
+                        nextLevelId: null
+                    }]
+                }
+            ]
+        };
+        const inventoryBatches: inventoryBatch[] = [
+            {
+                batchId: "batch-1",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchNumber: "B1",
+                expiryDate: null
+            },
+            {
+                batchId: "batch-2",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchNumber: "B2",
+                expiryDate: null
+            }
+        ];
+        const records: inventory[] = [
+            {
+                id: "inventory-box-b1",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchId: "batch-1",
+                stockQuantities: [{ packagingLevelId: "box", quantity: 4 }]
+            },
+            {
+                id: "inventory-box-b2",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchId: "batch-2",
+                stockQuantities: [{ packagingLevelId: "box", quantity: 5 }]
+            },
+            {
+                id: "inventory-pack",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchId: null,
+                stockQuantities: [{ packagingLevelId: "pack", quantity: 6 }]
+            },
+            {
+                id: "inventory-other-product",
+                productId: "product-2",
+                variantId: product.variant[0].id,
+                batchId: null,
+                stockQuantities: [{ packagingLevelId: "box", quantity: 100 }]
+            },
+            {
+                id: "inventory-second-variant",
+                productId: product.id,
+                variantId: product.variant[1].id,
+                batchId: null,
+                stockQuantities: [{ packagingLevelId: "bottle", quantity: 50 }]
+            }
+        ];
+        const before = structuredClone(records);
+        const onSave = vi.fn();
+
+        render(createElement(ProductEditModal, {
+            product: productWithMultipleVariants,
+            inventoryRecords: records,
+            inventoryBatches,
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        expect(screen.getAllByLabelText(/Current total stock/).map((input) =>
+            (input as HTMLInputElement).value
+        )).toEqual(["9", "6", "50"]);
+        expect(screen.getAllByText(
+            "Across matching batches and unbatched stock."
+        )).toHaveLength(3);
+        expect(screen.queryByLabelText("Initial stock batch")).not.toBeInTheDocument();
+        expect(records).toEqual(before);
+        expect(onSave).not.toHaveBeenCalled();
+
+        fireEvent.change(screen.getByLabelText("Product name"), {
+            target: { value: "Updated Medicine" }
+        });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Update product details" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(onSave).toHaveBeenCalledOnce();
+        expect(onSave.mock.calls[0][2]).toEqual(before);
+        expect(records).toEqual(before);
+    });
+
+    it("shows zero for existing packaging levels with no inventory", () => {
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave: () => undefined
+        }));
+
+        expect(screen.getAllByLabelText(/Current total stock/).map((input) =>
+            (input as HTMLInputElement).value
+        )).toEqual(["0", "0"]);
+    });
+
+    it("keeps initial-stock entry for newly added packaging without batch selection", () => {
+        vi.stubGlobal("crypto", {
+            randomUUID: () => "new-packaging-level"
+        });
+        const inventoryBatches: inventoryBatch[] = [{
+            batchId: "batch-1",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "B1",
+            expiryDate: null
+        }];
+        const inventoryRecords: inventory[] = [{
+            id: "inventory-1",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: "batch-1",
+            stockQuantities: [{ packagingLevelId: "box", quantity: 4 }]
+        }];
+        const onSave = vi.fn();
+
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords,
+            inventoryBatches,
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        const addPackagingButton = screen.getAllByRole("button", {
+            name: "Add packaging level"
+        })[0];
+        expect(addPackagingButton).toBeEnabled();
+        fireEvent.click(addPackagingButton);
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        const packagingNameInputs = screen.getAllByRole("textbox", {
+            name: /^Packaging level name/
+        });
+        expect(packagingNameInputs).toHaveLength(3);
+        fireEvent.change(packagingNameInputs[2], {
+            target: { value: "Unit" }
+        });
+        fireEvent.change(screen.getAllByRole("spinbutton", {
+            name: /^Quantity of next level/
+        })[1], {
+            target: { value: "12" }
+        });
+        const initialStockInput = screen.getByLabelText("Initial stock quantity");
+        expect(initialStockInput).toBeInTheDocument();
+        expect(screen.queryByLabelText("Initial stock batch")).not.toBeInTheDocument();
+        fireEvent.change(initialStockInput, {
+            target: { value: "3" }
+        });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Add unit packaging with initial stock" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(onSave).toHaveBeenCalledOnce();
+        const updatedProduct = onSave.mock.calls[0][0] as productStructure;
+        const newPackagingId =
+            updatedProduct.variant[0].packagingHierarchy.at(-1)?.id;
+        expect(onSave.mock.calls[0][2]).toEqual([{
+            ...inventoryRecords[0],
+            stockQuantities: [
+                { packagingLevelId: "box", quantity: 4 },
+                { packagingLevelId: newPackagingId, quantity: 3 }
+            ]
+        }]);
+        expect(inventoryRecords[0].stockQuantities).toEqual([
+            { packagingLevelId: "box", quantity: 4 }
+        ]);
     });
 
     it("does not save or create stock Activity when a packaging change is cancelled", () => {

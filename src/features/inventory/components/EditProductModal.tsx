@@ -471,8 +471,31 @@ export default function EditProductModal({
                     </button>
                 </header>
 
-                <div className="edit-modal-content">
+                <section className="edit-product-section edit-reason-section">
+                    <h3>Reason for changes</h3>
 
+                    <div className="edit-field">
+                        <label
+                            className="edit-reason-label"
+                            htmlFor="edit-reason"
+                        >
+                            Why are you making these changes?
+                        </label>
+
+                        <textarea
+                            id="edit-reason"
+                            value={reason}
+                            onChange={(event) => {
+                                setSaveError(null);
+                                setReason(event.target.value);
+                            }}
+                            placeholder="Enter the reason for these changes..."
+                            rows={3}
+                        />
+                    </div>
+                </section>
+
+                <div className="edit-modal-content">
                     <section className="edit-product-section">
                         <h3>Product Information</h3>
 
@@ -772,28 +795,6 @@ export default function EditProductModal({
                                 )}
                             </div>
                         ))}
-                    </section>
-
-                    <section className="edit-product-section">
-                        <h3>Reason for changes</h3>
-
-                        <div className="edit-field">
-                            <label htmlFor="edit-reason">
-                                Why are you making these changes?
-                            </label>
-
-                            <textarea
-                                id="edit-reason"
-                                value={reason}
-                                onChange={(event) => {
-                                    setSaveError(null);
-                                    setReason(event.target.value);
-                                }}
-                                placeholder="Enter the reason for these changes..."
-                                rows={3}
-                            />
-                        </div>
-
                     </section>
 
                     {saveError && (

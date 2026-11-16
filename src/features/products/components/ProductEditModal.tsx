@@ -77,6 +77,22 @@ function updatePackaging(
     };
 }
 
+function getProductStructureDraft(variants: VariantUpdateDraft[]) {
+    return variants.map((productVariant) => ({
+        id: productVariant.id,
+        name: productVariant.name,
+        nafdacRegistrationNumber: productVariant.nafdacRegistrationNumber,
+        packaging: productVariant.packaging.map((level) => ({
+            id: level.id,
+            name: level.name,
+            nextLevelId: level.nextLevelId,
+            quantityofNextLevel: level.quantityofNextLevel,
+            costPrice: level.costPrice,
+            sellingPrice: level.sellingPrice
+        }))
+    }));
+}
+
 export default function ProductEditModal({
     product,
     inventoryRecords,
@@ -87,7 +103,33 @@ export default function ProductEditModal({
     onSave,
     draftLockMessages = []
 }: ProductEditModalProps) {
-    const [draft, setDraft] = useState(() => createProductUpdateDraft(product));
+    const [draft, setDraft] = useState<ProductUpdateDraft>(() => {
+        const initialDraft = createProductUpdateDraft(product);
+        return {
+            ...initialDraft,
+            variants: initialDraft.variants.map((productVariant) => ({
+                ...productVariant,
+                packaging: productVariant.packaging.map((level) => ({
+                    ...level,
+                    initialStock: String(
+                        inventoryRecords
+                            .filter((record) =>
+                                record.productId === product.id &&
+                                record.variantId === productVariant.id
+                            )
+                            .reduce((total, record) =>
+                                total + (
+                                    record.stockQuantities.find(
+                                        (stock) =>
+                                            stock.packagingLevelId === level.id
+                                    )?.quantity ?? 0
+                                ),
+                            0)
+                    )
+                }))
+            }))
+        };
+    });
     const [saveError, setSaveError] = useState<string | null>(null);
     const [pendingDeletion, setPendingDeletion] =
         useState<ProductRecordDeletionDraft | null>(null);
@@ -102,8 +144,10 @@ export default function ProductEditModal({
         isDraftLocked || stagedDeletions.length > 0;
     const originalVariantDraft = createProductUpdateDraft(product).variants;
     const hasStructuralChanges =
-        JSON.stringify(draft.variants) !== JSON.stringify(originalVariantDraft);
+        JSON.stringify(getProductStructureDraft(draft.variants)) !==
+        JSON.stringify(getProductStructureDraft(originalVariantDraft));
     const saveDisabled =
+        draft.reason.trim() === "" ||
         hasErrors ||
         (isDraftLocked &&
             (hasStructuralChanges || stagedDeletions.length > 0)) ||
@@ -254,6 +298,9 @@ export default function ProductEditModal({
             setSaveError(draftLockMessages.join(" "));
             return;
         }
+        if (draft.reason.trim() === "") {
+            return;
+        }
         if (hasErrors) {
             return;
         }
@@ -289,7 +336,12 @@ export default function ProductEditModal({
                         productVariant.id,
                         level.id,
                         level.initialStock ?? "0",
-                        level.initialStockBatchId?.trim() || null
+                        level.initialStockBatchId?.trim() ||
+                            inventoryBatches.find((batch) =>
+                                batch.productId === product.id &&
+                                batch.variantId === productVariant.id
+                            )?.batchId ||
+                            null
                     );
                 }
             }
@@ -353,6 +405,21 @@ export default function ProductEditModal({
                 </header>
 
                 <form onSubmit={handleSubmit}>
+                    <section className="product-edit-section product-edit-reason">
+                        <label className="product-edit-field product-edit-reason-label">
+                            Reason for update
+                            <textarea
+                                onChange={(event) => updateDraft((current) => ({
+                                    ...current,
+                                    reason: event.target.value
+                                }))}
+                                rows={3}
+                                value={draft.reason}
+                            />
+                            {fieldError(errors, "reason")}
+                        </label>
+                    </section>
+
                     <div className="inventory-modal-content product-edit-content">
                         <section className="product-edit-section">
                             <h3 className="modal-section-title">
@@ -588,6 +655,14 @@ export default function ProductEditModal({
                                         {productVariant.packaging.map((level, levelIndex) => {
                                             const levelPrefix =
                                                 `${variantPrefix}.packaging.${levelIndex}`;
+                                            const existingVariant = product.variant.find(
+                                                (item) => item.id === productVariant.id
+                                            );
+                                            const isExistingPackagingLevel =
+                                                existingVariant?.packagingHierarchy.some(
+                                                    (existingLevel) =>
+                                                        existingLevel.id === level.id
+                                                ) ?? false;
                                             return (
                                                 <article
                                                     className="product-edit-packaging"
@@ -773,9 +848,12 @@ export default function ProductEditModal({
                                                             )}
                                                         </label>
                                                         <label className="product-edit-field">
-                                                            Initial stock quantity
+                                                            {isExistingPackagingLevel
+                                                                ? "Current total stock"
+                                                                : "Initial stock quantity"}
                                                             <input
                                                                 disabled={isProductStructureReadOnly}
+                                                                readOnly={isExistingPackagingLevel}
                                                                 min="0"
                                                                 onChange={(event) => updateDraft((current) =>
                                                                     updateVariant(
@@ -795,61 +873,16 @@ export default function ProductEditModal({
                                                                 type="number"
                                                                 value={level.initialStock}
                                                             />
+                                                            {isExistingPackagingLevel && (
+                                                                <span className="product-edit-help">
+                                                                    Across matching batches and unbatched stock.
+                                                                </span>
+                                                            )}
                                                             {fieldError(
                                                                 errors,
                                                                 `${levelPrefix}.initialStock`
                                                             )}
                                                         </label>
-                                                        {inventoryBatches.some(
-                                                            (batch) =>
-                                                                batch.productId === product.id &&
-                                                                batch.variantId === productVariant.id
-                                                        ) && (
-                                                            <label className="product-edit-field">
-                                                                Initial stock batch
-                                                                <select
-                                                                    disabled={isProductStructureReadOnly}
-                                                                    onChange={(event) => updateDraft((current) =>
-                                                                        updateVariant(
-                                                                            current,
-                                                                            variantIndex,
-                                                                            (item) => updatePackaging(
-                                                                                item,
-                                                                                levelIndex,
-                                                                                (packaging) => ({
-                                                                                    ...packaging,
-                                                                                    initialStockBatchId: event.target.value
-                                                                                })
-                                                                            )
-                                                                        )
-                                                                    )}
-                                                                    value={
-                                                                        level.initialStockBatchId ||
-                                                                        inventoryBatches.find(
-                                                                            (batch) =>
-                                                                                batch.productId === product.id &&
-                                                                                batch.variantId === productVariant.id
-                                                                        )?.batchId || ""
-                                                                    }
-                                                                >
-                                                                    <option value="">Unbatched stock</option>
-                                                                    {inventoryBatches
-                                                                        .filter(
-                                                                            (batch) =>
-                                                                                batch.productId === product.id &&
-                                                                                batch.variantId === productVariant.id
-                                                                        )
-                                                                        .map((batch) => (
-                                                                            <option
-                                                                                key={batch.batchId}
-                                                                                value={batch.batchId}
-                                                                            >
-                                                                                {batch.batchNumber ?? "Batch"}
-                                                                            </option>
-                                                                        ))}
-                                                                </select>
-                                                            </label>
-                                                        )}
                                                     </div>
                                                 </article>
                                             );
@@ -858,19 +891,6 @@ export default function ProductEditModal({
                                 );
                             })}
                         </section>
-
-                        <label className="product-edit-field">
-                            Reason for update
-                            <textarea
-                                onChange={(event) => updateDraft((current) => ({
-                                    ...current,
-                                    reason: event.target.value
-                                }))}
-                                rows={3}
-                                value={draft.reason}
-                            />
-                            {fieldError(errors, "reason")}
-                        </label>
 
                         {stagedDeletions.length > 0 && (
                             <section aria-label="Staged deletions">

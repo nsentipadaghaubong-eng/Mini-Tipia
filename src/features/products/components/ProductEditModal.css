@@ -17,6 +17,17 @@
     overflow-y: auto;
 }
 
+.product-edit-reason {
+    flex: 0 0 auto;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--color-border);
+    background: #fff;
+}
+
+.product-edit-reason-label {
+    font-weight: 700;
+}
+
 .product-edit-section {
     display: grid;
     gap: 14px;
@@ -63,6 +74,11 @@
 }
 
 .product-edit-field input:disabled {
+    background: #f4f6f9;
+    color: var(--color-muted);
+}
+
+.product-edit-field input:read-only {
     background: #f4f6f9;
     color: var(--color-muted);
 }
@@ -153,6 +169,10 @@
 @media (max-width: 640px) {
     .product-edit-field-grid {
         grid-template-columns: minmax(0, 1fr);
+    }
+
+    .product-edit-reason {
+        padding: 12px 18px;
     }
 
     .product-edit-footer {
