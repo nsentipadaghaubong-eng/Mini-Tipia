@@ -12,7 +12,11 @@ import {
     snapshotBatch,
     snapshotPackagingLevel,
     snapshotProduct,
+    snapshotProductInventoryState,
     snapshotVariant,
+    type ActivityInventoryBatchStateSnapshot,
+    type ActivityInventoryRecordStateSnapshot,
+    type ActivityProductSnapshot,
     type ActivityEvent,
     type ActivityEventInput
 } from "./activity/activity";
@@ -324,14 +328,75 @@ function activityInputFromEvent(event: ActivityEvent): ActivityEventInput {
     return input;
 }
 
+function activityValuesEqual(left: unknown, right: unknown): boolean {
+    if (left instanceof Date || right instanceof Date) {
+        return left instanceof Date &&
+            right instanceof Date &&
+            Number.isFinite(left.getTime()) &&
+            Number.isFinite(right.getTime()) &&
+            left.getTime() === right.getTime();
+    }
+    if (Object.is(left, right)) {
+        return true;
+    }
+    if (
+        left === null ||
+        right === null ||
+        typeof left !== "object" ||
+        typeof right !== "object"
+    ) {
+        return false;
+    }
+    if (Array.isArray(left) || Array.isArray(right)) {
+        if (
+            !Array.isArray(left) ||
+            !Array.isArray(right) ||
+            left.length !== right.length
+        ) {
+            return false;
+        }
+        for (let index = 0; index < left.length; index += 1) {
+            if (
+                !Object.prototype.hasOwnProperty.call(left, index) ||
+                !Object.prototype.hasOwnProperty.call(right, index) ||
+                !activityValuesEqual(left[index], right[index])
+            ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const leftKeys = Object.keys(left)
+        .filter((key) => Reflect.get(left, key) !== undefined)
+        .sort();
+    const rightKeys = Object.keys(right)
+        .filter((key) => Reflect.get(right, key) !== undefined)
+        .sort();
+    return leftKeys.length === rightKeys.length &&
+        leftKeys.every((key, index) =>
+            key === rightKeys[index] &&
+            activityValuesEqual(Reflect.get(left, key), Reflect.get(right, key))
+        );
+}
+
 function assertActivityInputMatches(
     event: ActivityEvent,
     expected: ActivityEventInput,
     message: string
 ): void {
-    if (JSON.stringify(activityInputFromEvent(event)) !== JSON.stringify(expected)) {
+    if (!activityValuesEqual(activityInputFromEvent(event), expected)) {
         throw new Error(message);
     }
+}
+
+function isCanonicalActivityTimestamp(value: unknown): value is string {
+    if (typeof value !== "string") {
+        return false;
+    }
+    const timestamp = new Date(value);
+    return Number.isFinite(timestamp.getTime()) &&
+        timestamp.toISOString() === value;
 }
 
 function validateInventorySave(
@@ -755,6 +820,26 @@ function validateFreshActivityEvents(
     }
 }
 
+function validateReplayActivityMetadata(
+    events: readonly ActivityEvent[]
+): void {
+    const eventIds = new Set<string>();
+    const operationKeys = new Set<string>();
+    for (const event of events) {
+        if (
+            !event.eventId.trim() ||
+            !isCanonicalActivityTimestamp(event.occurredAt) ||
+            !event.operationKey.trim() ||
+            eventIds.has(event.eventId) ||
+            operationKeys.has(event.operationKey)
+        ) {
+            throw new Error("Product Activity contains invalid or duplicate metadata.");
+        }
+        eventIds.add(event.eventId);
+        operationKeys.add(event.operationKey);
+    }
+}
+
 function validateProductCreationPayload(
     state: ApplicationState,
     product: productStructure,
@@ -824,6 +909,349 @@ function validateProductCreationPayload(
         }
         inventoryLocations.add(location);
         validateInventoryRelationships(product, record, [...inventoryBatches]);
+    }
+}
+
+function validateProductCreationReplay(
+    state: ApplicationState,
+    result: Extract<ApplicationAction, { type: "product.created" }>["result"],
+    submittedEvents: readonly ActivityEvent[]
+): void {
+    const errorMessage =
+        "Product creation replay does not match the previously committed operation.";
+    validateReplayActivityMetadata(submittedEvents);
+    const productId = result.product.id;
+    if (result.inventoryBatches.some((batch) => batch.productId !== productId)) {
+        throw new Error(errorMessage);
+    }
+
+    const expectedEvents = buildProductCreationActivityInputs(
+        result.product,
+        result.inventoryRecords,
+        result.inventoryBatches
+    );
+    const expectedPrimaryEvent = expectedEvents.find(
+        (event) => event.type === "product.created"
+    );
+    if (
+        !expectedPrimaryEvent ||
+        expectedEvents.length !== submittedEvents.length
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    const originalPrimaryEvents = state.activityEvents.filter(
+        (event) => event.operationKey === expectedPrimaryEvent.operationKey
+    );
+    if (
+        originalPrimaryEvents.length !== 1 ||
+        originalPrimaryEvents[0]?.type !== "product.created"
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    const expectedByOperationKey = new Map(
+        expectedEvents.map((event) => [event.operationKey, event])
+    );
+    const submittedByOperationKey = new Map(
+        submittedEvents.map((event) => [event.operationKey, event])
+    );
+    if (
+        expectedByOperationKey.size !== expectedEvents.length ||
+        submittedByOperationKey.size !== submittedEvents.length
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    const originalByOperationKey = new Map<string, ActivityEvent>();
+    for (const [operationKey, expectedEvent] of expectedByOperationKey) {
+        const matchingOriginalEvents = state.activityEvents.filter(
+            (event) => event.operationKey === operationKey
+        );
+        if (matchingOriginalEvents.length !== 1) {
+            throw new Error(errorMessage);
+        }
+
+        const originalEvent = matchingOriginalEvents[0];
+        if (
+            (expectedEvent.type === "product.created" &&
+                originalEvent.type !== "product.created") ||
+            (expectedEvent.type === "inventory.batch_created" &&
+                (
+                    originalEvent.type !== "inventory.batch_created" ||
+                    originalEvent.source !== "product_creation" ||
+                    originalEvent.batch.productId !== productId
+                ))
+        ) {
+            throw new Error(errorMessage);
+        }
+        originalByOperationKey.set(operationKey, originalEvent);
+    }
+
+    for (const [operationKey, expectedEvent] of expectedByOperationKey) {
+        const submittedEvent = submittedByOperationKey.get(operationKey);
+        const originalEvent = originalByOperationKey.get(operationKey);
+        if (!submittedEvent || !originalEvent) {
+            throw new Error(errorMessage);
+        }
+        assertActivityInputMatches(submittedEvent, expectedEvent, errorMessage);
+        assertActivityInputMatches(originalEvent, expectedEvent, errorMessage);
+    }
+}
+
+function validateCatalogueProductReplay(
+    product: productStructure,
+    submittedEvents: readonly ActivityEvent[],
+    originalCreationEvent: Extract<ActivityEvent, { type: "product.created" }>
+): void {
+    const errorMessage =
+        "Catalogue product creation replay does not match the previously committed operation.";
+    validateReplayActivityMetadata(submittedEvents);
+
+    const expectedEvents = buildProductCreationActivityInputs(product, [], []);
+    if (
+        expectedEvents.length !== 1 ||
+        expectedEvents[0]?.type !== "product.created" ||
+        submittedEvents.length !== 1 ||
+        submittedEvents[0]?.type !== "product.created"
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    assertActivityInputMatches(
+        submittedEvents[0],
+        expectedEvents[0],
+        errorMessage
+    );
+    assertActivityInputMatches(
+        originalCreationEvent,
+        expectedEvents[0],
+        errorMessage
+    );
+}
+
+function productFromActivitySnapshot(
+    snapshot: ActivityProductSnapshot
+): productStructure {
+    return {
+        id: snapshot.productId,
+        name: snapshot.productName,
+        ...(snapshot.description === undefined
+            ? {}
+            : { description: snapshot.description }),
+        ...(snapshot.genericName === undefined
+            ? {}
+            : { genericName: snapshot.genericName }),
+        ...(snapshot.manufacturer === undefined
+            ? {}
+            : { manufacturer: snapshot.manufacturer }),
+        ...(snapshot.category === undefined
+            ? {}
+            : { category: snapshot.category }),
+        variant: snapshot.variants.map((productVariant) => ({
+            id: productVariant.variantId,
+            variantName: productVariant.variantName,
+            ...(productVariant.nafdacRegistrationNumber === undefined
+                ? {}
+                : {
+                    nafdacRegistrationNumber:
+                        productVariant.nafdacRegistrationNumber
+                }),
+            packagingHierarchy: productVariant.packaging.map((level) => ({
+                id: level.packagingLevelId,
+                name: level.name,
+                costPrice: level.costPrice,
+                sellingPrice: level.sellingPrice,
+                quantityofNextLevel: level.quantityOfNextLevel,
+                nextLevelId: level.nextLevelId
+            }))
+        }))
+    };
+}
+
+function inventoryRecordsFromActivitySnapshot(
+    records: readonly ActivityInventoryRecordStateSnapshot[]
+): inventory[] {
+    return records.map((record) => ({
+        id: record.id,
+        productId: record.productId,
+        variantId: record.variantId,
+        batchId: record.batchId,
+        stockQuantities: record.stockQuantities.map((stock) => ({
+            packagingLevelId: stock.packagingLevelId,
+            quantity: stock.quantity
+        }))
+    }));
+}
+
+function inventoryBatchesFromActivitySnapshot(
+    batches: readonly ActivityInventoryBatchStateSnapshot[]
+): inventoryBatch[] {
+    return batches.map((batch) => ({
+        batchId: batch.batchId,
+        productId: batch.productId,
+        variantId: batch.variantId,
+        batchNumber: batch.batchNumber,
+        expiryDate: batch.expiryDate === null
+            ? null
+            : new Date(batch.expiryDate),
+        ...(batch.receivedDate === undefined
+            ? {}
+            : { receivedDate: batch.receivedDate }),
+        ...(batch.receivedPricing === undefined
+            ? {}
+            : { receivedPricing: { ...batch.receivedPricing } })
+    }));
+}
+
+function validateProductUpdateReplay(
+    state: ApplicationState,
+    action: Extract<ApplicationAction, { type: "product.updated" }>,
+    submittedUpdateEvent: Extract<ActivityEvent, { type: "product.updated" }>
+): void {
+    const errorMessage =
+        "Product update replay does not match the previously committed operation.";
+    validateReplayActivityMetadata(action.events);
+
+    const operationKey = submittedUpdateEvent.operationKey;
+    const originalPrimaryEvents = state.activityEvents.filter(
+        (event) => event.operationKey === operationKey
+    );
+    if (
+        originalPrimaryEvents.length !== 1 ||
+        originalPrimaryEvents[0]?.type !== "product.updated"
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    const originalPrimaryEvent = originalPrimaryEvents[0];
+    const historicalInventoryState = originalPrimaryEvent.inventoryStateAfter;
+    if (
+        !historicalInventoryState ||
+        !Array.isArray(historicalInventoryState.inventoryRecords) ||
+        !Array.isArray(historicalInventoryState.inventoryBatches)
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    if (
+        action.inventoryRecords !== undefined &&
+        !activityValuesEqual(
+            snapshotProductInventoryState(
+                action.product.id,
+                action.inventoryRecords,
+                []
+            ).inventoryRecords,
+            historicalInventoryState.inventoryRecords
+        )
+    ) {
+        throw new Error(errorMessage);
+    }
+    if (
+        action.inventoryBatches !== undefined &&
+        !activityValuesEqual(
+            snapshotProductInventoryState(
+                action.product.id,
+                [],
+                action.inventoryBatches
+            ).inventoryBatches,
+            historicalInventoryState.inventoryBatches
+        )
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    const historicalBeforeProduct = productFromActivitySnapshot(
+        originalPrimaryEvent.before
+    );
+    validateProductStructure(action.product);
+    const updateDraft = createProductUpdateDraftFromProduct(
+        action.product,
+        submittedUpdateEvent.reason
+    );
+    const updateErrors = validateProductUpdateDraft(
+        updateDraft,
+        historicalBeforeProduct
+    );
+    if (Object.keys(updateErrors).length > 0) {
+        throw new Error(errorMessage);
+    }
+    const validatedProduct = buildUpdatedProduct(
+        historicalBeforeProduct,
+        updateDraft
+    );
+    if (!activityValuesEqual(
+        snapshotProduct(validatedProduct),
+        snapshotProduct(action.product)
+    )) {
+        throw new Error(errorMessage);
+    }
+
+    if (
+        historicalInventoryState.inventoryRecords.some(
+            (record) => record.productId !== action.product.id
+        ) ||
+        historicalInventoryState.inventoryBatches.some(
+            (batch) => batch.productId !== action.product.id
+        )
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    const expectedEvents = buildProductUpdateActivityInputs(
+        historicalBeforeProduct,
+        action.product,
+        [],
+        inventoryRecordsFromActivitySnapshot(
+            historicalInventoryState.inventoryRecords
+        ),
+        inventoryBatchesFromActivitySnapshot(
+            historicalInventoryState.inventoryBatches
+        ),
+        operationKey,
+        submittedUpdateEvent.reason
+    );
+    const stockAdjustmentPrefix =
+        `inventory.stock_adjusted:${operationKey}:`;
+    const originalStockAdjustmentEvents = state.activityEvents.filter(
+        (event) => event.operationKey.startsWith(stockAdjustmentPrefix)
+    );
+    const originalEvents = [
+        originalPrimaryEvent,
+        ...originalStockAdjustmentEvents
+    ];
+    if (
+        expectedEvents.length !== action.events.length ||
+        expectedEvents.length !== originalEvents.length
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    const expectedByOperationKey = new Map(
+        expectedEvents.map((event) => [event.operationKey, event])
+    );
+    const submittedByOperationKey = new Map(
+        action.events.map((event) => [event.operationKey, event])
+    );
+    const originalByOperationKey = new Map(
+        originalEvents.map((event) => [event.operationKey, event])
+    );
+    if (
+        expectedByOperationKey.size !== expectedEvents.length ||
+        submittedByOperationKey.size !== action.events.length ||
+        originalByOperationKey.size !== originalEvents.length
+    ) {
+        throw new Error(errorMessage);
+    }
+
+    for (const [eventOperationKey, expectedEvent] of expectedByOperationKey) {
+        const submittedEvent = submittedByOperationKey.get(eventOperationKey);
+        const originalEvent = originalByOperationKey.get(eventOperationKey);
+        if (!submittedEvent || !originalEvent) {
+            throw new Error(errorMessage);
+        }
+        assertActivityInputMatches(submittedEvent, expectedEvent, errorMessage);
+        assertActivityInputMatches(originalEvent, expectedEvent, errorMessage);
     }
 }
 
@@ -1015,13 +1443,36 @@ export function applicationReducer(
     switch (action.type) {
         case "product.catalogue_created": {
             const operationKey = `product.created:${action.product.id}`;
-            const alreadyRecorded = state.activityEvents.some(
+            const originalOperationEvents = state.activityEvents.filter(
                 (existing) => existing.operationKey === operationKey
             );
-            const productAlreadyExists = state.products.some(
+            const matchingProducts = state.products.filter(
                 (product) => product.id === action.product.id
             );
-            if (alreadyRecorded && productAlreadyExists) {
+            if (matchingProducts.length > 0) {
+                if (originalOperationEvents.length === 0) {
+                    validateProductCreationPayload(
+                        state,
+                        action.product,
+                        [],
+                        [],
+                        "Catalogue product"
+                    );
+                }
+                if (
+                    matchingProducts.length !== 1 ||
+                    originalOperationEvents.length !== 1 ||
+                    originalOperationEvents[0]?.type !== "product.created"
+                ) {
+                    throw new Error(
+                        "Catalogue product creation replay does not match the previously committed operation."
+                    );
+                }
+                validateCatalogueProductReplay(
+                    action.product,
+                    action.events,
+                    originalOperationEvents[0]
+                );
                 return state;
             }
 
@@ -1152,17 +1603,29 @@ export function applicationReducer(
         }
         case "product.created": {
             const operationKey = `product.created:${action.result.product.id}`;
-            const alreadyRecorded = state.activityEvents.some(
-                (event) => event.operationKey === operationKey
-            );
-            const productAlreadyExists = state.products.some(
+            const matchingProducts = state.products.filter(
                 (product) => product.id === action.result.product.id
             );
+            const originalOperationEvents = state.activityEvents.filter(
+                (event) => event.operationKey === operationKey
+            );
 
-            if (alreadyRecorded && productAlreadyExists) {
+            if (matchingProducts.length > 0 && originalOperationEvents.length > 0) {
+                if (
+                    matchingProducts.length !== 1
+                ) {
+                    throw new Error(
+                        "Product creation replay does not match the previously committed operation."
+                    );
+                }
+                validateProductCreationReplay(
+                    state,
+                    action.result,
+                    action.events
+                );
                 return state;
             }
-            if (productAlreadyExists) {
+            if (matchingProducts.length > 0) {
                 throw new Error(
                     `Product already exists: ${action.result.product.id}`
                 );
@@ -1313,15 +1776,22 @@ export function applicationReducer(
                 throw new Error("A product update requires matching update Activity.");
             }
 
-            if (
-                action.events.every((event) =>
-                    state.activityEvents.some(
-                        (existing) =>
-                            existing.operationKey === event.operationKey
-                    )
-                )
-            ) {
-                return state;
+            const submittedUpdateEvent = updateEvents[0];
+            if (submittedUpdateEvent) {
+                const stockAdjustmentPrefix =
+                    `inventory.stock_adjusted:${submittedUpdateEvent.operationKey}:`;
+                if (state.activityEvents.some(
+                    (event) =>
+                        event.operationKey === submittedUpdateEvent.operationKey ||
+                        event.operationKey.startsWith(stockAdjustmentPrefix)
+                )) {
+                    validateProductUpdateReplay(
+                        state,
+                        action,
+                        submittedUpdateEvent
+                    );
+                    return state;
+                }
             }
 
             const productMatches = state.products.filter(

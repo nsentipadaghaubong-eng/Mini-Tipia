@@ -13,6 +13,7 @@ import {
     snapshotBatch,
     snapshotPackagingLevel,
     snapshotProduct,
+    snapshotProductInventoryState,
     snapshotVariant,
 } from "./activity/activity";
 import {
@@ -64,6 +65,216 @@ function createProductResult() {
             unbatchedStock: {}
         }]
     });
+}
+
+function makeProductCreationAction(
+    result: ReturnType<typeof createProductResult>,
+    eventIdPrefix: string,
+    occurredAt: string
+) {
+    let eventIndex = 0;
+    return {
+        type: "product.created" as const,
+        result,
+        events: prepareActivityEvents(
+            buildProductCreationActivityInputs(
+                result.product,
+                result.inventoryRecords,
+                result.inventoryBatches
+            ),
+            {
+                makeId: () => `${eventIdPrefix}-${eventIndex++}`,
+                now: () => new Date(occurredAt)
+            }
+        )
+    };
+}
+
+function makeCatalogueCreationAction(
+    product: ReturnType<typeof createProductResult>["product"],
+    eventIdPrefix: string,
+    occurredAt: string
+) {
+    let eventIndex = 0;
+    return {
+        type: "product.catalogue_created" as const,
+        product,
+        events: prepareActivityEvents(
+            buildProductCreationActivityInputs(product, [], []),
+            {
+                makeId: () => `${eventIdPrefix}-${eventIndex++}`,
+                now: () => new Date(occurredAt)
+            }
+        )
+    };
+}
+
+function makeCommittedProductUpdate() {
+    const state = createInitialApplicationState();
+    const product = state.products[0];
+    if (!product) {
+        throw new Error("Product update fixture requires a product.");
+    }
+    const updatedProduct = {
+        ...product,
+        description: "Updated for replay validation"
+    };
+    const operationKey = `product.updated:${product.id}:replay-fixture`;
+    const reason = "Update product description";
+    const activityInputs = buildProductUpdateActivityInputs(
+        product,
+        updatedProduct,
+        state.inventoryRecords,
+        state.inventoryRecords,
+        state.inventoryBatches,
+        operationKey,
+        reason
+    );
+    let eventId = 0;
+    const events = prepareActivityEvents(activityInputs, {
+        makeId: () => `update-original-${eventId++}`,
+        now: () => new Date("2026-03-04T05:06:07.000Z")
+    });
+    const action = {
+        type: "product.updated" as const,
+        product: updatedProduct,
+        inventoryRecords: state.inventoryRecords,
+        inventoryBatches: state.inventoryBatches,
+        events
+    };
+    const committed = applicationReducer(state, action);
+
+    return {
+        state,
+        product,
+        updatedProduct,
+        operationKey,
+        reason,
+        activityInputs,
+        action,
+        committed
+    };
+}
+
+function makeCommittedPackagingStockUpdate() {
+    const product = createProductResult().product;
+    const productVariant = product.variant[0];
+    if (!productVariant) {
+        throw new Error("Packaging stock fixture requires a variant.");
+    }
+    const state = {
+        ...createInitialApplicationState(),
+        products: [product],
+        inventoryRecords: [],
+        inventoryBatches: [],
+        activityEvents: []
+    };
+    const draft = addPackagingLevelToUpdateDraft(
+        createProductUpdateDraft(product),
+        0,
+        () => "replay-packaging-level"
+    );
+    draft.reason = "Add packaging with initial stock";
+    draft.variants[0]!.packaging.at(-2)!.quantityofNextLevel = "2";
+    draft.variants[0]!.packaging.at(-1)!.name = "Unit";
+    const updatedProduct = buildUpdatedProduct(product, draft);
+    const inventoryRecords = applyPackagingLevelInitialStock(
+        product,
+        [],
+        [],
+        productVariant.id,
+        "replay-packaging-level",
+        "3"
+    );
+    const operationKey = "product.updated:packaging-stock-replay";
+    const reason = draft.reason;
+    const activityInputs = buildProductUpdateActivityInputs(
+        product,
+        updatedProduct,
+        [],
+        inventoryRecords,
+        [],
+        operationKey,
+        reason
+    );
+    let eventId = 0;
+    const events = prepareActivityEvents(activityInputs, {
+        makeId: () => `packaging-stock-original-${eventId++}`,
+        now: () => new Date("2026-03-04T05:06:07.000Z")
+    });
+    const action = {
+        type: "product.updated" as const,
+        product: updatedProduct,
+        inventoryRecords,
+        inventoryBatches: [],
+        events
+    };
+    const committed = applicationReducer(state, action);
+
+    return {
+        state,
+        product,
+        updatedProduct,
+        inventoryRecords,
+        operationKey,
+        reason,
+        activityInputs,
+        action,
+        committed
+    };
+}
+
+function makeEmptyProductCreationState(): ApplicationState {
+    return {
+        ...createInitialApplicationState(),
+        products: [],
+        inventoryRecords: [],
+        inventoryBatches: [],
+        activityEvents: []
+    };
+}
+
+function makeCommittedProductCreationReplay() {
+    const result = createProductResult();
+    const originalAction = makeProductCreationAction(
+        result,
+        "product-created-evidence-original",
+        "2026-02-03T04:05:06.000Z"
+    );
+    const committed = applicationReducer(
+        makeEmptyProductCreationState(),
+        originalAction
+    );
+    const replay = makeProductCreationAction(
+        result,
+        "product-created-evidence-replay",
+        "2027-03-04T05:06:07.000Z"
+    );
+
+    return { result, originalAction, committed, replay };
+}
+
+function withFirstPackagingCostPrice(
+    result: ReturnType<typeof createProductResult>,
+    costPrice: number | null
+): ReturnType<typeof createProductResult> {
+    return {
+        ...result,
+        product: {
+            ...result.product,
+            variant: result.product.variant.map((productVariant, variantIndex) =>
+                variantIndex === 0
+                    ? {
+                        ...productVariant,
+                        packagingHierarchy: productVariant.packagingHierarchy.map(
+                            (level, levelIndex) =>
+                                levelIndex === 0 ? { ...level, costPrice } : level
+                        )
+                    }
+                    : productVariant
+            )
+        }
+    };
 }
 
 function makeProductDeletionState(): ApplicationState {
@@ -319,22 +530,12 @@ describe("application-level Activity state", () => {
 
     it("commits product, initial inventory, batches and Activity together exactly once", () => {
         const result = createProductResult();
-        const events = prepareActivityEvents(
-            buildProductCreationActivityInputs(
-                result.product,
-                result.inventoryRecords,
-                result.inventoryBatches
-            ),
-            { makeId: () => crypto.randomUUID() }
+        const initial = makeEmptyProductCreationState();
+        const action = makeProductCreationAction(
+            result,
+            "product-created-initial",
+            "2026-02-03T04:05:06.000Z"
         );
-        const initial = {
-            ...createInitialApplicationState(),
-            products: [],
-            inventoryRecords: [],
-            inventoryBatches: [],
-            activityEvents: []
-        };
-        const action = { type: "product.created" as const, result, events };
         const committed = applicationReducer(initial, action);
 
         expect(committed.products).toEqual([result.product]);
@@ -344,7 +545,786 @@ describe("application-level Activity state", () => {
             "product.created",
             "inventory.batch_created"
         ]);
-        expect(applicationReducer(committed, action)).toBe(committed);
+        const replay = makeProductCreationAction(
+            result,
+            "product-created-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const stateBeforeReplay = structuredClone(committed);
+        const replayed = applicationReducer(committed, replay);
+
+        expect(replay.events.map((event) => event.eventId)).not.toEqual(
+            action.events.map((event) => event.eventId)
+        );
+        expect(replay.events.map((event) => event.occurredAt)).not.toEqual(
+            action.events.map((event) => event.occurredAt)
+        );
+        expect(replayed).toBe(committed);
+        expect(committed).toEqual(stateBeforeReplay);
+    });
+
+    it("accepts product creation replays with reordered Activity object properties", () => {
+        const result = createProductResult();
+        const initialAction = makeProductCreationAction(
+            result,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const replay = makeProductCreationAction(
+            result,
+            "product-created-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const productCreatedEvent = replay.events.find(
+            (event) => event.type === "product.created"
+        );
+        if (!productCreatedEvent) {
+            throw new Error("Product creation fixture requires a product Activity event.");
+        }
+        const reorderedProductCreatedEvent = {
+            initialInventory: productCreatedEvent.initialInventory,
+            product: {
+                variants: productCreatedEvent.product.variants.map((variant) => ({
+                    packaging: variant.packaging.map((level) => ({
+                        nextLevelName: level.nextLevelName,
+                        nextLevelId: level.nextLevelId,
+                        quantityOfNextLevel: level.quantityOfNextLevel,
+                        sellingPrice: level.sellingPrice,
+                        costPrice: level.costPrice,
+                        name: level.name,
+                        packagingLevelId: level.packagingLevelId
+                    })),
+                    nafdacRegistrationNumber: variant.nafdacRegistrationNumber,
+                    variantName: variant.variantName,
+                    variantId: variant.variantId
+                })),
+                category: productCreatedEvent.product.category,
+                manufacturer: productCreatedEvent.product.manufacturer,
+                genericName: productCreatedEvent.product.genericName,
+                description: productCreatedEvent.product.description,
+                productName: productCreatedEvent.product.productName,
+                productId: productCreatedEvent.product.productId
+            },
+            operationKey: productCreatedEvent.operationKey,
+            type: productCreatedEvent.type,
+            eventId: productCreatedEvent.eventId,
+            occurredAt: productCreatedEvent.occurredAt
+        };
+        const reorderedReplay = {
+            ...replay,
+            events: replay.events.map((event) =>
+                event.type === "product.created"
+                    ? reorderedProductCreatedEvent
+                    : event
+            )
+        };
+        const before = structuredClone(committed);
+
+        expect(applicationReducer(committed, reorderedReplay)).toBe(committed);
+        expect(committed).toEqual(before);
+    });
+
+    it("rejects a null packaging price replayed as NaN atomically", () => {
+        const result = withFirstPackagingCostPrice(createProductResult(), null);
+        const initialAction = makeProductCreationAction(
+            result,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const changedResult = withFirstPackagingCostPrice(result, Number.NaN);
+        const replay = makeProductCreationAction(
+            changedResult,
+            "product-created-nan-price",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const before = structuredClone(committed);
+
+        expect(() => applicationReducer(committed, replay)).toThrow(
+            "Product creation replay does not match the previously committed operation."
+        );
+        expect(committed).toEqual(before);
+    });
+
+    it("rejects infinite packaging prices that differ from the original atomically", () => {
+        const result = createProductResult();
+        const initialAction = makeProductCreationAction(
+            result,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const before = structuredClone(committed);
+
+        for (const [index, costPrice] of [
+            Number.POSITIVE_INFINITY,
+            Number.NEGATIVE_INFINITY
+        ].entries()) {
+            const replay = makeProductCreationAction(
+                withFirstPackagingCostPrice(result, costPrice),
+                `product-created-infinite-price-${index}`,
+                "2027-03-04T05:06:07.000Z"
+            );
+            expect(() => applicationReducer(committed, replay)).toThrow(
+                "Product creation replay does not match the previously committed operation."
+            );
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("rejects product creation replays with reordered Activity arrays atomically", () => {
+        const result = createProductResult();
+        const firstVariant = result.product.variant[0];
+        if (!firstVariant) {
+            throw new Error("Product creation fixture requires a product variant.");
+        }
+        const secondVariant = {
+            ...firstVariant,
+            id: "replay-array-variant",
+            packagingHierarchy: firstVariant.packagingHierarchy.map(
+                (level, index) => ({
+                    ...level,
+                    id: `replay-array-packaging-${index}`
+                })
+            )
+        };
+        const resultWithTwoVariants = {
+            ...result,
+            product: {
+                ...result.product,
+                variant: [...result.product.variant, secondVariant]
+            }
+        };
+        const initialAction = makeProductCreationAction(
+            resultWithTwoVariants,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const replay = makeProductCreationAction(
+            resultWithTwoVariants,
+            "product-created-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const reorderedReplay = {
+            ...replay,
+            events: replay.events.map((event) =>
+                event.type === "product.created"
+                    ? {
+                        ...event,
+                        product: {
+                            ...event.product,
+                            variants: [...event.product.variants].reverse()
+                        }
+                    }
+                    : event
+            )
+        };
+        const before = structuredClone(committed);
+
+        expect(() => applicationReducer(committed, reorderedReplay)).toThrow(
+            "Product creation replay does not match the previously committed operation."
+        );
+        expect(committed).toEqual(before);
+    });
+
+    it("rejects sparse product variant Activity arrays atomically", () => {
+        const result = createProductResult();
+        const firstVariant = result.product.variant[0];
+        if (!firstVariant) {
+            throw new Error("Product creation fixture requires a product variant.");
+        }
+        const secondVariant = {
+            ...firstVariant,
+            id: "sparse-replay-variant",
+            packagingHierarchy: firstVariant.packagingHierarchy.map(
+                (level, index) => ({
+                    ...level,
+                    id: `sparse-replay-packaging-${index}`
+                })
+            )
+        };
+        const resultWithTwoVariants = {
+            ...result,
+            product: {
+                ...result.product,
+                variant: [...result.product.variant, secondVariant]
+            }
+        };
+        const initialAction = makeProductCreationAction(
+            resultWithTwoVariants,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const replay = makeProductCreationAction(
+            resultWithTwoVariants,
+            "product-created-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const productCreatedEvent = replay.events.find(
+            (event) => event.type === "product.created"
+        );
+        if (!productCreatedEvent) {
+            throw new Error("Product creation fixture requires a product Activity event.");
+        }
+        const sparseVariants = new Array(
+            productCreatedEvent.product.variants.length
+        );
+        sparseVariants[0] = productCreatedEvent.product.variants[0];
+        expect(sparseVariants).toHaveLength(
+            productCreatedEvent.product.variants.length
+        );
+        expect(Object.prototype.hasOwnProperty.call(sparseVariants, 1)).toBe(false);
+        const sparseReplay = {
+            ...replay,
+            events: replay.events.map((event) =>
+                event.type === "product.created"
+                    ? {
+                        ...event,
+                        product: {
+                            ...event.product,
+                            variants: sparseVariants
+                        }
+                    }
+                    : event
+            )
+        };
+        const before = structuredClone(committed);
+
+        expect(() => applicationReducer(committed, sparseReplay)).toThrow(
+            "Product creation replay does not match the previously committed operation."
+        );
+        expect(committed).toEqual(before);
+    });
+
+    it("rejects product creation replays with invalid or duplicate Activity metadata atomically", () => {
+        const result = createProductResult();
+        const initialAction = makeProductCreationAction(
+            result,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const replay = makeProductCreationAction(
+            result,
+            "product-created-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const firstEvent = replay.events[0];
+        const secondEvent = replay.events[1];
+        if (!firstEvent || !secondEvent) {
+            throw new Error("Product creation fixture requires multiple Activity events.");
+        }
+        const invalidMetadataReplays = [
+            {
+                ...replay,
+                events: replay.events.map((event, index) =>
+                    index === 1
+                        ? { ...event, eventId: firstEvent.eventId }
+                        : event
+                )
+            },
+            {
+                ...replay,
+                events: replay.events.map((event, index) =>
+                    index === 0
+                        ? { ...event, eventId: " " }
+                        : event
+                )
+            },
+            {
+                ...replay,
+                events: replay.events.map((event, index) =>
+                    index === 0
+                        ? { ...event, occurredAt: "not-a-timestamp" }
+                        : event
+                )
+            },
+            {
+                ...replay,
+                events: replay.events.map((event, index) =>
+                    index === 0
+                        ? { ...event, occurredAt: "2027-03-04T05:06:07Z" }
+                        : event
+                )
+            }
+        ];
+        const before = structuredClone(committed);
+
+        for (const invalidReplay of invalidMetadataReplays) {
+            expect(() => applicationReducer(committed, invalidReplay)).toThrow(
+                "Product Activity contains invalid or duplicate metadata."
+            );
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("rejects product creation replays with changed product fields atomically", () => {
+        const result = createProductResult();
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            makeProductCreationAction(
+                result,
+                "product-created-original",
+                "2026-02-03T04:05:06.000Z"
+            )
+        );
+        const changedResult = {
+            ...result,
+            product: { ...result.product, name: "Changed medicine" }
+        };
+        const replay = makeProductCreationAction(
+            changedResult,
+            "product-created-changed",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const before = structuredClone(committed);
+
+        expect(() => applicationReducer(committed, replay)).toThrow(
+            "Product creation replay does not match the previously committed operation."
+        );
+        expect(committed).toEqual(before);
+    });
+
+    it("rejects product creation replays with changed variants or packaging atomically", () => {
+        const result = createProductResult();
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            makeProductCreationAction(
+                result,
+                "product-created-original",
+                "2026-02-03T04:05:06.000Z"
+            )
+        );
+        const changedVariantResult = {
+            ...result,
+            product: {
+                ...result.product,
+                variant: result.product.variant.map((productVariant) => ({
+                    ...productVariant,
+                    variantName: `${productVariant.variantName} changed`
+                }))
+            }
+        };
+        const changedPackagingResult = {
+            ...result,
+            product: {
+                ...result.product,
+                variant: result.product.variant.map((productVariant) => ({
+                    ...productVariant,
+                    packagingHierarchy: productVariant.packagingHierarchy.map(
+                        (level, index) => index === 0
+                            ? { ...level, name: `${level.name} changed` }
+                            : level
+                    )
+                }))
+            }
+        };
+        const before = structuredClone(committed);
+
+        for (const [index, changedResult] of [
+            changedVariantResult,
+            changedPackagingResult
+        ].entries()) {
+            const replay = makeProductCreationAction(
+                changedResult,
+                `product-created-structure-${index}`,
+                "2027-03-04T05:06:07.000Z"
+            );
+            expect(() => applicationReducer(committed, replay)).toThrow(
+                "Product creation replay does not match the previously committed operation."
+            );
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("rejects product creation replays with changed initial inventory atomically", () => {
+        const result = createProductResult();
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            makeProductCreationAction(
+                result,
+                "product-created-original",
+                "2026-02-03T04:05:06.000Z"
+            )
+        );
+        const changedResult = {
+            ...result,
+            inventoryRecords: result.inventoryRecords.map((record, recordIndex) =>
+                recordIndex === 0
+                    ? {
+                        ...record,
+                        stockQuantities: record.stockQuantities.map(
+                            (stock, stockIndex) => stockIndex === 0
+                                ? { ...stock, quantity: stock.quantity + 1 }
+                                : stock
+                        )
+                    }
+                    : record
+            )
+        };
+        const replay = makeProductCreationAction(
+            changedResult,
+            "product-created-stock-changed",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const before = structuredClone(committed);
+
+        expect(() => applicationReducer(committed, replay)).toThrow(
+            "Product creation replay does not match the previously committed operation."
+        );
+        expect(committed).toEqual(before);
+    });
+
+    it("rejects product creation replays with changed batch information atomically", () => {
+        const result = createProductResult();
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            makeProductCreationAction(
+                result,
+                "product-created-original",
+                "2026-02-03T04:05:06.000Z"
+            )
+        );
+        const changedResult = {
+            ...result,
+            inventoryBatches: result.inventoryBatches.map((batch) => ({
+                ...batch,
+                batchNumber: `${batch.batchNumber ?? "LOT"}-changed`
+            }))
+        };
+        const replay = makeProductCreationAction(
+            changedResult,
+            "product-created-batch-changed",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const before = structuredClone(committed);
+
+        expect(() => applicationReducer(committed, replay)).toThrow(
+            "Product creation replay does not match the previously committed operation."
+        );
+        expect(committed).toEqual(before);
+    });
+
+    it("rejects product creation replays with missing or extra batch Activity atomically", () => {
+        const result = createProductResult();
+        const initialAction = makeProductCreationAction(
+            result,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const batchEvent = initialAction.events.find(
+            (event) => event.type === "inventory.batch_created"
+        );
+        if (!batchEvent) {
+            throw new Error("Product creation fixture requires a batch Activity event.");
+        }
+        const missingBatchEventReplay = {
+            ...initialAction,
+            events: initialAction.events.filter(
+                (event) => event.type !== "inventory.batch_created"
+            )
+        };
+        const extraBatch = {
+            ...result.inventoryBatches[0]!,
+            batchId: "unexpected-created-batch",
+            batchNumber: "UNEXPECTED-LOT"
+        };
+        let extraEventId = 0;
+        const extraBatchEvents = prepareActivityEvents(
+            buildProductCreationActivityInputs(
+                result.product,
+                result.inventoryRecords,
+                [...result.inventoryBatches, extraBatch]
+            ),
+            {
+                makeId: () => `product-created-extra-batch-${extraEventId++}`,
+                now: () => new Date("2027-03-04T05:06:07.000Z")
+            }
+        );
+        const extraBatchEventReplay = {
+            ...initialAction,
+            events: extraBatchEvents
+        };
+        const before = structuredClone(committed);
+
+        for (const replay of [missingBatchEventReplay, extraBatchEventReplay]) {
+            expect(() => applicationReducer(committed, replay)).toThrow(
+                "Product creation replay does not match the previously committed operation."
+            );
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("rejects product creation replays with forged product or batch Activity atomically", () => {
+        const result = createProductResult();
+        const initialAction = makeProductCreationAction(
+            result,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            initialAction
+        );
+        const forgedProductReplay = {
+            ...initialAction,
+            events: initialAction.events.map((event) =>
+                event.type === "product.created"
+                    ? {
+                        ...event,
+                        product: { ...event.product, productName: "Forged name" }
+                    }
+                    : event
+            )
+        };
+        const forgedBatchReplay = {
+            ...initialAction,
+            events: initialAction.events.map((event) =>
+                event.type === "inventory.batch_created"
+                    ? {
+                        ...event,
+                        batch: { ...event.batch, batchNumber: "FORGED-LOT" }
+                    }
+                    : event
+            )
+        };
+        const before = structuredClone(committed);
+
+        for (const replay of [forgedProductReplay, forgedBatchReplay]) {
+            expect(() => applicationReducer(committed, replay)).toThrow(
+                "Product creation replay does not match the previously committed operation."
+            );
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("rejects conflicting original creation evidence by operation key atomically", () => {
+        const fixture = makeCommittedProductCreationReplay();
+        const primaryEvent = fixture.originalAction.events.find(
+            (event) => event.type === "product.created"
+        );
+        const batchEvent = fixture.originalAction.events.find(
+            (event) => event.type === "inventory.batch_created"
+        );
+        if (
+            primaryEvent?.type !== "product.created" ||
+            batchEvent?.type !== "inventory.batch_created"
+        ) {
+            throw new Error("Product creation fixture requires primary and batch events.");
+        }
+
+        const makeWrongTypeEvent = (operationKey: string) => {
+            const [event] = prepareActivityEvents(
+                buildProductUpdateActivityInputs(
+                    fixture.result.product,
+                    fixture.result.product,
+                    [],
+                    [],
+                    [],
+                    operationKey,
+                    "Conflicting event type"
+                ),
+                {
+                    makeId: () => `wrong-type-${operationKey}`,
+                    now: () => new Date("2026-02-04T05:06:07.000Z")
+                }
+            );
+            if (event?.type !== "product.updated") {
+                throw new Error("Expected a conflicting product update event.");
+            }
+            return event;
+        };
+        const conflictingPrimaryType = {
+            ...fixture.committed,
+            activityEvents: [
+                ...fixture.committed.activityEvents,
+                makeWrongTypeEvent(primaryEvent.operationKey)
+            ]
+        };
+        const conflictingBatchType = {
+            ...fixture.committed,
+            activityEvents: [
+                ...fixture.committed.activityEvents,
+                makeWrongTypeEvent(batchEvent.operationKey)
+            ]
+        };
+        const wrongBatchSource = {
+            ...fixture.committed,
+            activityEvents: fixture.committed.activityEvents.map((event) =>
+                event.operationKey === batchEvent.operationKey &&
+                event.type === "inventory.batch_created"
+                    ? { ...event, source: "inventory_edit" as const }
+                    : event
+            )
+        };
+        const wrongBatchProduct = {
+            ...fixture.committed,
+            activityEvents: fixture.committed.activityEvents.map((event) =>
+                event.operationKey === batchEvent.operationKey &&
+                event.type === "inventory.batch_created"
+                    ? {
+                        ...event,
+                        batch: {
+                            ...event.batch,
+                            productId: "different-product"
+                        }
+                    }
+                    : event
+            )
+        };
+        const appendedWrongBatchSource = {
+            ...fixture.committed,
+            activityEvents: [
+                ...fixture.committed.activityEvents,
+                {
+                    ...batchEvent,
+                    eventId: "appended-wrong-batch-source",
+                    source: "inventory_edit" as const
+                }
+            ]
+        };
+        const appendedWrongBatchProduct = {
+            ...fixture.committed,
+            activityEvents: [
+                ...fixture.committed.activityEvents,
+                {
+                    ...batchEvent,
+                    eventId: "appended-wrong-batch-product",
+                    batch: {
+                        ...batchEvent.batch,
+                        productId: "different-product"
+                    }
+                }
+            ]
+        };
+
+        expect(applicationReducer(
+            fixture.committed,
+            fixture.replay
+        )).toBe(fixture.committed);
+
+        for (const invalidState of [
+            conflictingPrimaryType,
+            conflictingBatchType,
+            wrongBatchSource,
+            wrongBatchProduct,
+            appendedWrongBatchSource,
+            appendedWrongBatchProduct
+        ]) {
+            const before = structuredClone(invalidState);
+            expect(() => applicationReducer(invalidState, fixture.replay)).toThrow(
+                "Product creation replay does not match the previously committed operation."
+            );
+            expect(invalidState).toEqual(before);
+        }
+    });
+
+    it("does not associate later inventory-edit batch Activity with product creation replay", () => {
+        const result = createProductResult();
+        const originalCreation = makeProductCreationAction(
+            result,
+            "product-created-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const created = applicationReducer(
+            makeEmptyProductCreationState(),
+            originalCreation
+        );
+        const productVariant = result.product.variant[0];
+        const packagingLevel = productVariant.packagingHierarchy[0];
+        if (!productVariant || !packagingLevel) {
+            throw new Error("Product creation fixture requires a packaging level.");
+        }
+        const laterBatch = {
+            batchId: "later-inventory-edit-batch",
+            productId: result.product.id,
+            variantId: productVariant.id,
+            batchNumber: "LATER-LOT",
+            expiryDate: new Date("2028-01-31T00:00:00.000Z")
+        };
+        const laterRecord = {
+            id: "later-inventory-edit-record",
+            productId: result.product.id,
+            variantId: productVariant.id,
+            batchId: laterBatch.batchId,
+            stockQuantities: [{
+                packagingLevelId: packagingLevel.id,
+                quantity: 1
+            }]
+        };
+        const withLaterBatch = applicationReducer(created, {
+            type: "inventory.saved",
+            inventoryRecords: [...created.inventoryRecords, laterRecord],
+            inventoryBatches: [...created.inventoryBatches, laterBatch],
+            events: prepareActivityEvents([buildBatchCreatedActivityInput(
+                "later-inventory-edit",
+                result.product,
+                laterBatch,
+                laterRecord
+            )])
+        });
+        const replay = makeProductCreationAction(
+            result,
+            "product-created-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+
+        expect(() => applicationReducer(withLaterBatch, replay)).not.toThrow();
+        expect(applicationReducer(withLaterBatch, replay)).toBe(withLaterBatch);
+        expect(withLaterBatch.inventoryBatches).toContainEqual(laterBatch);
+    });
+
+    it("allows product creation with a different product identity", () => {
+        const firstResult = createProductResult();
+        const secondResult = createProductResult();
+        expect(secondResult.product.id).not.toBe(firstResult.product.id);
+        const firstAction = makeProductCreationAction(
+            firstResult,
+            "first-product-creation",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const secondAction = makeProductCreationAction(
+            secondResult,
+            "second-product-creation",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const initial = makeEmptyProductCreationState();
+        const committedFirst = applicationReducer(initial, firstAction);
+
+        const committedSecond = applicationReducer(committedFirst, secondAction);
+
+        expect(committedSecond.products).toEqual([
+            secondResult.product,
+            firstResult.product
+        ]);
+        expect(committedSecond.activityEvents).toHaveLength(
+            firstAction.events.length + secondAction.events.length
+        );
     });
 
     it("rejects invalid product creation payloads and Activity without changing state", () => {
@@ -1852,20 +2832,12 @@ describe("application-level Activity state", () => {
 
     it("records catalogue-only product creation exactly once without inventory events", () => {
         const product = createProductResult().product;
-        const state = {
-            ...createInitialApplicationState(),
-            products: [],
-            inventoryRecords: [],
-            inventoryBatches: [],
-            activityEvents: []
-        };
-        const action = {
-            type: "product.catalogue_created" as const,
+        const state = makeEmptyProductCreationState();
+        const action = makeCatalogueCreationAction(
             product,
-            events: prepareActivityEvents(
-                buildProductCreationActivityInputs(product, [], [])
-            )
-        };
+            "catalogue-creation-original",
+            "2026-02-03T04:05:06.000Z"
+        );
 
         const committed = applicationReducer(state, action);
 
@@ -1879,7 +2851,344 @@ describe("application-level Activity state", () => {
             product: snapshotProduct(product),
             initialInventory: []
         });
-        expect(applicationReducer(committed, action)).toBe(committed);
+        const replay = makeCatalogueCreationAction(
+            product,
+            "catalogue-creation-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const beforeReplay = structuredClone(committed);
+        expect(replay.events[0]?.eventId).not.toBe(
+            committed.activityEvents[0]?.eventId
+        );
+        expect(replay.events[0]?.occurredAt).not.toBe(
+            committed.activityEvents[0]?.occurredAt
+        );
+        expect(applicationReducer(committed, replay)).toBe(committed);
+        expect(committed).toEqual(beforeReplay);
+    });
+
+    it("rejects catalogue replays with changed product, variant, or packaging data atomically", () => {
+        const product = createProductResult().product;
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            makeCatalogueCreationAction(
+                product,
+                "catalogue-replay-original",
+                "2026-02-03T04:05:06.000Z"
+            )
+        );
+        const changedVariant = {
+            ...product,
+            variant: product.variant.map((productVariant, index) =>
+                index === 0
+                    ? { ...productVariant, variantName: "Changed variant" }
+                    : productVariant
+            )
+        };
+        const changedPackaging = {
+            ...product,
+            variant: product.variant.map((productVariant, index) =>
+                index === 0
+                    ? {
+                        ...productVariant,
+                        packagingHierarchy:
+                            productVariant.packagingHierarchy.map(
+                                (packagingLevel, levelIndex) =>
+                                    levelIndex === 0
+                                        ? { ...packagingLevel, name: "Changed packaging" }
+                                        : packagingLevel
+                            )
+                    }
+                    : productVariant
+            )
+        };
+        const changedProducts = [
+            { ...product, name: "Changed product name" },
+            changedVariant,
+            changedPackaging
+        ];
+        const before = structuredClone(committed);
+
+        for (const changedProduct of changedProducts) {
+            expect(() => applicationReducer(
+                committed,
+                makeCatalogueCreationAction(
+                    changedProduct,
+                    `catalogue-replay-changed-${changedProducts.indexOf(changedProduct)}`,
+                    "2027-03-04T05:06:07.000Z"
+                )
+            )).toThrow(
+                "Catalogue product creation replay does not match the previously committed operation."
+            );
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("rejects forged submitted or original catalogue Activity snapshots atomically", () => {
+        const product = createProductResult().product;
+        const action = makeCatalogueCreationAction(
+            product,
+            "catalogue-forged-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            action
+        );
+        const replay = makeCatalogueCreationAction(
+            product,
+            "catalogue-forged-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const forgedSubmittedReplay = {
+            ...replay,
+            events: replay.events.map((event) =>
+                event.type === "product.created"
+                    ? {
+                        ...event,
+                        product: { ...event.product, productName: "Forged name" }
+                    }
+                    : event
+            )
+        };
+        const forgedOriginalState = {
+            ...committed,
+            activityEvents: committed.activityEvents.map((event) =>
+                event.type === "product.created"
+                    ? {
+                        ...event,
+                        product: { ...event.product, productName: "Forged history" }
+                    }
+                    : event
+            )
+        };
+        const beforeCommitted = structuredClone(committed);
+        const beforeForgedOriginal = structuredClone(forgedOriginalState);
+
+        expect(() => applicationReducer(committed, forgedSubmittedReplay))
+            .toThrow(
+                "Catalogue product creation replay does not match the previously committed operation."
+            );
+        expect(committed).toEqual(beforeCommitted);
+        expect(() => applicationReducer(
+            forgedOriginalState,
+            makeCatalogueCreationAction(
+                product,
+                "catalogue-forged-history-replay",
+                "2027-03-04T05:06:07.000Z"
+            )
+        )).toThrow(
+            "Catalogue product creation replay does not match the previously committed operation."
+        );
+        expect(forgedOriginalState).toEqual(beforeForgedOriginal);
+    });
+
+    it("rejects missing, extra, or duplicate submitted catalogue events atomically", () => {
+        const product = createProductResult().product;
+        const committed = applicationReducer(
+            makeEmptyProductCreationState(),
+            makeCatalogueCreationAction(
+                product,
+                "catalogue-submitted-events-original",
+                "2026-02-03T04:05:06.000Z"
+            )
+        );
+        const replay = makeCatalogueCreationAction(
+            product,
+            "catalogue-submitted-events-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const submittedEvent = replay.events[0];
+        if (!submittedEvent) {
+            throw new Error("Catalogue replay fixture requires a creation event.");
+        }
+        const replays = [
+            { ...replay, events: [] },
+            {
+                ...replay,
+                events: [
+                    submittedEvent,
+                    {
+                        ...submittedEvent,
+                        eventId: "catalogue-extra-submitted-event",
+                        operationKey: "product.created:unexpected"
+                    }
+                ]
+            },
+            {
+                ...replay,
+                events: [
+                    submittedEvent,
+                    {
+                        ...submittedEvent,
+                        eventId: "catalogue-duplicate-submitted-event"
+                    }
+                ]
+            }
+        ];
+        const before = structuredClone(committed);
+
+        for (const invalidReplay of replays) {
+            expect(() => applicationReducer(committed, invalidReplay)).toThrow();
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("rejects missing, duplicated, or wrong-type original catalogue evidence atomically", () => {
+        const product = createProductResult().product;
+        const replay = makeCatalogueCreationAction(
+            product,
+            "catalogue-original-evidence-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const withoutEvidence = {
+            ...makeEmptyProductCreationState(),
+            products: [product]
+        };
+        const duplicatedCommit = applicationReducer(
+            makeEmptyProductCreationState(),
+            makeCatalogueCreationAction(
+                product,
+                "catalogue-original-evidence",
+                "2026-02-03T04:05:06.000Z"
+            )
+        );
+        const duplicateEvent = makeCatalogueCreationAction(
+            product,
+            "catalogue-original-evidence-duplicate",
+            "2026-02-04T04:05:06.000Z"
+        ).events[0];
+        if (!duplicateEvent) {
+            throw new Error("Catalogue replay fixture requires a creation event.");
+        }
+        const withDuplicateEvidence = {
+            ...duplicatedCommit,
+            activityEvents: [...duplicatedCommit.activityEvents, duplicateEvent]
+        };
+        const wrongTypeEvidence = prepareActivityEvents([{
+            type: "product.updated",
+            operationKey: `product.created:${product.id}`,
+            productId: product.id,
+            productName: product.name,
+            before: snapshotProduct(product),
+            after: snapshotProduct(product),
+            reason: "Wrong event type"
+        }], {
+            makeId: () => "catalogue-wrong-type-evidence",
+            now: () => new Date("2026-02-03T04:05:06.000Z")
+        });
+        const withWrongTypeEvidence = {
+            ...makeEmptyProductCreationState(),
+            products: [product],
+            activityEvents: wrongTypeEvidence
+        };
+        const invalidStates = [
+            withoutEvidence,
+            withDuplicateEvidence,
+            withWrongTypeEvidence
+        ];
+
+        for (const invalidState of invalidStates) {
+            const before = structuredClone(invalidState);
+            expect(() => applicationReducer(invalidState, replay)).toThrow();
+            expect(invalidState).toEqual(before);
+        }
+    });
+
+    it("accepts a catalogue replay after later inventory-edit Activity", () => {
+        const product = createProductResult().product;
+        const originalCreation = makeCatalogueCreationAction(
+            product,
+            "catalogue-inventory-edit-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const created = applicationReducer(
+            makeEmptyProductCreationState(),
+            originalCreation
+        );
+        const productVariant = product.variant[0];
+        const packagingLevel = productVariant?.packagingHierarchy[0];
+        if (!productVariant || !packagingLevel) {
+            throw new Error("Catalogue fixture requires a packaging level.");
+        }
+        const laterBatch = {
+            batchId: "catalogue-later-inventory-edit-batch",
+            productId: product.id,
+            variantId: productVariant.id,
+            batchNumber: "LATER-LOT",
+            expiryDate: new Date("2028-01-31T00:00:00.000Z")
+        };
+        const laterRecord = {
+            id: "catalogue-later-inventory-edit-record",
+            productId: product.id,
+            variantId: productVariant.id,
+            batchId: laterBatch.batchId,
+            stockQuantities: [{
+                packagingLevelId: packagingLevel.id,
+                quantity: 1
+            }]
+        };
+        const withLaterBatch = applicationReducer(created, {
+            type: "inventory.saved",
+            inventoryRecords: [...created.inventoryRecords, laterRecord],
+            inventoryBatches: [...created.inventoryBatches, laterBatch],
+            events: prepareActivityEvents([buildBatchCreatedActivityInput(
+                "catalogue-later-inventory-edit",
+                product,
+                laterBatch,
+                laterRecord
+            )])
+        });
+        const replay = makeCatalogueCreationAction(
+            product,
+            "catalogue-inventory-edit-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const beforeReplay = structuredClone(withLaterBatch);
+
+        expect(applicationReducer(withLaterBatch, replay)).toBe(withLaterBatch);
+        expect(withLaterBatch).toEqual(beforeReplay);
+        expect(withLaterBatch.inventoryBatches).toContainEqual(laterBatch);
+    });
+
+    it("validates catalogue replay against the original snapshot after a legitimate product edit", () => {
+        const product = createProductResult().product;
+        const originalCreation = makeCatalogueCreationAction(
+            product,
+            "catalogue-history-original",
+            "2026-02-03T04:05:06.000Z"
+        );
+        const created = applicationReducer(
+            makeEmptyProductCreationState(),
+            originalCreation
+        );
+        const updateDraft = createProductUpdateDraft(product);
+        updateDraft.name = "Edited catalogue product";
+        updateDraft.reason = "Correct the product name";
+        const updatedProduct = buildUpdatedProduct(product, updateDraft);
+        const updated = applicationReducer(created, {
+            type: "product.updated",
+            product: updatedProduct,
+            events: prepareActivityEvents(buildProductUpdateActivityInputs(
+                product,
+                updatedProduct,
+                [],
+                [],
+                [],
+                "product.updated:catalogue-history-edit",
+                updateDraft.reason
+            ))
+        });
+        const replay = makeCatalogueCreationAction(
+            product,
+            "catalogue-history-replay",
+            "2027-03-04T05:06:07.000Z"
+        );
+        const beforeReplay = structuredClone(updated);
+
+        expect(updated.products[0]?.name).toBe("Edited catalogue product");
+        expect(applicationReducer(updated, replay)).toBe(updated);
+        expect(updated).toEqual(beforeReplay);
     });
 
     it("validates catalogue creation structure and exact creation Activity atomically", () => {
@@ -2114,6 +3423,15 @@ describe("application-level Activity state", () => {
         expect(zeroStockCommitted.inventoryRecords).toEqual([]);
         expect(zeroStockCommitted.activityEvents.map((event) => event.type))
             .toEqual(["product.updated"]);
+        const zeroStockEvent = zeroStockCommitted.activityEvents[0];
+        expect(zeroStockEvent?.type).toBe("product.updated");
+        if (zeroStockEvent?.type !== "product.updated") {
+            throw new Error("Zero-stock update event was not committed.");
+        }
+        expect(zeroStockEvent.after.variants[0]?.packaging.map(
+            (level) => level.packagingLevelId
+        )).toContain(newLevel.id);
+        expect(zeroStockEvent.inventoryStateAfter?.inventoryRecords).toEqual([]);
     });
 
     it("does not append Activity when catalogue, variant, or stock commits fail", () => {
@@ -2341,7 +3659,7 @@ describe("application-level Activity state", () => {
         expect(state).toEqual(before);
     });
 
-    it("commits a product update with before-and-after Activity snapshots only", () => {
+    it("commits a product update with historical product and inventory snapshots", () => {
         const state = createInitialApplicationState();
         const original = state.products[0];
         const updated = {
@@ -2361,15 +3679,15 @@ describe("application-level Activity state", () => {
                     : productVariant
             )
         };
-        const events = prepareActivityEvents([{
-            type: "product.updated",
-            operationKey: "product.updated:test-operation",
-            productId: original.id,
-            productName: updated.name,
-            before: snapshotProduct(original),
-            after: snapshotProduct(updated),
-            reason: "Updated product details"
-        }]);
+        const events = prepareActivityEvents(buildProductUpdateActivityInputs(
+            original,
+            updated,
+            state.inventoryRecords,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            "product.updated:test-operation",
+            "Updated product details"
+        ));
         const action = {
             type: "product.updated" as const,
             product: updated,
@@ -2384,7 +3702,12 @@ describe("application-level Activity state", () => {
             type: "product.updated",
             before: snapshotProduct(original),
             after: snapshotProduct(updated),
-            reason: "Updated product details"
+            reason: "Updated product details",
+            inventoryStateAfter: snapshotProductInventoryState(
+                original.id,
+                state.inventoryRecords,
+                state.inventoryBatches
+            )
         });
         expect(committed.inventoryRecords).toBe(state.inventoryRecords);
         expect(committed.inventoryBatches).toBe(state.inventoryBatches);
@@ -2424,15 +3747,15 @@ describe("application-level Activity state", () => {
         draft.variants[0].packaging[0].quantityofNextLevel = "6";
         draft.reason = "Update Box conversion";
         const updated = buildUpdatedProduct(original, draft);
-        const events = prepareActivityEvents([{
-            type: "product.updated",
-            operationKey: "product.updated:conversion-change",
-            productId: original.id,
-            productName: updated.name,
-            before: snapshotProduct(original),
-            after: snapshotProduct(updated),
-            reason: "Update conversion"
-        }]);
+        const events = prepareActivityEvents(buildProductUpdateActivityInputs(
+            original,
+            updated,
+            state.inventoryRecords,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            "product.updated:conversion-change",
+            "Update conversion"
+        ));
 
         const committed = applicationReducer(state, {
             type: "product.updated",
@@ -2491,15 +3814,15 @@ describe("application-level Activity state", () => {
         });
         draft.reason = "Add a product variant";
         const updated = buildUpdatedProduct(original, draft);
-        const events = prepareActivityEvents([{
-            type: "product.updated",
-            operationKey: "product.updated:add-variant",
-            productId: original.id,
-            productName: updated.name,
-            before: snapshotProduct(original),
-            after: snapshotProduct(updated),
-            reason: draft.reason
-        }]);
+        const events = prepareActivityEvents(buildProductUpdateActivityInputs(
+            original,
+            updated,
+            state.inventoryRecords,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            "product.updated:add-variant",
+            draft.reason
+        ));
 
         const committed = applicationReducer(state, {
             type: "product.updated",
@@ -2687,6 +4010,821 @@ describe("application-level Activity state", () => {
             inventoryBatches: state.inventoryBatches.slice(1)
         })).toThrow("Product update cannot modify or omit inventory batches.");
         expect(state).toEqual(before);
+    });
+
+    it("stores the complete committed product-scoped inventory and batch snapshot", () => {
+        const initial = createInitialApplicationState();
+        const product = initial.products[0];
+        if (!product) {
+            throw new Error("Product update fixture requires a product.");
+        }
+        const batchIndex = initial.inventoryBatches.findIndex(
+            (batch) => batch.productId === product.id
+        );
+        const packagingLevelId =
+            product.variant[0]?.packagingHierarchy[0]?.id;
+        const batch = initial.inventoryBatches[batchIndex];
+        if (batchIndex < 0 || !batch || !packagingLevelId) {
+            throw new Error("Product update fixture requires a target batch.");
+        }
+        const inventoryBatches = initial.inventoryBatches.map(
+            (candidate, index) => index === batchIndex
+                ? {
+                    ...candidate,
+                    receivedDate: "2026-02-01T00:00:00.000Z",
+                    receivedPricing: {
+                        packagingLevelId,
+                        sellingPrice: 18
+                    }
+                }
+                : candidate
+        );
+        const state = { ...initial, inventoryBatches };
+        const updatedProduct = { ...product, description: "Snapshot check" };
+        const events = prepareActivityEvents(buildProductUpdateActivityInputs(
+            product,
+            updatedProduct,
+            state.inventoryRecords,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            "product.updated:product-scoped-snapshot",
+            "Verify historical snapshot"
+        ));
+        const action = {
+            type: "product.updated" as const,
+            product: updatedProduct,
+            inventoryRecords: state.inventoryRecords,
+            inventoryBatches: state.inventoryBatches,
+            events
+        };
+
+        const committed = applicationReducer(state, action);
+        const primaryEvent = committed.activityEvents.find(
+            (event) => event.operationKey === "product.updated:product-scoped-snapshot"
+        );
+
+        expect(primaryEvent?.type).toBe("product.updated");
+        if (primaryEvent?.type !== "product.updated") {
+            throw new Error("Product update event was not committed.");
+        }
+        expect(primaryEvent.inventoryStateAfter).toEqual(
+            snapshotProductInventoryState(
+                product.id,
+                committed.inventoryRecords,
+                committed.inventoryBatches
+            )
+        );
+        expect(primaryEvent.inventoryStateAfter?.inventoryRecords.length)
+            .toBeGreaterThan(0);
+        expect(primaryEvent.inventoryStateAfter?.inventoryBatches.length)
+            .toBeGreaterThan(0);
+        expect(primaryEvent.inventoryStateAfter?.inventoryRecords.every(
+            (record) => record.productId === product.id
+        )).toBe(true);
+        expect(primaryEvent.inventoryStateAfter?.inventoryBatches.every(
+            (batch) => batch.productId === product.id
+        )).toBe(true);
+        expect(primaryEvent.inventoryStateAfter?.inventoryRecords)
+            .toContainEqual(expect.objectContaining({
+                id: state.inventoryRecords.find(
+                    (record) => record.productId === product.id
+                )?.id
+            }));
+        expect(primaryEvent.inventoryStateAfter?.inventoryRecords.length)
+            .toBe(state.inventoryRecords.filter(
+                (record) => record.productId === product.id
+            ).length);
+        expect(primaryEvent.inventoryStateAfter?.inventoryBatches.length)
+            .toBe(state.inventoryBatches.filter(
+                (batch) => batch.productId === product.id
+            ).length);
+    });
+
+    it("rejects a forged first-time product inventory snapshot atomically", () => {
+        const state = createInitialApplicationState();
+        const product = state.products[0];
+        if (!product) {
+            throw new Error("Product update fixture requires a product.");
+        }
+        const updatedProduct = { ...product, description: "Snapshot check" };
+        const events = prepareActivityEvents(buildProductUpdateActivityInputs(
+            product,
+            updatedProduct,
+            state.inventoryRecords,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            "product.updated:forged-snapshot",
+            "Verify historical snapshot"
+        ));
+        const forgedEvents = events.map((event) =>
+            event.type === "product.updated"
+                ? {
+                    ...event,
+                    inventoryStateAfter: {
+                        ...event.inventoryStateAfter!,
+                        inventoryRecords:
+                            event.inventoryStateAfter!.inventoryRecords.map(
+                                (record, index) => index === 0
+                                    ? {
+                                        ...record,
+                                        stockQuantities: record.stockQuantities.map(
+                                            (stock, stockIndex) => stockIndex === 0
+                                                ? { ...stock, quantity: stock.quantity + 1 }
+                                                : stock
+                                        )
+                                    }
+                                    : record
+                            )
+                    }
+                }
+                : event
+        );
+        const action = {
+            type: "product.updated" as const,
+            product: updatedProduct,
+            inventoryRecords: state.inventoryRecords,
+            inventoryBatches: state.inventoryBatches,
+            events: forgedEvents
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "Product update Activity does not match the committed changes."
+        );
+        expect(state).toEqual(before);
+    });
+
+    it("accepts a product update replay with regenerated event IDs and timestamps", () => {
+        const fixture = makeCommittedProductUpdate();
+        let eventId = 0;
+        const replayEvents = prepareActivityEvents(fixture.activityInputs, {
+            makeId: () => `update-replay-${eventId++}`,
+            now: () => new Date("2027-04-05T06:07:08.000Z")
+        });
+
+        const replayed = applicationReducer(fixture.committed, {
+            ...fixture.action,
+            events: replayEvents
+        });
+
+        expect(replayed).toBe(fixture.committed);
+        expect(replayed.activityEvents).toHaveLength(
+            fixture.committed.activityEvents.length
+        );
+    });
+
+    it("rejects product update replay mismatches in submitted product and event evidence atomically", () => {
+        const fixture = makeCommittedProductUpdate();
+        const originalEvent = fixture.action.events[0];
+        if (originalEvent?.type !== "product.updated") {
+            throw new Error("Product update fixture requires a primary event.");
+        }
+        const changedVariant = {
+            ...fixture.updatedProduct,
+            variant: fixture.updatedProduct.variant.map((productVariant, index) =>
+                index === 0
+                    ? { ...productVariant, variantName: "Changed variant" }
+                    : productVariant
+            )
+        };
+        const changedPackaging = {
+            ...fixture.updatedProduct,
+            variant: fixture.updatedProduct.variant.map((productVariant, index) =>
+                index === 0
+                    ? {
+                        ...productVariant,
+                        packagingHierarchy: productVariant.packagingHierarchy.map(
+                            (level, levelIndex) => levelIndex === 0
+                                ? {
+                                    ...level,
+                                    sellingPrice: (level.sellingPrice ?? 0) + 1
+                                }
+                                : level
+                        )
+                    }
+                    : productVariant
+            )
+        };
+        const candidates = [
+            { ...fixture.action, product: { ...fixture.updatedProduct, name: "Changed" } },
+            { ...fixture.action, product: changedVariant },
+            { ...fixture.action, product: changedPackaging },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "product.updated"
+                        ? { ...event, before: { ...event.before, productName: "Forged" } }
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "product.updated"
+                        ? { ...event, after: { ...event.after, productName: "Forged" } }
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "product.updated"
+                        ? { ...event, reason: "Different reason" }
+                        : event
+                )
+            }
+        ];
+        const before = structuredClone(fixture.committed);
+
+        for (const candidate of candidates) {
+            expect(() => applicationReducer(fixture.committed, candidate))
+                .toThrow();
+            expect(fixture.committed).toEqual(before);
+        }
+        expect(originalEvent.after).toEqual(snapshotProduct(fixture.updatedProduct));
+    });
+
+    it("rejects product update replay inventory and batch mismatches atomically", () => {
+        const fixture = makeCommittedProductUpdate();
+        const productId = fixture.product.id;
+        const recordIndex = fixture.action.inventoryRecords.findIndex(
+            (record) => record.productId === productId
+        );
+        const batchIndex = fixture.action.inventoryBatches.findIndex(
+            (batch) => batch.productId === productId
+        );
+        const targetRecord = fixture.action.inventoryRecords[recordIndex];
+        const targetBatch = fixture.action.inventoryBatches[batchIndex];
+        if (!targetRecord || !targetBatch) {
+            throw new Error("Product update fixture requires inventory and a batch.");
+        }
+        const candidates = [
+            {
+                ...fixture.action,
+                inventoryRecords: fixture.action.inventoryRecords.map((record, index) =>
+                    index === recordIndex
+                        ? {
+                            ...record,
+                            stockQuantities: record.stockQuantities.map(
+                                (stock, stockIndex) => stockIndex === 0
+                                    ? { ...stock, quantity: stock.quantity + 1 }
+                                    : stock
+                            )
+                        }
+                        : record
+                )
+            },
+            {
+                ...fixture.action,
+                inventoryRecords: fixture.action.inventoryRecords.filter(
+                    (_, index) => index !== recordIndex
+                )
+            },
+            {
+                ...fixture.action,
+                inventoryRecords: [
+                    ...fixture.action.inventoryRecords,
+                    { ...targetRecord, id: `${targetRecord.id}-extra` }
+                ]
+            },
+            {
+                ...fixture.action,
+                inventoryRecords: fixture.action.inventoryRecords.map((record, index) =>
+                    index === recordIndex
+                        ? { ...record, batchId: null }
+                        : record
+                )
+            },
+            {
+                ...fixture.action,
+                inventoryBatches: fixture.action.inventoryBatches.map((batch, index) =>
+                    index === batchIndex
+                        ? { ...batch, batchNumber: "Forged batch" }
+                        : batch
+                )
+            },
+            {
+                ...fixture.action,
+                inventoryBatches: fixture.action.inventoryBatches.filter(
+                    (_, index) => index !== batchIndex
+                )
+            },
+            {
+                ...fixture.action,
+                inventoryBatches: [
+                    ...fixture.action.inventoryBatches,
+                    { ...targetBatch, batchId: `${targetBatch.batchId}-extra` }
+                ]
+            },
+            {
+                ...fixture.action,
+                inventoryBatches: fixture.action.inventoryBatches.map((batch, index) =>
+                    index === batchIndex
+                        ? { ...batch, variantId: "other-variant" }
+                        : batch
+                )
+            }
+        ];
+        const before = structuredClone(fixture.committed);
+
+        for (const candidate of candidates) {
+            expect(() => applicationReducer(fixture.committed, candidate))
+                .toThrow();
+            expect(fixture.committed).toEqual(before);
+        }
+    });
+
+    it("validates the complete stock-adjustment event set for new packaging stock", () => {
+        const fixture = makeCommittedPackagingStockUpdate();
+        const primaryEvent = fixture.action.events.find(
+            (event) => event.type === "product.updated"
+        );
+        const stockEvent = fixture.action.events.find(
+            (event) => event.type === "inventory.stock_adjusted"
+        );
+        if (
+            primaryEvent?.type !== "product.updated" ||
+            stockEvent?.type !== "inventory.stock_adjusted"
+        ) {
+            throw new Error("Packaging stock update fixture requires both event types.");
+        }
+        expect(fixture.action.events).toHaveLength(2);
+        expect(primaryEvent.inventoryStateAfter?.inventoryRecords)
+            .toEqual(snapshotProductInventoryState(
+                fixture.product.id,
+                fixture.inventoryRecords,
+                []
+            ).inventoryRecords);
+
+        let replayId = 0;
+        const validReplayEvents = prepareActivityEvents(fixture.activityInputs, {
+            makeId: () => `packaging-stock-replay-${replayId++}`,
+            now: () => new Date("2027-04-05T06:07:08.000Z")
+        });
+        expect(applicationReducer(fixture.committed, {
+            ...fixture.action,
+            events: validReplayEvents
+        })).toBe(fixture.committed);
+
+        const forgedAdjustment = {
+            ...stockEvent,
+            newQuantity: stockEvent.newQuantity + 1,
+            quantityDifference: stockEvent.quantityDifference + 1
+        };
+        const forgedReference = {
+            ...stockEvent,
+            inventoryId: `${stockEvent.inventoryId}-forged`
+        };
+        const forgedPackaging = {
+            ...stockEvent,
+            packagingLevel: {
+                ...stockEvent.packagingLevel,
+                packagingLevelId: "forged-packaging"
+            }
+        };
+        const forgedBeforeAfter = {
+            ...stockEvent,
+            previousQuantity: stockEvent.previousQuantity + 1
+        };
+        const extraAdjustment = {
+            ...stockEvent,
+            eventId: "packaging-stock-extra-event",
+            operationKey: `${stockEvent.operationKey}:extra`
+        };
+        const wrongTypeAdjustment = {
+            ...primaryEvent,
+            eventId: "packaging-stock-wrong-type",
+            operationKey: stockEvent.operationKey
+        };
+        const candidates = [
+            { ...fixture.action, events: [primaryEvent] },
+            { ...fixture.action, events: [...fixture.action.events, extraAdjustment] },
+            { ...fixture.action, events: [...fixture.action.events, stockEvent] },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? forgedAdjustment
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? forgedReference
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? forgedPackaging
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? forgedBeforeAfter
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: [primaryEvent, wrongTypeAdjustment]
+            }
+        ];
+        const before = structuredClone(fixture.committed);
+
+        for (const candidate of candidates) {
+            expect(() => applicationReducer(fixture.committed, candidate))
+                .toThrow();
+            expect(fixture.committed).toEqual(before);
+        }
+    });
+
+    it("fails closed for missing, duplicate, wrong-type, or legacy update evidence", () => {
+        const fixture = makeCommittedPackagingStockUpdate();
+        const primaryEvent = fixture.action.events.find(
+            (event) => event.type === "product.updated"
+        );
+        const stockEvent = fixture.action.events.find(
+            (event) => event.type === "inventory.stock_adjusted"
+        );
+        if (
+            primaryEvent?.type !== "product.updated" ||
+            stockEvent?.type !== "inventory.stock_adjusted"
+        ) {
+            throw new Error("Packaging stock update fixture requires both event types.");
+        }
+        const duplicatePrimary = {
+            ...primaryEvent,
+            eventId: "duplicate-original-primary"
+        };
+        const duplicateEvidenceState = {
+            ...fixture.committed,
+            activityEvents: [...fixture.committed.activityEvents, duplicatePrimary]
+        };
+        const missingPrimaryState = {
+            ...fixture.committed,
+            activityEvents: fixture.committed.activityEvents.filter(
+                (event) => event.operationKey !== fixture.operationKey
+            )
+        };
+        const wrongTypePrimary = {
+            ...stockEvent,
+            eventId: "wrong-type-original-primary",
+            operationKey: fixture.operationKey
+        };
+        const wrongTypeState = {
+            ...fixture.committed,
+            activityEvents: fixture.committed.activityEvents.map((event) =>
+                event.operationKey === fixture.operationKey
+                    ? wrongTypePrimary
+                    : event
+            )
+        };
+        const legacyPrimary = {
+            ...primaryEvent,
+            inventoryStateAfter: undefined
+        };
+        const legacyState = {
+            ...fixture.committed,
+            activityEvents: fixture.committed.activityEvents.map((event) =>
+                event.operationKey === fixture.operationKey
+                    ? legacyPrimary
+                    : event
+            )
+        };
+        const missingStockState = {
+            ...fixture.committed,
+            activityEvents: fixture.committed.activityEvents.filter(
+                (event) => event.operationKey !== stockEvent.operationKey
+            )
+        };
+        const duplicateStockState = {
+            ...fixture.committed,
+            activityEvents: [
+                ...fixture.committed.activityEvents,
+                { ...stockEvent, eventId: "duplicate-original-adjustment" }
+            ]
+        };
+        const extraStockState = {
+            ...fixture.committed,
+            activityEvents: [
+                ...fixture.committed.activityEvents,
+                {
+                    ...stockEvent,
+                    eventId: "extra-original-adjustment",
+                    operationKey: `${stockEvent.operationKey}:extra`
+                }
+            ]
+        };
+        const wrongTypeStockState = {
+            ...fixture.committed,
+            activityEvents: fixture.committed.activityEvents.map((event) =>
+                event.operationKey === stockEvent.operationKey
+                    ? {
+                        ...primaryEvent,
+                        eventId: "wrong-type-original-adjustment",
+                        operationKey: stockEvent.operationKey
+                    }
+                    : event
+            )
+        };
+        const states = [
+            duplicateEvidenceState,
+            missingPrimaryState,
+            wrongTypeState,
+            legacyState,
+            missingStockState,
+            duplicateStockState,
+            extraStockState,
+            wrongTypeStockState
+        ];
+
+        for (const state of states) {
+            const before = structuredClone(state);
+            expect(() => applicationReducer(state, fixture.action)).toThrow();
+            expect(state).toEqual(before);
+        }
+    });
+
+    it("rejects invalid and duplicate metadata in product update replay events", () => {
+        const fixture = makeCommittedPackagingStockUpdate();
+        const primaryEvent = fixture.action.events.find(
+            (event) => event.type === "product.updated"
+        );
+        const stockEvent = fixture.action.events.find(
+            (event) => event.type === "inventory.stock_adjusted"
+        );
+        if (
+            primaryEvent?.type !== "product.updated" ||
+            stockEvent?.type !== "inventory.stock_adjusted"
+        ) {
+            throw new Error("Packaging stock update fixture requires both event types.");
+        }
+        const candidates = [
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? { ...event, eventId: " " }
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? { ...event, operationKey: " " }
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? { ...event, eventId: primaryEvent.eventId }
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? { ...event, operationKey: primaryEvent.operationKey }
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? { ...event, occurredAt: "not-a-date" }
+                        : event
+                )
+            },
+            {
+                ...fixture.action,
+                events: fixture.action.events.map((event) =>
+                    event.type === "inventory.stock_adjusted"
+                        ? { ...event, occurredAt: "2027-04-05T06:07:08Z" }
+                        : event
+                )
+            }
+        ];
+        const before = structuredClone(fixture.committed);
+
+        for (const candidate of candidates) {
+            expect(() => applicationReducer(fixture.committed, candidate))
+                .toThrow();
+            expect(fixture.committed).toEqual(before);
+        }
+    });
+
+    it("ignores later unrelated inventory and batch changes during product update replay", () => {
+        const fixture = makeCommittedProductUpdate();
+        const unrelatedRecordIndex = fixture.committed.inventoryRecords.findIndex(
+            (record) => record.productId !== fixture.product.id
+        );
+        const unrelatedBatchIndex = fixture.committed.inventoryBatches.findIndex(
+            (batch) => batch.productId !== fixture.product.id
+        );
+        if (unrelatedRecordIndex < 0 || unrelatedBatchIndex < 0) {
+            throw new Error("Replay fixture requires unrelated inventory and batches.");
+        }
+        const currentInventory = fixture.committed.inventoryRecords.map(
+            (record, index) => index === unrelatedRecordIndex
+                ? {
+                    ...record,
+                    stockQuantities: record.stockQuantities.map((stock, stockIndex) =>
+                        stockIndex === 0
+                            ? { ...stock, quantity: stock.quantity + 1 }
+                            : stock
+                    )
+                }
+                : record
+        );
+        const currentBatches = fixture.committed.inventoryBatches.map(
+            (batch, index) => index === unrelatedBatchIndex
+                ? { ...batch, batchNumber: "Unrelated later batch edit" }
+                : batch
+        );
+        const currentState = {
+            ...fixture.committed,
+            inventoryRecords: currentInventory,
+            inventoryBatches: currentBatches
+        };
+        let eventId = 0;
+        const replayEvents = prepareActivityEvents(fixture.activityInputs, {
+            makeId: () => `unrelated-replay-${eventId++}`,
+            now: () => new Date("2027-04-05T06:07:08.000Z")
+        });
+
+        const replayed = applicationReducer(currentState, {
+            ...fixture.action,
+            inventoryRecords: currentInventory,
+            inventoryBatches: currentBatches,
+            events: replayEvents
+        });
+
+        expect(replayed).toBe(currentState);
+        expect(replayed.inventoryRecords).toBe(currentInventory);
+        expect(replayed.inventoryBatches).toBe(currentBatches);
+    });
+
+    it("replays an earlier product update after later product and inventory changes", () => {
+        const fixture = makeCommittedProductUpdate();
+        const updatedAgain = {
+            ...fixture.updatedProduct,
+            description: "A later product update"
+        };
+        const laterOperationKey = `product.updated:${fixture.product.id}:later`;
+        const laterEvents = prepareActivityEvents(buildProductUpdateActivityInputs(
+            fixture.updatedProduct,
+            updatedAgain,
+            fixture.committed.inventoryRecords,
+            fixture.committed.inventoryRecords,
+            fixture.committed.inventoryBatches,
+            laterOperationKey,
+            "Update description again"
+        ));
+        const afterLaterUpdate = applicationReducer(fixture.committed, {
+            type: "product.updated",
+            product: updatedAgain,
+            inventoryRecords: fixture.committed.inventoryRecords,
+            inventoryBatches: fixture.committed.inventoryBatches,
+            events: laterEvents
+        });
+        const updatedThird = {
+            ...updatedAgain,
+            manufacturer: "Updated a second time"
+        };
+        const secondLaterEvents = prepareActivityEvents(
+            buildProductUpdateActivityInputs(
+                updatedAgain,
+                updatedThird,
+                afterLaterUpdate.inventoryRecords,
+                afterLaterUpdate.inventoryRecords,
+                afterLaterUpdate.inventoryBatches,
+                `product.updated:${fixture.product.id}:later-again`,
+                "Update manufacturer"
+            )
+        );
+        const afterSecondLaterUpdate = applicationReducer(afterLaterUpdate, {
+            type: "product.updated",
+            product: updatedThird,
+            inventoryRecords: afterLaterUpdate.inventoryRecords,
+            inventoryBatches: afterLaterUpdate.inventoryBatches,
+            events: secondLaterEvents
+        });
+        const record = afterSecondLaterUpdate.inventoryRecords.find(
+            (candidate) => candidate.productId === fixture.product.id
+        );
+        const stock = record?.stockQuantities[0];
+        if (!record || !stock) {
+            throw new Error("Historical replay fixture requires target-product stock.");
+        }
+        const updatedInventory = afterSecondLaterUpdate.inventoryRecords.map(
+            (candidate) => candidate.id === record.id
+                ? {
+                    ...candidate,
+                    stockQuantities: candidate.stockQuantities.map((quantity) =>
+                        quantity.packagingLevelId === stock.packagingLevelId
+                            ? { ...quantity, quantity: quantity.quantity + 1 }
+                            : quantity
+                    )
+                }
+                : candidate
+        );
+        const inventoryEvents = prepareActivityEvents([buildStockAdjustmentActivityInput({
+            id: "later-stock-adjustment",
+            inventoryId: record.id,
+            productId: record.productId,
+            variantId: record.variantId,
+            batchId: record.batchId,
+            packagingLevelId: stock.packagingLevelId,
+            previousQuantity: stock.quantity,
+            newQuantity: stock.quantity + 1,
+            quantityDifference: 1,
+            reason: "Later physical count",
+            createdAt: new Date("2027-04-05T06:07:08.000Z")
+        }, updatedThird, afterSecondLaterUpdate.inventoryBatches, "later-stock-adjustment")]);
+        const afterInventoryChange = applicationReducer(afterSecondLaterUpdate, {
+            type: "inventory.saved",
+            inventoryRecords: updatedInventory,
+            inventoryBatches: afterSecondLaterUpdate.inventoryBatches,
+            events: inventoryEvents
+        });
+        let replayId = 0;
+        const replayEvents = prepareActivityEvents(fixture.activityInputs, {
+            makeId: () => `historical-replay-${replayId++}`,
+            now: () => new Date("2027-04-05T06:07:08.000Z")
+        });
+
+        const replayed = applicationReducer(afterInventoryChange, {
+            ...fixture.action,
+            events: replayEvents
+        });
+
+        expect(replayed).toBe(afterInventoryChange);
+        expect(replayed.products.find(
+            (product) => product.id === fixture.product.id
+        )).toMatchObject({
+            description: "A later product update",
+            manufacturer: "Updated a second time"
+        });
+        expect(replayed.inventoryRecords).toBe(updatedInventory);
+    });
+
+    it("replays an earlier product update after a later target batch change", () => {
+        const fixture = makeCommittedProductUpdate();
+        const batch = fixture.committed.inventoryBatches.find(
+            (candidate) => candidate.productId === fixture.product.id
+        );
+        if (!batch) {
+            throw new Error("Historical replay fixture requires a target-product batch.");
+        }
+        const updatedBatch = { ...batch, batchNumber: "Later batch correction" };
+        const batchInput = buildBatchUpdatedActivityInput(
+            "later-batch-edit",
+            batch,
+            updatedBatch,
+            fixture.product,
+            "Correct batch number"
+        );
+        if (!batchInput) {
+            throw new Error("Batch correction fixture requires an Activity event.");
+        }
+        const afterBatchChange = applicationReducer(fixture.committed, {
+            type: "inventory.saved",
+            inventoryRecords: fixture.committed.inventoryRecords,
+            inventoryBatches: fixture.committed.inventoryBatches.map(
+                (candidate) => candidate.batchId === batch.batchId
+                    ? updatedBatch
+                    : candidate
+            ),
+            events: prepareActivityEvents([batchInput])
+        });
+        let replayId = 0;
+        const replayEvents = prepareActivityEvents(fixture.activityInputs, {
+            makeId: () => `batch-history-replay-${replayId++}`,
+            now: () => new Date("2027-04-05T06:07:08.000Z")
+        });
+
+        const replayed = applicationReducer(afterBatchChange, {
+            ...fixture.action,
+            events: replayEvents
+        });
+
+        expect(replayed).toBe(afterBatchChange);
+        expect(replayed.inventoryBatches.find(
+            (candidate) => candidate.batchId === batch.batchId
+        )?.batchNumber).toBe("Later batch correction");
     });
 
     it("permanently deletes a product and commits its complete historical snapshot", () => {

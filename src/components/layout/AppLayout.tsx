@@ -9,7 +9,7 @@ import {
     Truck,
 } from "lucide-react";
 
-type AppPage = "products" | "inventory" | "delivery" | "sales";
+type AppPage = "products" | "inventory" | "delivery" | "sales" | "activity";
 
 interface AppLayoutProps {
     children: ReactNode;
@@ -64,7 +64,11 @@ export default function AppLayout({
                         <ShoppingCart aria-hidden="true" />
                         <span>Sales</span>
                     </a>
-                    <a href="#">
+                    <a
+                        href="#activity"
+                        aria-current={activePage === "activity" ? "page" : undefined}
+                        onClick={() => onSelectPage("activity")}
+                    >
                         <Activity aria-hidden="true" />
                         <span>Activity</span>
                     </a>

@@ -6,6 +6,7 @@ import type { InventoryCommit } from "./features/inventory/pages/InventoryPage";
 import ReceiveDeliveryPage from "./features/delivery/pages/ReceiveDeliveryPage";
 import ProductsPage from "./features/products/pages/ProductsPage";
 import SalesPage from "./features/sales/pages/SalesPage";
+import ActivityPage from "./features/activity/pages/ActivityPage";
 import {
     buildProductDeletionActivityInput,
     buildProductCreationActivityInputs,
@@ -51,7 +52,7 @@ import {
     type NavigationRequest
 } from "./navigation/navigationIntent";
 
-type AppPage = "products" | "inventory" | "delivery" | "sales";
+type AppPage = "products" | "inventory" | "delivery" | "sales" | "activity";
 
 function App() {
     const [activePage, setActivePage] =
@@ -606,6 +607,9 @@ function App() {
                     onDraftItemRemoved={handleSaleDraftItemRemoved}
                     onApproveSale={handleApproveSale}
                 />
+            </div>
+            <div hidden={activePage !== "activity"}>
+                <ActivityPage activityEvents={applicationState.activityEvents} />
             </div>
         </AppLayout>
     );

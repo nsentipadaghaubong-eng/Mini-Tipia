@@ -63,6 +63,35 @@ export interface ActivityInventorySnapshot {
     readonly stock: readonly ActivityStockSnapshot[];
 }
 
+export interface ActivityInventoryRecordStateSnapshot {
+    readonly id: string;
+    readonly productId: string;
+    readonly variantId: string;
+    readonly batchId: string | null;
+    readonly stockQuantities: readonly {
+        readonly packagingLevelId: string;
+        readonly quantity: number;
+    }[];
+}
+
+export interface ActivityInventoryBatchStateSnapshot {
+    readonly batchId: string;
+    readonly productId: string;
+    readonly variantId: string;
+    readonly batchNumber: string | null;
+    readonly expiryDate: string | null;
+    readonly receivedDate?: string;
+    readonly receivedPricing?: {
+        readonly packagingLevelId: string;
+        readonly sellingPrice: number;
+    };
+}
+
+export interface ActivityProductInventoryStateSnapshot {
+    readonly inventoryRecords: readonly ActivityInventoryRecordStateSnapshot[];
+    readonly inventoryBatches: readonly ActivityInventoryBatchStateSnapshot[];
+}
+
 export interface ActivityRemovedPackagingStockSnapshot {
     readonly inventoryId: string;
     readonly batch: ActivityBatchSnapshot | null;
@@ -87,6 +116,7 @@ export type ActivityEventInput = ActivityBaseInput & (
         readonly before: ActivityProductSnapshot;
         readonly after: ActivityProductSnapshot;
         readonly reason: string;
+        readonly inventoryStateAfter?: ActivityProductInventoryStateSnapshot;
     }
     | {
         readonly type: "product.deleted";
@@ -300,6 +330,48 @@ export function snapshotProduct(
             ? {}
             : { category: product.category }),
         variants: product.variant.map(snapshotVariant)
+    };
+}
+
+export function snapshotProductInventoryState(
+    productId: string,
+    inventoryRecords: readonly inventory[],
+    batches: readonly inventoryBatch[]
+): ActivityProductInventoryStateSnapshot {
+    return {
+        inventoryRecords: inventoryRecords
+            .filter((record) => record.productId === productId)
+            .map((record) => ({
+                id: record.id,
+                productId: record.productId,
+                variantId: record.variantId,
+                batchId: record.batchId,
+                stockQuantities: record.stockQuantities.map((stock) => ({
+                    packagingLevelId: stock.packagingLevelId,
+                    quantity: stock.quantity
+                }))
+            })),
+        inventoryBatches: batches
+            .filter((batch) => batch.productId === productId)
+            .map((batch) => ({
+                batchId: batch.batchId,
+                productId: batch.productId,
+                variantId: batch.variantId,
+                batchNumber: batch.batchNumber,
+                expiryDate: batch.expiryDate?.toISOString() ?? null,
+                ...(batch.receivedDate === undefined
+                    ? {}
+                    : { receivedDate: batch.receivedDate }),
+                ...(batch.receivedPricing === undefined
+                    ? {}
+                    : {
+                        receivedPricing: {
+                            packagingLevelId:
+                                batch.receivedPricing.packagingLevelId,
+                            sellingPrice: batch.receivedPricing.sellingPrice
+                        }
+                    })
+            }))
     };
 }
 
@@ -523,7 +595,12 @@ export function buildProductUpdateActivityInputs(
         productName: product.name,
         before: snapshotProduct(previousProduct),
         after: snapshotProduct(product),
-        reason
+        reason,
+        inventoryStateAfter: snapshotProductInventoryState(
+            product.id,
+            nextInventory,
+            batches
+        )
     }];
 
     for (const productVariant of product.variant) {
