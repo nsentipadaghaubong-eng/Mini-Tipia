@@ -332,6 +332,70 @@ export default function CreateProductModal({
     ) {
         return (
             <>
+                {(draft.addVariants || productVariant.packaging.length > 0) && (
+                    <section className="create-subsection">
+                        <div className="create-section-heading">
+                            <h4>Low-stock threshold</h4>
+                        </div>
+                        <div className="create-product-fields">
+                            <label className="create-field">
+                                <span>Threshold quantity</span>
+                                <input
+                                    inputMode="numeric"
+                                    min="0"
+                                    onChange={(event) => updateVariant(variantIndex, (item) => ({
+                                        ...item,
+                                        lowStockThresholdQuantity: event.target.value
+                                    }))}
+                                    step="1"
+                                    type="number"
+                                    value={productVariant.lowStockThresholdQuantity}
+                                />
+                                {fieldError(
+                                    errors,
+                                    `${variantPrefix}.lowStockThresholdQuantity`
+                                )}
+                            </label>
+                            <label className="create-field">
+                                <span>
+                                    Threshold packaging level
+                                    {" "}
+                                    <span className="create-optional">
+                                        (default: lowest level)
+                                    </span>
+                                </span>
+                                <select
+                                    onChange={(event) => updateVariant(variantIndex, (item) => ({
+                                        ...item,
+                                        lowStockThresholdPackagingLevelId:
+                                            event.target.value
+                                    }))}
+                                    value={
+                                        productVariant.lowStockThresholdPackagingLevelId
+                                    }
+                                >
+                                    <option value="">
+                                        Lowest packaging level
+                                        {productVariant.packaging.length > 0
+                                            ? ` (${productVariant.packaging[
+                                                productVariant.packaging.length - 1
+                                            ].name || "unnamed"})`
+                                            : ""}
+                                    </option>
+                                    {productVariant.packaging.map((level) => (
+                                        <option key={level.key} value={level.key}>
+                                            {level.name || "Unnamed packaging"}
+                                        </option>
+                                    ))}
+                                </select>
+                                {fieldError(
+                                    errors,
+                                    `${variantPrefix}.lowStockThresholdPackagingLevelId`
+                                )}
+                            </label>
+                        </div>
+                    </section>
+                )}
                 <section className="create-subsection">
                     <div className="create-section-heading">
                         <h4>Packaging</h4>
@@ -397,7 +461,7 @@ export default function CreateProductModal({
                                                     ? { ...entry, costPrice: event.target.value }
                                                     : entry)
                                             }))}
-                                            step="any"
+                                            step="0.01"
                                             type="number"
                                             value={level.costPrice}
                                         />
@@ -413,7 +477,7 @@ export default function CreateProductModal({
                                                     ? { ...entry, sellingPrice: event.target.value }
                                                     : entry)
                                             }))}
-                                            step="any"
+                                            step="0.01"
                                             type="number"
                                             value={level.sellingPrice}
                                         />

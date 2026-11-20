@@ -1,0 +1,393 @@
+Ran terminal command: git status --short; git diff --unified=3 -- src/sales/salesEngine.ts src/deliveries/deliveryApproval.ts src/inventory/inventoryBatch.ts src/inventory/inventoryBatchList.ts src/features/sales/components/SalesItemModal.tsx src/features/delivery/components/ReceiveDeliveryItemModal.tsx src/applicationState.ts src/sales/salesEngine.test.ts src/deliveries/deliveryApproval.test.ts src/features/sales/pages/SalesPage.test.tsx src/features/delivery/pages/ReceiveDeliveryPage.test.tsx
+
+Search for `Sales price resolution|missing or null|uses only the selected|same batch|pric...`
+
+Read , lines 230 to 430
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.test.ts",
+  "view_range": [
+    230,
+    430
+  ]
+}
+
+Read , lines 1 to 220
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.test.ts",
+  "view_range": [
+    1,
+    220
+  ]
+}
+
+Read , lines 1 to 130
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesDraft.test.ts",
+  "view_range": [
+    1,
+    130
+  ]
+}
+
+Read , lines 940 to 1170
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.test.ts",
+  "view_range": [
+    940,
+    1170
+  ]
+}
+
+Search for `function validateDeliveryDraft|sellingPrice:|costPrice:`
+
+Read , lines 195 to 285
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.ts",
+  "view_range": [
+    195,
+    285
+  ]
+}
+
+"Read" failed
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveryApproval.test.ts",
+  "view_range": [
+    1,
+    1
+  ]
+}
+Tool execution failed: Path does not exist
+
+Search for `same batch|matching numbered|different batch|latest|replace|pricing`
+
+Read , lines 115 to 195
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryDraft.ts",
+  "view_range": [
+    115,
+    195
+  ]
+}
+
+Read , lines 1 to 125
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.ts",
+  "view_range": [
+    1,
+    125
+  ]
+}
+
+Read , lines 220 to 380
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.test.ts",
+  "view_range": [
+    220,
+    380
+  ]
+}
+
+Read , lines 600 to 870
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.test.ts",
+  "view_range": [
+    600,
+    870
+  ]
+}
+
+Read , lines 80 to 125
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryDraft.ts",
+  "view_range": [
+    80,
+    125
+  ]
+}
+
+Search for `different|different batch|expiry|batch number|later receipt|matches numbered`
+
+Read , lines 215 to 370
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.test.ts",
+  "view_range": [
+    215,
+    370
+  ]
+}
+
+Read , lines 50 to 115
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\sales\\pages\\SalesPage.test.tsx",
+  "view_range": [
+    50,
+    115
+  ]
+}
+
+Read , lines 1 to 145
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\sales\\pages\\SalesPage.test.tsx",
+  "view_range": [
+    1,
+    145
+  ]
+}
+
+Read , lines 600 to 720
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\sales\\pages\\SalesPage.test.tsx",
+  "view_range": [
+    600,
+    720
+  ]
+}
+
+Search for `sale.completed|completeSale\(|prepareSaleDraft\(`
+
+Read 
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\package.json"
+}
+
+"Read" failed
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveryApproval.test.ts"
+}
+Tool execution failed: Path does not exist
+
+Read , lines 105 to 245
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\sales\\pages\\SalesPage.test.tsx",
+  "view_range": [
+    105,
+    245
+  ]
+}
+
+Search for `Approve Sale|approveSale|sale.completed`
+
+Read , lines 1 to 235
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.test.ts",
+  "view_range": [
+    1,
+    235
+  ]
+}
+
+Read , lines 1 to 55
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.test.ts",
+  "view_range": [
+    1,
+    55
+  ]
+}
+
+Search for `completeSale\(|applicationReducer\(`
+
+Read , lines 1180 to 1330
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.test.ts",
+  "view_range": [
+    1180,
+    1330
+  ]
+}
+
+Read , lines 380 to 430
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\sales\\pages\\SalesPage.test.tsx",
+  "view_range": [
+    380,
+    430
+  ]
+}
+
+Read , lines 620 to 710
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.ts",
+  "view_range": [
+    620,
+    710
+  ]
+}
+
+Read , lines 230 to 345
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\sales\\pages\\SalesPage.test.tsx",
+  "view_range": [
+    230,
+    345
+  ]
+}
+
+Edit , , , 
+
+Edit 
+
+Search for `does not use Product defaults|missing or null batch|defaultSellingPrice: null...`
+
+Search for `A valid default selling price is required|selling price is missing|batch.*pri...`
+
+Ran terminal command: git diff --check; git status --short; git diff --stat -- src/sales/salesEngine.ts src/sales/salesEngine.test.ts src/features/sales/pages/SalesPage.test.tsx src/deliveries/deliveryApproval.test.ts
+
+Read , lines 455 to 635
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.test.ts",
+  "view_range": [
+    455,
+    635
+  ]
+}
+
+Edit , 
+
+Search for `defaultSellingPrice: null|defaultSellingPrice\)\.toBeNull|toBeNull\(\).*default`
+
+Read , lines 360 to 455
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.test.ts",
+  "view_range": [
+    360,
+    455
+  ]
+}
+
+Read , lines 475 to 630
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.test.ts",
+  "view_range": [
+    475,
+    630
+  ]
+}
+
+Read , lines 660 to 810
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\sales\\pages\\SalesPage.test.tsx",
+  "view_range": [
+    660,
+    810
+  ]
+}
+
+Read , lines 690 to 950
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.test.ts",
+  "view_range": [
+    690,
+    950
+  ]
+}
+
+Edit 
+
+Ran terminal command: npm run test -- --run --testTimeout=30000 src/sales/salesEngine.test.ts src/features/sales/pages/SalesPage.test.tsx src/deliveries/deliveryApproval.test.ts src/features/delivery/pages/ReceiveDeliveryPage.test.tsx
+Tool execution failed with exit code 1
+
+Ran terminal command: git status --short -- src/features/delivery/pages/ReceiveDeliveryPage.test.tsx src/features/delivery/components src/sales/salesEngine.ts src/sales/salesEngine.test.ts src/features/sales/pages/SalesPage.test.tsx src/deliveries/deliveryApproval.test.ts; git diff --check
+
+Search for `creates a catalogue product without stock|records a new variant without chang...`
+
+Search for `Threshold quantity|lowStockThreshold|CreateProductModal`
+
+Read , lines 740 to 805
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\delivery\\pages\\ReceiveDeliveryPage.test.tsx",
+  "view_range": [
+    740,
+    805
+  ]
+}
+
+Read , lines 875 to 925
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\features\\delivery\\pages\\ReceiveDeliveryPage.test.tsx",
+  "view_range": [
+    875,
+    925
+  ]
+}
+
+Ran terminal command: git diff --unified=2 -- src/features/delivery/pages/ReceiveDeliveryPage.test.tsx src/features/delivery/components/AddDeliveryVariantModal.tsx src/features/delivery/components/ReceiveDeliveryItemModal.tsx
+
+The pricing-focused Sales and delivery-approval tests passed. The broader Receive Delivery page file had two failures in unrelated catalogue/variant creation flows tied to low-stock-threshold validation; I’m keeping those changes untouched and continuing the requested suite and quality checks.
+
+Ran terminal command: npm run test -- --run --testTimeout=30000
+Tool execution failed with exit code 1
+
+Ran terminal command: npm run build
+
+Ran terminal command: npm run lint
+
+Ran terminal command: npm run test -- --run --testTimeout=30000 src/sales/salesEngine.test.ts src/features/sales/pages/SalesPage.test.tsx src/deliveries/deliveryApproval.test.ts src/features/delivery/pages/ReceiveDeliveryPage.test.tsx -t "price|pricing|selling"
+
+Ran terminal command: git status --short; git diff --check; git diff --stat -- src/sales/salesEngine.ts src/sales/salesEngine.test.ts src/features/sales/pages/SalesPage.test.tsx src/deliveries/deliveryApproval.test.ts
+
+Search for `resolveDefaultSellingPrice|setBatchPackagingPricing|findOrCreateBatch`
+
+Ran terminal command: git diff --unified=3 -- src/sales/salesEngine.ts
+
+Ran terminal command: git diff --unified=2 -- src/sales/salesEngine.test.ts src/features/sales/pages/SalesPage.test.tsx src/deliveries/deliveryApproval.test.ts | Select-String -Pattern '^\+.*(fallback|selling price|sellingPrice|batch|packaging|approval|Product)' -Context 1,1 | Select-Object -First 100
+Tool execution failed with exit code -1
+
+Read , lines 150 to 202
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\sales\\salesEngine.ts",
+  "view_range": [
+    150,
+    202
+  ]
+}
+
+Read , lines 50 to 125
+Completed with input: {
+  "path": "C:\\Users\\hp\\Documents\\Mini-Tipia\\src\\deliveries\\deliveryApproval.ts",
+  "view_range": [
+    50,
+    125
+  ]
+}
+
+Search for `Product packaging|batch price|fall back|latest delivery|same batch|same packa...`
+
+## Recovery and implementation report
+
+### 1. Files inspected
+
+I inspected the shared Sales resolver and its callers, delivery batch matching/pricing, the batch data model, Receive Delivery price inputs, application-state approval flow, and the related Sales and delivery tests. Relevant files include `salesEngine.ts`, `SalesItemModal.tsx`, `deliveryApproval.ts`, `inventoryBatch.ts`, and `applicationState.ts`, plus the associated tests.
+
+### 2. Changes made for this pricing correction
+
+- `salesEngine.ts`: The shared resolver now looks up the selected batch’s price for the exact packaging-level ID. A non-null batch price wins; otherwise it falls back to that Product packaging level. If both are null or absent, it returns `null`.
+- `salesEngine.test.ts`: Added coverage for fallback, batch overrides, unpriced levels, and preventing prices from leaking across batches or packaging levels.
+- `SalesPage.test.tsx`: Added UI and sale-flow coverage for Product fallback, null/missing batch prices, and no configured price.
+- `deliveryApproval.test.ts`: Added coverage for latest same-batch prices, null replacement, and batch isolation.
+
+The root issue was in shared price resolution: it was not aligned with the current per-packaging-level batch pricing data. The Sales UI and sale preparation/approval both use the shared resolver, so this fixes their resolution consistently without adding a separate UI rule.
+
+### 3. Same-batch delivery behavior
+
+I did **not** change delivery production logic. The current `deliveryApproval.ts` already matches batches by the existing identity rule and replaces only the received packaging level’s price entry. That replacement also accepts `null`, so a later null price clears the old batch price and Sales falls back to the Product default. Other packaging levels and batches remain unaffected.
+
+### 4. Verification
+
+- Focused price-related Sales and delivery tests: **34 passed**; 84 unrelated tests skipped by the name filter.
+- Broader focused run: 116 passed; **2 Receive Delivery page tests failed** in catalogue/variant creation flows, not pricing tests.
+- Full suite: **486 passed, 9 failed** across product creation/replay, low-stock, Receive Delivery catalogue/variant creation, and Inventory navigation.
+- `npm run build` (including `tsc -b`): **passed**.
+- `npm run lint`: **passed**.
+- `git diff --check`: **passed**.
+
+The failures are outside the pricing correction and relate to other existing work in the workspace; I left them untouched.
+
+### 5. Worktree caution
+
+The repository already had many unrelated modified files and untracked files before this correction. Some related files—including `deliveryApproval.ts` and `SalesItemModal.tsx`—are modified in the worktree, but I did not change them for this correction. I did not clean, revert, or stage any existing work.
+
+**Remaining issue:** the full test suite is not green because of those unrelated failures. The pricing-specific tests, build, and lint checks pass.
+
+//continuing from the issue of sales pricing

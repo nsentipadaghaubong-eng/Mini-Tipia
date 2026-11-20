@@ -4,7 +4,11 @@ import type {
 } from "./productStructure.ts";
 
 import type { packagingLevel } from "../packaging/packagingHierarchy";
-import { getPackagingLevelFromHierarchy } from "../packaging/packagingValidation";
+import {
+    getLowestPackagingLevel,
+    getPackagingLevelFromHierarchy,
+    validatePackagingHierarchy
+} from "../packaging/packagingValidation";
 
 export function getVariantById(
     product: productStructure,
@@ -39,5 +43,43 @@ export function getPackagingLevelById(
     return getPackagingLevelFromHierarchy(
         selectedVariant.packagingHierarchy,
         packagingLevelId
+    );
+}
+
+export function validateVariantLowStockThreshold(
+    selectedVariant: variant
+): void {
+    const threshold = selectedVariant.lowStockThreshold;
+    if (threshold === undefined) {
+        return;
+    }
+    if (
+        threshold === null ||
+        typeof threshold !== "object" ||
+        Array.isArray(threshold) ||
+        !Number.isSafeInteger(threshold.quantity) ||
+        threshold.quantity < 0 ||
+        Object.keys(threshold).some((key) =>
+            key !== "quantity" && key !== "packagingLevelId"
+        )
+    ) {
+        throw new Error("Low-stock threshold must be a non-negative safe integer.");
+    }
+
+    validatePackagingHierarchy(selectedVariant.packagingHierarchy);
+    if (threshold.packagingLevelId === undefined) {
+        getLowestPackagingLevel(selectedVariant.packagingHierarchy);
+        return;
+    }
+    if (
+        typeof threshold.packagingLevelId !== "string" ||
+        threshold.packagingLevelId.trim() === "" ||
+        threshold.packagingLevelId !== threshold.packagingLevelId.trim()
+    ) {
+        throw new Error("Low-stock threshold packaging level is invalid.");
+    }
+    getPackagingLevelFromHierarchy(
+        selectedVariant.packagingHierarchy,
+        threshold.packagingLevelId
     );
 }

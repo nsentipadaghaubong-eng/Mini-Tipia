@@ -10,10 +10,15 @@ export interface productStructure {
     variant: variant[]
 }
 
+export interface LowStockThreshold {
+    quantity: number;
+    packagingLevelId?: string;
+}
+
 export interface variant {
     id: string;
     variantName: string;
     nafdacRegistrationNumber?: string;
     packagingHierarchy: packagingLevel[]
-
+    lowStockThreshold?: LowStockThreshold;
 }

@@ -166,7 +166,26 @@ export default function SalesItemModal({
         )
         : null;
     const parsedQuantity = Number(quantity);
-    const parsedPrice = Number(appliedSellingPrice);
+    const hasAppliedPriceOverride = appliedSellingPrice.trim() !== "";
+    const parsedPrice = hasAppliedPriceOverride
+        ? Number(appliedSellingPrice)
+        : null;
+    const effectiveSellingPrice = parsedPrice ?? defaultSellingPrice;
+    const hasValidDefaultPrice = defaultSellingPrice !== null &&
+        Number.isFinite(defaultSellingPrice) &&
+        defaultSellingPrice >= 0;
+    const hasValidOverride = parsedPrice !== null &&
+        Number.isFinite(parsedPrice) &&
+        parsedPrice >= 0;
+    const canUseExplicitOverride = selectedChoice?.batch !== null &&
+        selectedChoice?.batch !== undefined &&
+        defaultSellingPrice === null &&
+        hasAppliedPriceOverride &&
+        hasValidOverride;
+    const hasValidSellingPrice = hasValidDefaultPrice || canUseExplicitOverride;
+    const hasValidEffectivePrice = effectiveSellingPrice !== null &&
+        Number.isFinite(effectiveSellingPrice) &&
+        effectiveSellingPrice >= 0;
     const parsedPercentage = Number(discountPercentage);
     const validPercentageInput = discountPercentage.trim() !== "" &&
         Number.isFinite(parsedPercentage) &&
@@ -174,7 +193,7 @@ export default function SalesItemModal({
         parsedPercentage <= 100;
     const amounts = validPercentageInput
         ? calculateSaleLineAmounts(
-            parsedPrice,
+            effectiveSellingPrice ?? Number.NaN,
             parsedQuantity,
             parsedPercentage
         )
@@ -188,10 +207,8 @@ export default function SalesItemModal({
     const canSave = Boolean(
         selectedChoice &&
         selectedPackaging &&
-        defaultSellingPrice !== null &&
-        Number.isFinite(defaultSellingPrice) &&
-        Number.isFinite(parsedPrice) &&
-        parsedPrice >= 0 &&
+        hasValidSellingPrice &&
+        hasValidEffectivePrice &&
         amounts &&
         !invalidQuantity &&
         !availabilityError &&
@@ -263,11 +280,11 @@ export default function SalesItemModal({
         if (
             !selectedChoice ||
             !selectedPackaging ||
-            defaultSellingPrice === null ||
-            !Number.isFinite(defaultSellingPrice) ||
+            !hasValidSellingPrice ||
+            effectiveSellingPrice === null ||
+            !Number.isFinite(effectiveSellingPrice) ||
+            effectiveSellingPrice < 0 ||
             !amounts ||
-            !Number.isFinite(parsedPrice) ||
-            parsedPrice < 0 ||
             !Number.isSafeInteger(parsedQuantity) ||
             parsedQuantity <= 0
         ) {
@@ -284,7 +301,7 @@ export default function SalesItemModal({
             packagingLevelId: selectedPackaging.id,
             quantity: parsedQuantity,
             defaultSellingPrice,
-            appliedSellingPrice: parsedPrice,
+            appliedSellingPrice: effectiveSellingPrice,
             discountAmount: amounts.discountAmount
         });
     }
@@ -436,6 +453,18 @@ export default function SalesItemModal({
                                     onChange={(event) => {
                                         setAppliedSellingPrice(event.target.value);
                                         setSubmitError("");
+                                    }}
+                                    onBlur={() => {
+                                        if (
+                                            appliedSellingPrice.trim() === "" &&
+                                            defaultSellingPrice !== null &&
+                                            Number.isFinite(defaultSellingPrice) &&
+                                            defaultSellingPrice >= 0
+                                        ) {
+                                            setAppliedSellingPrice(
+                                                String(defaultSellingPrice)
+                                            );
+                                        }
                                     }}
                                     step="0.01"
                                     type="number"

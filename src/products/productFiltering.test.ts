@@ -71,8 +71,8 @@ const products = [
 ];
 
 const inventoryBatches: inventoryBatch[] = [
-    { batchId: "p1-v1-batch", productId: "p1", variantId: "p1-v1", batchNumber: "LOT-1", expiryDate: null },
-    { batchId: "p2-v2-batch", productId: "p2", variantId: "p2-v2", batchNumber: "LOT-2", expiryDate: null }
+    { batchId: "p1-v1-batch", productId: "p1", variantId: "p1-v1", batchNumber: "LOT-1", expiryDate: null, pricingByPackagingLevel: [] },
+    { batchId: "p2-v2-batch", productId: "p2", variantId: "p2-v2", batchNumber: "LOT-2", expiryDate: null, pricingByPackagingLevel: [] }
 ];
 
 describe("searchProducts", () => {

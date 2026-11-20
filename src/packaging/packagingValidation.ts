@@ -1,6 +1,7 @@
 import type { inventory } from "../inventory/inventoryStock";
 import type { productStructure } from "../products/productStructure";
 import type { packagingLevel } from "./packagingHierarchy";
+import { hasAtMostTwoDecimalPlaces } from "../pricing/pricePrecision";
 
 export interface PackagingStockReference {
     inventoryId: string;
@@ -88,13 +89,17 @@ export function validatePackagingHierarchy(
         }
         if (
             level.costPrice !== null &&
-            (!Number.isFinite(level.costPrice) || level.costPrice < 0)
+            (!Number.isFinite(level.costPrice) ||
+                level.costPrice < 0 ||
+                !hasAtMostTwoDecimalPlaces(level.costPrice))
         ) {
             throw new Error(`Invalid cost price for packaging level: ${level.id}`);
         }
         if (
             level.sellingPrice !== null &&
-            (!Number.isFinite(level.sellingPrice) || level.sellingPrice < 0)
+            (!Number.isFinite(level.sellingPrice) ||
+                level.sellingPrice < 0 ||
+                !hasAtMostTwoDecimalPlaces(level.sellingPrice))
         ) {
             throw new Error(`Invalid selling price for packaging level: ${level.id}`);
         }
@@ -215,6 +220,17 @@ export function getPackagingLevelFromHierarchy(
         throw new Error("Packaging level does not belong to this variant.");
     }
     return level;
+}
+
+export function getLowestPackagingLevel(
+    levels: readonly packagingLevel[]
+): packagingLevel {
+    validatePackagingHierarchy(levels);
+    const lowestLevel = levels.find((level) => level.nextLevelId === null);
+    if (!lowestLevel) {
+        throw new Error("The variant has no packaging levels.");
+    }
+    return lowestLevel;
 }
 
 export function getPackagingConversionQuantity(

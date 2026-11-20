@@ -50,10 +50,12 @@ const batch = {
     batchNumber: "LOT-1",
     expiryDate: "2027-12-31",
     receivedDate: "2026-11-14",
-    receivedPricing: {
+    pricingByPackagingLevel: [{
         packagingLevelId: packaging.packagingLevelId,
-        sellingPrice: 12
-    }
+        costPrice: null,
+        sellingPrice: 12,
+        packagingLevelName: "Box"
+    }]
 } as const;
 
 const inventory = {
@@ -209,6 +211,11 @@ const eventInputs: ActivityEventInput[] = [
             variantId: variant.variantId,
             variantName: variant.variantName,
             batch,
+            pricingAtReceipt: {
+                packagingLevelId: packaging.packagingLevelId,
+                costPrice: null,
+                sellingPrice: 12
+            },
             stock: [{ packagingLevel: packaging, quantity: 3 }]
         }]
     },
@@ -364,6 +371,58 @@ describe("Activity presentation", () => {
         expect(packagingUpdateText).toContain("₦15 → ₦20");
         expect(packagingUpdateText).toContain("Cost price");
         expect(packagingUpdateText).toContain("₦999 → ₦1,000");
+    });
+
+    it("shows receipt-time prices and pricing-only batch changes", () => {
+        const deliveryInput = eventInputs.find(
+            (input) => input.type === "delivery.received"
+        );
+        const batchUpdateInput = eventInputs.find(
+            (input) => input.type === "inventory.batch_updated"
+        );
+        if (
+            !deliveryInput ||
+            deliveryInput.type !== "delivery.received" ||
+            !batchUpdateInput ||
+            batchUpdateInput.type !== "inventory.batch_updated"
+        ) {
+            throw new Error("Pricing Activity fixtures are missing.");
+        }
+        const [deliveryEvent] = prepareEvents([deliveryInput]);
+        const [batchUpdateEvent] = prepareEvents([{
+            ...batchUpdateInput,
+            before: {
+                ...batchUpdateInput.before,
+                pricingByPackagingLevel: [{
+                    packagingLevelId: packaging.packagingLevelId,
+                    costPrice: null,
+                    sellingPrice: 10,
+                    packagingLevelName: "Box"
+                }]
+            },
+            after: {
+                ...batchUpdateInput.after,
+                pricingByPackagingLevel: [{
+                    packagingLevelId: packaging.packagingLevelId,
+                    costPrice: 5,
+                    sellingPrice: null,
+                    packagingLevelName: "Box"
+                }]
+            }
+        }]);
+        const deliveryText = presentationText(
+            getActivityPresentation(deliveryEvent)
+        );
+        const batchText = presentationText(
+            getActivityPresentation(batchUpdateEvent)
+        );
+
+        expect(deliveryText).toContain("Cost price received");
+        expect(deliveryText).toContain("Empty");
+        expect(deliveryText).toContain("Selling price received");
+        expect(deliveryText).toContain("₦12");
+        expect(batchText).toContain("Box pricing");
+        expect(batchText).toContain("Cost Empty; Selling ₦10 → Cost ₦5; Selling Empty");
     });
 
     it("shows sale amount, line values and NGN currency without actor IDs", () => {

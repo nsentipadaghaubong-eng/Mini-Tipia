@@ -43,6 +43,8 @@ function makeItem(
         quantity: 3,
         batchNumber: "LOT-1",
         expiryDate: "2027-12-31",
+        costPrice: null,
+        sellingPrice: null,
         ...overrides
     };
 }
@@ -240,6 +242,110 @@ describe("Delivery draft domain", () => {
         expect(() => makeDraft({
             invoiceNumber: {} as unknown as string
         })).toThrow("Invoice number must be a string");
+    });
+
+    it("validates optional prices as nullable finite non-negative numbers", () => {
+        expect(addDeliveryDraftItem(
+            makeDraft(),
+            makeItem("valid-prices", { costPrice: 3.21, sellingPrice: 12.34 }),
+            later
+        ).items[0]).toMatchObject({
+            costPrice: 3.21,
+            sellingPrice: 12.34
+        });
+        for (const [field, label] of [
+            ["costPrice", "Cost price"],
+            ["sellingPrice", "Selling price"]
+        ] as const) {
+            for (const invalidPrice of [
+                -1,
+                Number.POSITIVE_INFINITY,
+                Number.NaN,
+                "12",
+                undefined
+            ]) {
+                expect(() => addDeliveryDraftItem(
+                    makeDraft(),
+                    makeItem("invalid-price", {
+                        [field]: invalidPrice
+                    } as Partial<DeliveryDraftItem>),
+                    later
+                )).toThrow(
+                    `${label} must be null or a finite non-negative number`
+                );
+            }
+        }
+    });
+
+    it.each(["costPrice", "sellingPrice"] as const)(
+        "rejects a delivery %s with more than two decimal places",
+        (priceField) => {
+            expect(() => addDeliveryDraftItem(
+                makeDraft(),
+                makeItem("over-precise-price", {
+                    [priceField]: 12.345
+                }),
+                later
+            )).toThrow("at most two decimal places");
+        }
+    );
+
+    it("allows multiple receipt lines with the same batch and packaging identity", () => {
+        const draft = addDeliveryDraftItem(
+            makeDraft(),
+            makeItem("first", {
+                batchNumber: "LOT-1",
+                expiryDate: "2027-12-31",
+                costPrice: 1,
+                sellingPrice: 2
+            }),
+            later
+        );
+        const withSecondReceipt = addDeliveryDraftItem(
+            draft,
+            makeItem("duplicate", {
+                batchNumber: "LOT-1",
+                expiryDate: "2027-12-31",
+                quantity: 5,
+                costPrice: 9,
+                sellingPrice: 10
+            }),
+            laterAgain
+        );
+        expect(withSecondReceipt.items).toHaveLength(2);
+        expect(withSecondReceipt.items[1]).toMatchObject({
+            batchNumber: "LOT-1",
+            expiryDate: "2027-12-31",
+            quantity: 5,
+            costPrice: 9,
+            sellingPrice: 10
+        });
+
+        expect(() => addDeliveryDraftItem(
+            withSecondReceipt,
+            makeItem("different-expiry", {
+                batchNumber: "LOT-1",
+                expiryDate: "2028-12-31"
+            }),
+            laterAgain
+        )).not.toThrow();
+        expect(() => addDeliveryDraftItem(
+            withSecondReceipt,
+            makeItem("different-batch", {
+                batchNumber: "LOT-2",
+                expiryDate: "2027-12-31"
+            }),
+            laterAgain
+        )).not.toThrow();
+        expect(() => addDeliveryDraftItem(
+            withSecondReceipt,
+            makeItem("different-packaging", {
+                batchNumber: "LOT-1",
+                expiryDate: "2027-12-31",
+                packagingLevelId: "unit"
+            }),
+            laterAgain
+        )).not.toThrow();
     });
 
     it("rejects editing a non-draft or an item that does not exist", () => {

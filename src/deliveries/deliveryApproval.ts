@@ -5,7 +5,10 @@ import {
 } from "../activity/activity";
 import type { inventory } from "../inventory/inventoryStock";
 import { addStock, createInventory } from "../inventory/inventoryStock";
-import type { inventoryBatch } from "../inventory/inventoryBatch";
+import type {
+    BatchPackagingPricing,
+    inventoryBatch
+} from "../inventory/inventoryBatch";
 import type { productStructure } from "../products/productStructure";
 import { validatePackagingHierarchy } from "../packaging/packagingValidation";
 import {
@@ -87,11 +90,35 @@ function findOrCreateBatch(
         expiryDate: itemExpiry === null
             ? null
             : new Date(`${itemExpiry}T00:00:00.000Z`),
-        receivedDate: draft.deliveryDate
+        receivedDate: draft.deliveryDate,
+        pricingByPackagingLevel: []
     };
     snapshotBatch(batch, product);
     batches.push(batch);
     return batch;
+}
+
+function setBatchPackagingPricing(
+    batch: inventoryBatch,
+    item: DeliveryDraftItem
+): inventoryBatch {
+    const pricing: BatchPackagingPricing = {
+        packagingLevelId: item.packagingLevelId,
+        costPrice: item.costPrice,
+        sellingPrice: item.sellingPrice
+    };
+    const pricingByPackagingLevel = batch.pricingByPackagingLevel.map(
+        (entry) => ({ ...entry })
+    );
+    const existingIndex = pricingByPackagingLevel.findIndex(
+        (entry) => entry.packagingLevelId === item.packagingLevelId
+    );
+    if (existingIndex === -1) {
+        pricingByPackagingLevel.push(pricing);
+    } else {
+        pricingByPackagingLevel[existingIndex] = pricing;
+    }
+    return { ...batch, pricingByPackagingLevel };
 }
 
 function addItemStock(
@@ -191,7 +218,13 @@ export function prepareDeliveryApproval(
         ...batches.map((batch) => batch.batchId)
     ]);
     const makeId = options.makeId ?? (() => crypto.randomUUID());
-    const activityItems: Extract<ActivityEventInput, { type: "delivery.received" }>["items"][number][] = [];
+    const activityLines: {
+        product: productStructure;
+        productVariant: productStructure["variant"][number];
+        packagingLevel: productStructure["variant"][number]["packagingHierarchy"][number];
+        item: DeliveryDraftItem;
+        batchId: string;
+    }[] = [];
 
     draft.items.forEach((item, index) => {
         try {
@@ -226,28 +259,29 @@ export function prepareDeliveryApproval(
                 usedIds,
                 makeId
             );
+            const pricedBatch = setBatchPackagingPricing(batch, checkedItem);
+            const batchIndex = batches.findIndex(
+                (candidate) => candidate.batchId === batch.batchId
+            );
+            if (batchIndex === -1) {
+                throw new Error("The selected batch is no longer available.");
+            }
+            batches[batchIndex] = pricedBatch;
             addItemStock(
                 checkedItem,
-                batch,
+                pricedBatch,
                 products,
                 records,
                 batches,
                 usedIds,
                 makeId
             );
-            activityItems.push({
-                productId: product.id,
-                productName: product.name,
-                variantId: productVariant.id,
-                variantName: productVariant.variantName,
-                batch: snapshotBatch(batch, product),
-                stock: [{
-                    packagingLevel: snapshotPackagingLevel(
-                        packagingLevel,
-                        productVariant.packagingHierarchy
-                    ),
-                    quantity: checkedItem.quantity
-                }]
+            activityLines.push({
+                product,
+                productVariant,
+                packagingLevel,
+                item: checkedItem,
+                batchId: pricedBatch.batchId
             });
         } catch (error) {
             const message = error instanceof Error
@@ -267,6 +301,36 @@ export function prepareDeliveryApproval(
             "Delivery approval timestamp cannot precede the last draft update."
         );
     }
+    const activityItems: Extract<
+        ActivityEventInput,
+        { type: "delivery.received" }
+    >["items"][number][] = activityLines.map((line) => {
+        const batch = batches.find(
+            (candidate) => candidate.batchId === line.batchId
+        );
+        if (!batch) {
+            throw new Error("The received batch is no longer available.");
+        }
+        return {
+            productId: line.product.id,
+            productName: line.product.name,
+            variantId: line.productVariant.id,
+            variantName: line.productVariant.variantName,
+            batch: snapshotBatch(batch, line.product),
+            pricingAtReceipt: {
+                packagingLevelId: line.item.packagingLevelId,
+                costPrice: line.item.costPrice,
+                sellingPrice: line.item.sellingPrice
+            },
+            stock: [{
+                packagingLevel: snapshotPackagingLevel(
+                    line.packagingLevel,
+                    line.productVariant.packagingHierarchy
+                ),
+                quantity: line.item.quantity
+            }]
+        };
+    });
 
     return {
         draft: {

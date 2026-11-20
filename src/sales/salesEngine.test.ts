@@ -82,16 +82,28 @@ function makeRecord(
 function makeBatch(
     batchId: string,
     expiryDate: Date | null,
-    receivedPricing?: inventoryBatch["receivedPricing"],
+    pricingByPackagingLevel?: inventoryBatch["pricingByPackagingLevel"],
     variantId = product.variant[0].id
 ): inventoryBatch {
+    const selectedVariant = product.variant.find(
+        (candidate) => candidate.id === variantId
+    );
+    if (!selectedVariant) {
+        throw new Error("Test batch variant was not found.");
+    }
+
     return {
         batchId,
         productId: product.id,
         variantId,
         batchNumber: `LOT-${batchId}`,
         expiryDate,
-        ...(receivedPricing ? { receivedPricing } : {})
+        pricingByPackagingLevel: pricingByPackagingLevel ??
+            selectedVariant.packagingHierarchy.map((level) => ({
+                packagingLevelId: level.id,
+                costPrice: null,
+                sellingPrice: level.sellingPrice
+            }))
     };
 }
 
@@ -170,23 +182,76 @@ function makeDraftItem(
     };
 }
 
+function makeSaleDraftPlan(
+    record: inventory,
+    batches: inventoryBatch[] = [],
+    overrides: Partial<SaleRequest> = {},
+    options: { now?: () => Date } = {}
+) {
+    const request = makeRequest(record, overrides);
+    const selectedBatch = request.batchId === null
+        ? null
+        : batches.find((batch) => batch.batchId === request.batchId) ?? null;
+    const defaultSellingPrice = resolveDefaultSellingPrice(
+        product,
+        request.variantId,
+        request.packagingLevelId,
+        selectedBatch
+    );
+    const appliedSellingPrice =
+        request.appliedSellingPrice ?? defaultSellingPrice;
+    if (appliedSellingPrice === null) {
+        throw new Error("Test draft requires an explicit applied selling price.");
+    }
+
+    const draft = makeDraft([
+        makeDraftItem(`line-${record.id}`, record, {
+            variantId: request.variantId,
+            batchId: request.batchId,
+            packagingLevelId: request.packagingLevelId,
+            quantity: request.quantity,
+            defaultSellingPrice,
+            appliedSellingPrice,
+            discountAmount: request.discountAmount ?? 0
+        })
+    ], {
+        draftId: `draft-${record.id}`,
+        ...(request.customerName ? { customerName: request.customerName } : {}),
+        ...(request.customerAddress
+            ? { customerAddress: request.customerAddress }
+            : {}),
+        ...(request.saleDate ? { saleDate: request.saleDate } : {}),
+        ...(request.staffMember ? { staffMember: request.staffMember } : {}),
+        ...(request.notes ? { notes: request.notes } : {})
+    });
+
+    return {
+        draft,
+        plan: prepareSaleDraft(
+            draft,
+            makeContext([record], batches),
+            { now: options.now }
+        )
+    };
+}
+
 describe("Sales price resolution", () => {
     const batchWithBoxPrice = makeBatch(
         "batch-priced",
         new Date("2027-01-31T00:00:00.000Z"),
-        { packagingLevelId: "box", sellingPrice: 6000 }
+        [{ packagingLevelId: "box", costPrice: null, sellingPrice: 6000 }]
     );
 
-    it("uses normal variant prices when no batch-specific price exists", () => {
+    it("uses Product defaults for unbatched stock", () => {
         expect(resolveDefaultSellingPrice(
             product,
             "tablet-500",
             "box",
-            makeBatch("regular", null)
+            null
         )).toBe(5000);
     });
 
-    it("uses the batch received price only for its recorded packaging level", () => {
+    it("prefers the selected batch price and falls back to the same Product packaging level", () => {
         expect(resolveDefaultSellingPrice(
             product,
             "tablet-500",
@@ -209,9 +274,178 @@ describe("Sales price resolution", () => {
             product,
             "tablet-500",
             "box",
-            makeBatch("another", null)
+            makeBatch("another", null, [])
         )).toBe(5000);
         expect(product.variant[0].packagingHierarchy[0].sellingPrice).toBe(5000);
+    });
+
+    it("does not borrow a batch price from another batch", () => {
+        const secondBatch = makeBatch("second-batch", null, []);
+
+        expect(resolveDefaultSellingPrice(
+            product,
+            "tablet-500",
+            "box",
+            batchWithBoxPrice
+        )).toBe(6000);
+        expect(resolveDefaultSellingPrice(
+            product,
+            "tablet-500",
+            "box",
+            secondBatch
+        )).toBe(5000);
+    });
+
+    it("uses valid two-decimal Product-default and batch prices for sales", () => {
+        const pricedProduct: productStructure = {
+            ...product,
+            variant: product.variant.map((productVariant) =>
+                productVariant.id === "tablet-500"
+                    ? {
+                        ...productVariant,
+                        packagingHierarchy:
+                            productVariant.packagingHierarchy.map((level) =>
+                                level.id === "box"
+                                    ? { ...level, sellingPrice: 45.67 }
+                                    : level
+                            )
+                    }
+                    : productVariant
+            )
+        };
+        const unbatchedRecord = makeRecord("cent-default-stock", null, [
+            { packagingLevelId: "box", quantity: 2 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 0 }
+        ]);
+        const defaultPlan = prepareSaleDraft(
+            makeDraft([makeDraftItem("cent-default-line", unbatchedRecord, {
+                packagingLevelId: "box",
+                defaultSellingPrice: 45.67,
+                appliedSellingPrice: 45.67
+            })]),
+            {
+                products: [pricedProduct],
+                inventoryRecords: [unbatchedRecord],
+                inventoryBatches: []
+            }
+        );
+        const batch = makeBatch("cent-batch", null, [{
+            packagingLevelId: "box",
+            costPrice: 12.34,
+            sellingPrice: 56.78
+        }]);
+        const batchedRecord = makeRecord("cent-batch-stock", batch.batchId, [
+            { packagingLevelId: "box", quantity: 2 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 0 }
+        ]);
+        const batchPlan = prepareSaleDraft(
+            makeDraft([makeDraftItem("cent-batch-line", batchedRecord, {
+                packagingLevelId: "box",
+                defaultSellingPrice: 56.78,
+                appliedSellingPrice: 56.78
+            })]),
+            {
+                products: [pricedProduct],
+                inventoryRecords: [batchedRecord],
+                inventoryBatches: [batch]
+            }
+        );
+
+        expect(defaultPlan.linePlans[0]).toMatchObject({
+            defaultSellingPrice: 45.67,
+            appliedSellingPrice: 45.67
+        });
+        expect(batchPlan.linePlans[0]).toMatchObject({
+            defaultSellingPrice: 56.78,
+            appliedSellingPrice: 56.78
+        });
+    });
+
+    it("rejects a direct sale price with more than two decimal places", () => {
+        const record = makeRecord("over-precise-sale-stock", null, [
+            { packagingLevelId: "box", quantity: 1 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 0 }
+        ]);
+
+        expect(() => makeSalePlan(record, [], {
+            packagingLevelId: "box",
+            appliedSellingPrice: 12.345
+        })).toThrow("at most two decimal places");
+    });
+
+    it("falls back to the Product price when a batch's selected-level price is null", () => {
+        const batchWithoutCardPrice = makeBatch(
+            "batch-without-card-price",
+            new Date("2027-01-31T00:00:00.000Z"),
+            [{ packagingLevelId: "card", costPrice: null, sellingPrice: null }]
+        );
+        const record = makeRecord(
+            "stock-without-card-price",
+            batchWithoutCardPrice.batchId,
+            [{ packagingLevelId: "card", quantity: 2 }]
+        );
+
+        expect(resolveDefaultSellingPrice(
+            product,
+            "tablet-500",
+            "card",
+            batchWithoutCardPrice
+        )).toBe(500);
+        expect(makeSalePlan(record, [batchWithoutCardPrice])).toMatchObject({
+            defaultSellingPrice: 500,
+            appliedSellingPrice: 500
+        });
+    });
+
+    it("returns no price when both the selected batch and Product level have no price", () => {
+        const productWithoutCardPrice: productStructure = {
+            ...product,
+            variant: product.variant.map((selectedVariant) => ({
+                ...selectedVariant,
+                packagingHierarchy: selectedVariant.packagingHierarchy.map(
+                    (level) => level.id === "card"
+                        ? { ...level, sellingPrice: null }
+                        : level
+                )
+            }))
+        };
+        const record = makeRecord("no-card-price", "no-card-price-batch", [
+            { packagingLevelId: "box", quantity: 0 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 2 }
+        ]);
+        const batches = [
+            makeBatch("no-card-price-batch", null, [{
+                packagingLevelId: "card",
+                costPrice: null,
+                sellingPrice: null
+            }]),
+            makeBatch("missing-card-price-batch", null, [])
+        ];
+
+        expect(resolveDefaultSellingPrice(
+            productWithoutCardPrice,
+            "tablet-500",
+            "card",
+            batches[0]
+        )).toBeNull();
+        expect(resolveDefaultSellingPrice(
+            productWithoutCardPrice,
+            "tablet-500",
+            "card",
+            batches[1]
+        )).toBeNull();
+        expect(() => prepareSale(
+            makeRequest(record),
+            {
+                products: [productWithoutCardPrice],
+                inventoryRecords: [record],
+                inventoryBatches: [batches[0]]
+            }
+        )).toThrow("A valid default selling price is required");
     });
 
     it("keeps a sale-specific price override separate from stored defaults", () => {
@@ -228,7 +462,30 @@ describe("Sales price resolution", () => {
         expect(plan.defaultSellingPrice).toBe(6000);
         expect(plan.appliedSellingPrice).toBe(6500);
         expect(product.variant[0].packagingHierarchy[0].sellingPrice).toBe(5000);
-        expect(batchWithBoxPrice.receivedPricing?.sellingPrice).toBe(6000);
+        expect(batchWithBoxPrice.pricingByPackagingLevel[0]?.sellingPrice).toBe(6000);
+    });
+
+    it("allows an explicit sale price override when the selected batch price is missing", () => {
+        const batchWithoutCardPrice = makeBatch(
+            "batch-override",
+            new Date("2027-01-31T00:00:00.000Z"),
+            [{ packagingLevelId: "card", costPrice: null, sellingPrice: null }]
+        );
+        const record = makeRecord(
+            "stock-override",
+            batchWithoutCardPrice.batchId,
+            [{ packagingLevelId: "card", quantity: 2 }]
+        );
+        const productBefore = structuredClone(product);
+        const batchBefore = structuredClone(batchWithoutCardPrice);
+        const plan = makeSalePlan(record, [batchWithoutCardPrice], {
+            appliedSellingPrice: 450
+        });
+
+        expect(plan.defaultSellingPrice).toBe(500);
+        expect(plan.appliedSellingPrice).toBe(450);
+        expect(product).toEqual(productBefore);
+        expect(batchWithoutCardPrice).toEqual(batchBefore);
     });
 });
 
@@ -301,7 +558,8 @@ describe("Sales allocation and completion", () => {
             { packagingLevelId: "pack", quantity: 0 },
             { packagingLevelId: "card", quantity: 4 }
         ]);
-        const completion = completeSale(makeSalePlan(record), {
+        const { plan } = makeSaleDraftPlan(record);
+        const completion = completeSale(plan, {
             now: () => new Date("2026-11-06T10:01:00.000Z"),
             makeEventId: () => "event-1"
         });
@@ -310,6 +568,65 @@ describe("Sales allocation and completion", () => {
         expect(completion.sale.finalAmount).toBe(500);
         expect(completion.updatedInventory[0].batchId).toBeNull();
         expect(completion.updatedInventory[0].stockQuantities[2].quantity).toBe(3);
+    });
+
+    it("approves an explicit override for missing batch pricing without changing stored prices", () => {
+        const batch = makeBatch(
+            "override-approval-batch",
+            new Date("2027-01-31T00:00:00.000Z"),
+            [{ packagingLevelId: "card", costPrice: null, sellingPrice: null }]
+        );
+        const record = makeRecord("override-approval-stock", batch.batchId, [
+            { packagingLevelId: "box", quantity: 0 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 3 }
+        ]);
+        const draft = makeDraft([
+            makeDraftItem("override-line", record, {
+                defaultSellingPrice: 500,
+                appliedSellingPrice: 450
+            })
+        ]);
+        const productBefore = structuredClone(product);
+        const batchBefore = structuredClone(batch);
+        const plan = prepareSaleDraft(
+            draft,
+            makeContext([record], [batch]),
+            { now: () => new Date("2026-11-06T10:00:00.000Z") }
+        );
+        const completion = completeSale(plan, {
+            now: () => new Date("2026-11-06T10:01:00.000Z"),
+            makeId: () => "override-sale",
+            makeEventId: () => "override-event"
+        });
+        const state = {
+            ...createInitialApplicationState(),
+            products: [product],
+            inventoryRecords: [record],
+            inventoryBatches: [batch],
+            activityEvents: [],
+            sales: [],
+            saleDrafts: [draft]
+        };
+        const committed = applicationReducer(state, {
+            type: "sale.completed",
+            completion
+        });
+
+        expect(committed.sales[0].items[0]).toMatchObject({
+            defaultSellingPrice: 500,
+            appliedSellingPrice: 450
+        });
+        expect(committed.inventoryRecords[0].stockQuantities[2].quantity).toBe(2);
+        expect(committed.inventoryBatches[0]).toEqual(batchBefore);
+        expect(product).toEqual(productBefore);
+        expect(committed.activityEvents[0]).toMatchObject({
+            type: "sale.completed",
+            items: [expect.objectContaining({
+                defaultSellingPrice: 500,
+                appliedSellingPrice: 450
+            })]
+        });
     });
 
     it("breaks down 10 Boxes into 9 Boxes, 4 Packs, and 4 Cards for a 2-Card sale", () => {
@@ -399,7 +716,7 @@ describe("Sales allocation and completion", () => {
         const batch = makeBatch(
             "priced-batch",
             new Date("2027-01-31T00:00:00.000Z"),
-            { packagingLevelId: "box", sellingPrice: 6000 }
+            [{ packagingLevelId: "box", costPrice: null, sellingPrice: 6000 }]
         );
         const context = makeContext([record], [batch]);
 
@@ -436,11 +753,14 @@ describe("Sales allocation and completion", () => {
             { packagingLevelId: "pack", quantity: 0 },
             { packagingLevelId: "card", quantity: 2 }
         ]);
-        const plan = makeSalePlan(record, [
-            makeBatch("expired", new Date("2026-10-31T00:00:00.000Z"))
-        ]);
+        const { plan } = makeSaleDraftPlan(
+            record,
+            [makeBatch("expired", new Date("2026-10-31T00:00:00.000Z"))],
+            {},
+            { now: () => new Date("2026-11-06T10:00:00.000Z") }
+        );
 
-        expect(plan.expiredBatch).toBe(true);
+        expect(plan.linePlans[0].expiredBatch).toBe(true);
         expect(() => completeSale(plan)).toThrow(
             "Explicit confirmation is required"
         );
@@ -459,19 +779,14 @@ describe("Sales allocation and completion", () => {
             { packagingLevelId: "pack", quantity: 0 },
             { packagingLevelId: "card", quantity: 2 }
         ]);
-        const plan = prepareSale(
-            makeRequest(record),
-            makeContext(
-                [record],
-                [makeBatch("expiring", new Date("2026-11-06T00:00:00.000Z"))]
-            ),
-            {
-                makeId: () => "sale-expiring",
-                now: () => new Date("2026-11-06T10:00:00.000Z")
-            }
+        const { plan } = makeSaleDraftPlan(
+            record,
+            [makeBatch("expiring", new Date("2026-11-06T00:00:00.000Z"))],
+            {},
+            { now: () => new Date("2026-11-06T10:00:00.000Z") }
         );
 
-        expect(plan.expiredBatch).toBe(false);
+        expect(plan.linePlans[0].expiredBatch).toBe(false);
         expect(() => completeSale(plan, {
             now: () => new Date("2026-11-07T00:00:00.000Z")
         })).toThrow("Explicit confirmation is required");
@@ -491,7 +806,7 @@ describe("Sales allocation and completion", () => {
             activityEvents: [],
             sales: []
         };
-        const plan = makeSalePlan(record);
+        const { plan } = makeSaleDraftPlan(record);
 
         expect(initial.inventoryRecords[0]).toBe(record);
         expect(initial.activityEvents).toEqual([]);
@@ -502,14 +817,14 @@ describe("Sales allocation and completion", () => {
         expect(initial.activityEvents).toEqual([]);
     });
 
-    it("commits Inventory, sale record, and self-contained Activity once", () => {
+    it("commits a draft-backed sale and replays it idempotently after approval", () => {
         const record = makeRecord("activity-stock", "batch-a", [
             { packagingLevelId: "box", quantity: 0 },
             { packagingLevelId: "pack", quantity: 0 },
             { packagingLevelId: "card", quantity: 3 }
         ]);
         const batch = makeBatch("batch-a", new Date("2027-01-31T00:00:00.000Z"));
-        const plan = makeSalePlan(record, [batch], {
+        const { draft, plan } = makeSaleDraftPlan(record, [batch], {
             appliedSellingPrice: 450,
             discountAmount: 25,
             customerName: "Customer One",
@@ -527,7 +842,8 @@ describe("Sales allocation and completion", () => {
             inventoryRecords: [record],
             inventoryBatches: [batch],
             activityEvents: [],
-            sales: []
+            sales: [],
+            saleDrafts: [draft]
         };
         const action = {
             type: "sale.completed" as const,
@@ -643,6 +959,11 @@ describe("Sales allocation and completion", () => {
             type: "sale.completed",
             completion
         })).toBe(committed);
+        expect(committed.inventoryRecords.map((record) =>
+            record.stockQuantities.map((stock) => stock.quantity)
+        )).toEqual([[0, 0, 3], [1]]);
+        expect(committed.sales).toHaveLength(1);
+        expect(committed.activityEvents).toHaveLength(1);
     });
 
     it("rejects an expired line without explicit continuation and commits no draft changes", () => {
@@ -724,7 +1045,7 @@ describe("Sales allocation and completion", () => {
         const record = makeRecord("stale-product-stock", null, [
             { packagingLevelId: "card", quantity: 5 }
         ]);
-        const plan = makeSalePlan(record);
+        const { draft, plan } = makeSaleDraftPlan(record);
         const completion = completeSale(plan, {
             makeEventId: () => "stale-product-event"
         });
@@ -735,7 +1056,8 @@ describe("Sales allocation and completion", () => {
             inventoryRecords: [record],
             inventoryBatches: [],
             activityEvents: [],
-            sales: []
+            sales: [],
+            saleDrafts: [draft]
         };
 
         expect(() => applicationReducer(state, {
@@ -798,8 +1120,7 @@ describe("Sales allocation and completion", () => {
         const record = makeRecord("orphaned-operation-stock", null, [
             { packagingLevelId: "card", quantity: 4 }
         ]);
-        const draft = makeDraft([]);
-        const plan = makeSalePlan(record);
+        const { draft, plan } = makeSaleDraftPlan(record);
         const completion = completeSale(plan, {
             makeEventId: () => "orphaned-operation-event"
         });
@@ -830,8 +1151,7 @@ describe("Sales allocation and completion", () => {
         const record = makeRecord("mismatched-operation-stock", null, [
             { packagingLevelId: "card", quantity: 4 }
         ]);
-        const draft = makeDraft([]);
-        const plan = makeSalePlan(record);
+        const { draft, plan } = makeSaleDraftPlan(record);
         const completion = completeSale(plan, {
             makeEventId: () => "mismatched-operation-event"
         });
@@ -870,8 +1190,7 @@ describe("Sales allocation and completion", () => {
         const record = makeRecord("conflicting-operation-stock", null, [
             { packagingLevelId: "card", quantity: 4 }
         ]);
-        const draft = makeDraft([]);
-        const plan = makeSalePlan(record);
+        const { draft, plan } = makeSaleDraftPlan(record);
         const completion = completeSale(plan, {
             makeEventId: () => "conflicting-operation-event"
         });
@@ -912,7 +1231,7 @@ describe("Sales allocation and completion", () => {
             { packagingLevelId: "pack", quantity: 0 },
             { packagingLevelId: "card", quantity: 3 }
         ]);
-        const plan = makeSalePlan(record);
+        const { draft, plan } = makeSaleDraftPlan(record);
         const changedRecord = {
             ...record,
             stockQuantities: [
@@ -926,7 +1245,8 @@ describe("Sales allocation and completion", () => {
             inventoryRecords: [changedRecord],
             inventoryBatches: [],
             activityEvents: [],
-            sales: []
+            sales: [],
+            saleDrafts: [draft]
         };
         const completion = completeSale(plan, {
             now: () => new Date("2026-11-06T10:01:00.000Z"),
@@ -952,7 +1272,7 @@ describe("Sales allocation and completion", () => {
             "batch-stale",
             new Date("2027-01-31T00:00:00.000Z")
         );
-        const plan = makeSalePlan(record, [originalBatch]);
+        const { draft, plan } = makeSaleDraftPlan(record, [originalBatch]);
         const changedBatch = {
             ...originalBatch,
             expiryDate: new Date("2027-02-28T00:00:00.000Z")
@@ -963,7 +1283,8 @@ describe("Sales allocation and completion", () => {
             inventoryRecords: [record],
             inventoryBatches: [changedBatch],
             activityEvents: [],
-            sales: []
+            sales: [],
+            saleDrafts: [draft]
         };
         const completion = completeSale(plan, {
             now: () => new Date("2026-11-06T10:01:00.000Z"),
@@ -977,5 +1298,251 @@ describe("Sales allocation and completion", () => {
         expect(state.inventoryRecords[0]).toBe(record);
         expect(state.activityEvents).toEqual([]);
         expect(state.sales).toEqual([]);
+    });
+
+    it("rejects a stale batch selling price atomically at approval", () => {
+        const originalBatch = makeBatch(
+            "stale-price-batch",
+            new Date("2027-01-31T00:00:00.000Z"),
+            [{ packagingLevelId: "card", costPrice: null, sellingPrice: 600 }]
+        );
+        const record = makeRecord("stale-price-stock", originalBatch.batchId, [
+            { packagingLevelId: "box", quantity: 0 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 3 }
+        ]);
+        const { draft, plan } = makeSaleDraftPlan(record, [originalBatch]);
+        const changedBatch = {
+            ...originalBatch,
+            pricingByPackagingLevel: [{
+                packagingLevelId: "card",
+                costPrice: null,
+                sellingPrice: 700
+            }]
+        };
+        const state = {
+            ...createInitialApplicationState(),
+            products: [product],
+            inventoryRecords: [record],
+            inventoryBatches: [changedBatch],
+            activityEvents: [],
+            sales: [],
+            saleDrafts: [draft]
+        };
+        const before = structuredClone(state);
+        const completion = completeSale(plan, {
+            now: () => new Date("2026-11-06T10:01:00.000Z"),
+            makeEventId: () => "stale-price-event"
+        });
+
+        expect(() => applicationReducer(state, {
+            type: "sale.completed",
+            completion
+        })).toThrow("Batch information changed after the sale was prepared");
+        expect(state).toEqual(before);
+    });
+
+    it("rejects a tampered batch pricing snapshot atomically at approval", () => {
+        const batch = makeBatch(
+            "tampered-batch-price",
+            new Date("2027-01-31T00:00:00.000Z"),
+            [{ packagingLevelId: "card", costPrice: null, sellingPrice: 600 }]
+        );
+        const record = makeRecord("tampered-batch-stock", batch.batchId, [
+            { packagingLevelId: "box", quantity: 0 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 3 }
+        ]);
+        const { draft, plan } = makeSaleDraftPlan(record, [batch]);
+        const completion = completeSale(plan, {
+            now: () => new Date("2026-11-06T10:01:00.000Z"),
+            makeId: () => "tampered-batch-sale",
+            makeEventId: () => "tampered-batch-event"
+        });
+        const saleItem = completion.sale.items[0];
+        if (saleItem.batch === null) {
+            throw new Error("Expected the sale item to contain a batch snapshot.");
+        }
+        const tamperedBatch = {
+            ...saleItem.batch,
+            pricingByPackagingLevel: saleItem.batch.pricingByPackagingLevel.map(
+                (pricing) => pricing.packagingLevelId === "card"
+                    ? { ...pricing, sellingPrice: 700 }
+                    : pricing
+            )
+        };
+        const sale = {
+            ...completion.sale,
+            items: [{ ...saleItem, batch: tamperedBatch }]
+        };
+        const event = completion.events[0];
+        if (event.type !== "sale.completed") {
+            throw new Error("Expected sale completion Activity.");
+        }
+        const tamperedEvent = {
+            ...event,
+            items: event.items.map((item) => ({
+                ...item,
+                allocations: item.allocations.map((allocation) => ({
+                    ...allocation,
+                    batch: tamperedBatch
+                }))
+            }))
+        };
+        const tamperedCompletion = {
+            ...completion,
+            sale,
+            events: [tamperedEvent]
+        };
+        const state = {
+            ...createInitialApplicationState(),
+            products: [product],
+            inventoryRecords: [record],
+            inventoryBatches: [batch],
+            activityEvents: [],
+            sales: [],
+            saleDrafts: [draft]
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, {
+            type: "sale.completed",
+            completion: tamperedCompletion
+        })).toThrow("Batch information changed after the sale was prepared");
+        expect(state).toEqual(before);
+    });
+
+    it("rejects a coherently priced completion without draft evidence atomically", () => {
+        const record = makeRecord("draftless-price-stock", null, [
+            { packagingLevelId: "box", quantity: 0 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 3 }
+        ]);
+        const { draft, plan } = makeSaleDraftPlan(record);
+        const completion = completeSale(plan, {
+            now: () => new Date("2026-11-06T10:01:00.000Z"),
+            makeId: () => "draftless-price-sale",
+            makeEventId: () => "draftless-price-event"
+        });
+        const tamperedPrice = 900;
+        const originalItem = completion.sale.items[0];
+        const sale = {
+            ...completion.sale,
+            items: [{
+                ...originalItem,
+                appliedSellingPrice: tamperedPrice,
+                subtotal: tamperedPrice,
+                finalAmount: tamperedPrice
+            }],
+            subtotal: tamperedPrice,
+            finalAmount: tamperedPrice
+        };
+        const event = completion.events[0];
+        if (event.type !== "sale.completed") {
+            throw new Error("Expected sale completion Activity.");
+        }
+        const tamperedEvent = {
+            ...event,
+            subtotal: tamperedPrice,
+            finalAmount: tamperedPrice,
+            items: event.items.map((item) => ({
+                ...item,
+                appliedSellingPrice: tamperedPrice,
+                subtotal: tamperedPrice,
+                finalAmount: tamperedPrice
+            }))
+        };
+        const draftlessCompletion = {
+            ...completion,
+            sale,
+            events: [tamperedEvent]
+        };
+        expect(Reflect.deleteProperty(draftlessCompletion, "draftId")).toBe(true);
+        expect(Reflect.deleteProperty(draftlessCompletion, "expectedDraft")).toBe(true);
+        const state = {
+            ...createInitialApplicationState(),
+            products: [product],
+            inventoryRecords: [record],
+            inventoryBatches: [],
+            activityEvents: [],
+            sales: [],
+            saleDrafts: [draft]
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, {
+            type: "sale.completed",
+            completion: draftlessCompletion
+        })).toThrow("Sale completion requires an active draft snapshot");
+        expect(state).toEqual(before);
+    });
+
+    it("rejects a coherently tampered applied price against the active draft atomically", () => {
+        const record = makeRecord("tampered-price-stock", null, [
+            { packagingLevelId: "box", quantity: 0 },
+            { packagingLevelId: "pack", quantity: 0 },
+            { packagingLevelId: "card", quantity: 3 }
+        ]);
+        const draft = makeDraft([
+            makeDraftItem("tampered-price-line", record)
+        ]);
+        const plan = prepareSaleDraft(draft, makeContext([record], []), {
+            now: () => new Date("2026-11-06T10:00:00.000Z")
+        });
+        const completion = completeSale(plan, {
+            now: () => new Date("2026-11-06T10:01:00.000Z"),
+            makeId: () => "tampered-price-sale",
+            makeEventId: () => "tampered-price-event"
+        });
+        const tamperedPrice = 900;
+        const originalItem = completion.sale.items[0];
+        const tamperedItem = {
+            ...originalItem,
+            appliedSellingPrice: tamperedPrice,
+            subtotal: tamperedPrice,
+            finalAmount: tamperedPrice
+        };
+        const sale = {
+            ...completion.sale,
+            items: [tamperedItem],
+            subtotal: tamperedPrice,
+            finalAmount: tamperedPrice
+        };
+        const event = completion.events[0];
+        if (event.type !== "sale.completed") {
+            throw new Error("Expected sale completion Activity.");
+        }
+        const tamperedEvent = {
+            ...event,
+            subtotal: tamperedPrice,
+            finalAmount: tamperedPrice,
+            items: event.items.map((item) => ({
+                ...item,
+                appliedSellingPrice: tamperedPrice,
+                subtotal: tamperedPrice,
+                finalAmount: tamperedPrice
+            }))
+        };
+        const tamperedCompletion = {
+            ...completion,
+            sale,
+            events: [tamperedEvent]
+        };
+        const state = {
+            ...createInitialApplicationState(),
+            products: [product],
+            inventoryRecords: [record],
+            inventoryBatches: [],
+            activityEvents: [],
+            sales: [],
+            saleDrafts: [draft]
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, {
+            type: "sale.completed",
+            completion: tamperedCompletion
+        })).toThrow("Sale draft changed after approval was prepared");
+        expect(state).toEqual(before);
     });
 });

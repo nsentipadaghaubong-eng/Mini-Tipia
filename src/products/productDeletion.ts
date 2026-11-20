@@ -7,9 +7,13 @@ import {
 } from "../activity/activity";
 import type { inventory } from "../inventory/inventoryStock";
 import type { inventoryBatch } from "../inventory/inventoryBatch";
-import { removePackagingLevelFromHierarchy } from "../packaging/packagingValidation";
-import type { productStructure } from "./productStructure";
+import {
+    getLowestPackagingLevel,
+    removePackagingLevelFromHierarchy
+} from "../packaging/packagingValidation";
+import type { productStructure, variant } from "./productStructure";
 import { getProductDraftLockMessages } from "./productDraftLock";
+import { validateVariantLowStockThreshold } from "./productValidation";
 
 export type ProductRecordDeletionTarget =
     | {
@@ -56,6 +60,56 @@ export interface ProductRecordDeletionPlan {
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
     events: ActivityEventInput[];
+}
+
+export function getPackagingLevelThresholdDeletionBlockMessage(
+    selectedVariant: variant,
+    packagingLevelId: string
+): string | null {
+    const threshold = selectedVariant.lowStockThreshold;
+    if (threshold === undefined) {
+        return null;
+    }
+
+    const thresholdPackagingLevelId =
+        threshold.packagingLevelId ??
+        getLowestPackagingLevel(selectedVariant.packagingHierarchy).id;
+    return thresholdPackagingLevelId === packagingLevelId
+        ? "This packaging level is currently used by the variant's low-stock threshold. Change and save the threshold to another existing packaging level before deleting it."
+        : null;
+}
+
+export function getProductPackagingThresholdRemovalBlockMessage(
+    previousProduct: productStructure,
+    updatedProduct: productStructure
+): string | null {
+    for (const previousVariant of previousProduct.variant) {
+        const updatedVariant = updatedProduct.variant.find(
+            (candidate) => candidate.id === previousVariant.id
+        );
+        if (!updatedVariant) {
+            continue;
+        }
+
+        const updatedPackagingIds = new Set(
+            updatedVariant.packagingHierarchy.map((level) => level.id)
+        );
+        for (const previousLevel of previousVariant.packagingHierarchy) {
+            if (updatedPackagingIds.has(previousLevel.id)) {
+                continue;
+            }
+            const blockMessage =
+                getPackagingLevelThresholdDeletionBlockMessage(
+                    previousVariant,
+                    previousLevel.id
+                );
+            if (blockMessage !== null) {
+                return blockMessage;
+            }
+        }
+    }
+
+    return null;
 }
 
 export function getProductRecordDeletionBlockMessages(
@@ -146,6 +200,14 @@ export function prepareProductRecordDeletionPlan(
         if (levels.length !== 1) {
             throw new Error(`Packaging level not found: ${deletion.packagingLevelId}`);
         }
+        const thresholdBlockMessage =
+            getPackagingLevelThresholdDeletionBlockMessage(
+                productVariant,
+                deletion.packagingLevelId
+            );
+        if (thresholdBlockMessage !== null) {
+            throw new Error(thresholdBlockMessage);
+        }
         const nextHierarchy = removePackagingLevelFromHierarchy(
             productVariant.packagingHierarchy,
             deletion.packagingLevelId
@@ -185,6 +247,24 @@ export function prepareProductRecordDeletionPlan(
                 ? [{ ...record, stockQuantities }]
                 : [];
         });
+        inventoryBatches = inventoryBatches.map((batch) =>
+            batch.productId !== product.id ||
+            batch.variantId !== deletion.variantId
+                ? batch
+                : {
+                    ...batch,
+                    pricingByPackagingLevel:
+                        batch.pricingByPackagingLevel.filter(
+                            (pricing) =>
+                                pricing.packagingLevelId !==
+                                deletion.packagingLevelId
+                        )
+                }
+        );
+    }
+
+    for (const productVariant of product.variant) {
+        validateVariantLowStockThreshold(productVariant);
     }
 
     return { product, inventoryRecords, inventoryBatches, events };

@@ -1,8 +1,13 @@
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import type { inventory } from "../inventory/inventoryStock";
 import type { inventoryBatch } from "../inventory/inventoryBatch";
-import type { productStructure, variant } from "./productStructure";
+import type {
+    LowStockThreshold,
+    productStructure,
+    variant
+} from "./productStructure";
 import { validatePackagingHierarchy } from "../packaging/packagingValidation";
+import { hasAtMostTwoDecimalPlaces } from "../pricing/pricePrecision";
 
 export interface PackagingCreationDraft {
     key: string;
@@ -25,6 +30,8 @@ export interface VariantCreationDraft {
     key: string;
     name: string;
     nafdacRegistrationNumber: string;
+    lowStockThresholdQuantity: string;
+    lowStockThresholdPackagingLevelId: string;
     packaging: PackagingCreationDraft[];
     batches: BatchCreationDraft[];
     unbatchedStock: StockCreationDraft;
@@ -44,6 +51,8 @@ export function createEmptyVariantCreationDraft(): VariantCreationDraft {
         key: crypto.randomUUID(),
         name: "",
         nafdacRegistrationNumber: "",
+        lowStockThresholdQuantity: "",
+        lowStockThresholdPackagingLevelId: "",
         packaging: [],
         batches: [],
         unbatchedStock: {}
@@ -72,7 +81,11 @@ function parsePrice(value: string): number | null | undefined {
     }
 
     const parsed = Number(trimmed);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+    return Number.isFinite(parsed) &&
+        parsed >= 0 &&
+        hasAtMostTwoDecimalPlaces(parsed)
+        ? parsed
+        : undefined;
 }
 
 function parseQuantity(value: string): number | undefined {
@@ -134,6 +147,36 @@ export function validateProductCreationDraft(
         if (draft.addVariants && productVariant.name.trim() === "") {
             errors[`${prefix}.name`] = "Enter a name or description.";
         }
+        const requiresLowStockThreshold =
+            draft.addVariants || productVariant.packaging.length > 0;
+        const lowStockThreshold =
+            (productVariant.lowStockThresholdQuantity ?? "").trim();
+        if (
+            requiresLowStockThreshold &&
+            (
+                lowStockThreshold === "" ||
+                !Number.isSafeInteger(Number(lowStockThreshold)) ||
+                Number(lowStockThreshold) < 0
+            )
+        ) {
+            errors[`${prefix}.lowStockThresholdQuantity`] =
+                "Enter a non-negative whole-number low-stock threshold.";
+        }
+        if (draft.addVariants && productVariant.packaging.length === 0) {
+            errors[`${prefix}.packaging`] =
+                "Add a packaging level to configure the low-stock threshold.";
+        }
+        if (
+            (productVariant.lowStockThresholdPackagingLevelId ?? "") !== "" &&
+            !productVariant.packaging.some(
+                (level) =>
+                    level.key ===
+                    productVariant.lowStockThresholdPackagingLevelId
+            )
+        ) {
+            errors[`${prefix}.lowStockThresholdPackagingLevelId`] =
+                "Select a valid threshold packaging level.";
+        }
 
         productVariant.packaging.forEach((level, levelIndex) => {
             const levelPrefix = `${prefix}.packaging.${levelIndex}`;
@@ -156,7 +199,7 @@ export function validateProductCreationDraft(
             for (const priceField of ["costPrice", "sellingPrice"] as const) {
                 if (parsePrice(level[priceField]) === undefined) {
                     errors[`${levelPrefix}.${priceField}`] =
-                        "Enter a non-negative price.";
+                        "Enter a non-negative price with at most two decimal places.";
                 }
             }
         });
@@ -245,6 +288,30 @@ function createCatalogueVariant(
             nextLevelId: packagingIds[levelIndex + 1] ?? null
         }));
     validatePackagingHierarchy(packagingHierarchy);
+    let lowStockThreshold: LowStockThreshold | undefined;
+    if (packagingHierarchy.length > 0) {
+        const thresholdPackagingIndex =
+            (variantDraft.lowStockThresholdPackagingLevelId ?? "") === ""
+                ? packagingHierarchy.length - 1
+                : variantDraft.packaging.findIndex(
+                    (level) =>
+                        level.key ===
+                        variantDraft.lowStockThresholdPackagingLevelId
+                );
+        if (thresholdPackagingIndex < 0) {
+            throw new Error("Select a valid threshold packaging level.");
+        }
+        lowStockThreshold = {
+            quantity: Number(variantDraft.lowStockThresholdQuantity),
+            ...(thresholdPackagingIndex === packagingHierarchy.length - 1 &&
+                (variantDraft.lowStockThresholdPackagingLevelId ?? "") === ""
+                ? {}
+                : {
+                    packagingLevelId:
+                        packagingHierarchy[thresholdPackagingIndex].id
+                })
+        };
+    }
 
     return {
         id: variantId,
@@ -255,7 +322,8 @@ function createCatalogueVariant(
                     variantDraft.nafdacRegistrationNumber.trim()
             }
             : {}),
-        packagingHierarchy
+        packagingHierarchy,
+        ...(lowStockThreshold ? { lowStockThreshold } : {})
     };
 }
 
@@ -299,7 +367,8 @@ function buildProductFromDraft(
                 batchNumber: batchDraft.batchNumber.trim() || null,
                 expiryDate: batchDraft.expiryDate.trim() === ""
                     ? null
-                    : validDate(batchDraft.expiryDate) ?? null
+                    : validDate(batchDraft.expiryDate) ?? null,
+                pricingByPackagingLevel: []
             }))
             : [];
         inventoryBatches.push(...batches);

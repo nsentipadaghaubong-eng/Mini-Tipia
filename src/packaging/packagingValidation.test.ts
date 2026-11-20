@@ -72,6 +72,18 @@ describe("packaging hierarchy authority and integrity", () => {
     });
 
     it.each([
+        ["cost", { ...pack, costPrice: 1.005 }],
+        ["selling", { ...pack, sellingPrice: 1.005 }]
+    ] as const)("rejects packaging %s prices with excess precision", (
+        _label,
+        level
+    ) => {
+        expect(() => validatePackagingHierarchy([level])).toThrow(
+            "Invalid"
+        );
+    });
+
+    it.each([
         ["duplicate IDs", [box, { ...pack, id: "box" }]],
         ["broken links", [box, { ...pack, id: "other" }]],
         ["circular links", [

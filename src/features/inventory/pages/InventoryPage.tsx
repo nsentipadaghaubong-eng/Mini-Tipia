@@ -2,6 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 import { getAllInventoryDisplay } from "../../../inventory/inventoryLookup";
 import { aggregateVariantStock } from "../../../inventory/inventoryAggregation";
+import {
+    getVariantLowStockStatus,
+    type VariantLowStockStatus
+} from "../../../inventory/lowStock";
 import { getStockQuantity } from "../../../inventory/inventoryStock";
 import { createInventory } from "../../../inventory/inventoryStock";
 import { validateInventoryPackagingRelationships } from "../../../inventory/inventoryValidation";
@@ -59,6 +63,7 @@ interface VariantGroup {
     variantName: string;
     records: inventoryDisplay[];
     aggregatedStock: aggregatedVariantStock;
+    lowStockStatus?: VariantLowStockStatus;
 }
 
 interface ProductGroup {
@@ -66,6 +71,15 @@ interface ProductGroup {
     productName: string;
     records: inventoryDisplay[];
     variants: VariantGroup[];
+}
+
+type StockFilter = "all" | "in-stock" | "low-stock" | "out-of-stock";
+
+function isStockFilter(value: string): value is StockFilter {
+    return value === "all" ||
+        value === "in-stock" ||
+        value === "low-stock" ||
+        value === "out-of-stock";
 }
 
 function groupInventoryRecords(
@@ -168,6 +182,21 @@ function describeStockGrouping(records: inventoryDisplay[], batchCount: number):
     return `Across ${batchCount} ${batchCount === 1 ? "batch" : "batches"}`;
 }
 
+function describeVariantStockStatus(
+    status: VariantLowStockStatus | undefined
+): string {
+    if (status && !status.hasStock) {
+        return "Out of stock";
+    }
+    if (!status?.thresholdConfigured) {
+        return "Threshold not configured";
+    }
+    if (status.isLowStock) {
+        return "Low stock";
+    }
+    return "In stock";
+}
+
 export default function InventoryPage({
     inventoryRecords: inventoryState,
     inventoryBatches: inventoryBatchesState,
@@ -181,6 +210,7 @@ export default function InventoryPage({
     deliveryDrafts = []
 }: InventoryPageProps) {
     const [searchTerm, setSearchTerm] = useState("");
+    const [stockFilter, setStockFilter] = useState<StockFilter>("all");
 
     const [selectedProductId, setSelectedProductId] =
         useState<string | null>(null);
@@ -239,10 +269,25 @@ export default function InventoryPage({
             };
             productGroups.push(group);
         }
-        group.variants = product.variant.map((productVariant) =>
-            group?.variants.find((candidate) => candidate.variantId === productVariant.id) ??
-            createEmptyVariantGroup(product, productVariant, inventoryBatchesState)
-        );
+        const currentGroup = group;
+        group.variants = product.variant.map((productVariant) => {
+            const variantGroup =
+                currentGroup.variants.find(
+                    (candidate) => candidate.variantId === productVariant.id
+                ) ??
+                createEmptyVariantGroup(
+                    product,
+                    productVariant,
+                    inventoryBatchesState
+                );
+            return {
+                ...variantGroup,
+                lowStockStatus: getVariantLowStockStatus(
+                    productVariant,
+                    variantGroup.aggregatedStock
+                )
+            };
+        });
     }
 
     const inventoryNavigationIntent =
@@ -282,6 +327,22 @@ export default function InventoryPage({
                 .toLowerCase()
                 .includes(normalizedSearch)
             )
+    ).filter((product) => stockFilter === "all" ||
+        product.variants.some((variant) => {
+            const status = variant.lowStockStatus;
+            if (!status) {
+                return false;
+            }
+            if (stockFilter === "in-stock") {
+                return status.hasStock;
+            }
+            if (stockFilter === "low-stock") {
+                return status.hasStock &&
+                    status.thresholdConfigured &&
+                    status.isLowStock;
+            }
+            return !status.hasStock;
+        })
     );
 
     const selectedProduct = productGroups.find(
@@ -561,7 +622,8 @@ export default function InventoryPage({
                 batchNumber: newBatch.batchNumber,
                 expiryDate: newBatch.expiryDate === null
                     ? null
-                    : new Date(newBatch.expiryDate)
+                    : new Date(newBatch.expiryDate),
+                pricingByPackagingLevel: []
             };
             const record = createInventory(
                 productId,
@@ -834,7 +896,15 @@ export default function InventoryPage({
                     Filter by stock level
                 </label>
 
-                <select id="stock-filter" defaultValue="all">
+                <select
+                    id="stock-filter"
+                    onChange={(event) => {
+                        if (isStockFilter(event.target.value)) {
+                            setStockFilter(event.target.value);
+                        }
+                    }}
+                    value={stockFilter}
+                >
                     <option value="all">All stock</option>
                     <option value="in-stock">In stock</option>
                     <option value="low-stock">Low stock</option>
@@ -891,6 +961,18 @@ export default function InventoryPage({
                                                 ? "batch"
                                                 : "batches"}
                                         </p>
+                                        <ul className="product-card-stock-status">
+                                            {product.variants.map((variant) => (
+                                                <li key={variant.variantId}>
+                                                    <span>{variant.variantName}</span>
+                                                    <strong>
+                                                        {describeVariantStockStatus(
+                                                            variant.lowStockStatus
+                                                        )}
+                                                    </strong>
+                                                </li>
+                                            ))}
+                                        </ul>
                                     </div>
                                 </div>
 
@@ -1020,6 +1102,11 @@ export default function InventoryPage({
                                                         {describeStockGrouping(
                                                             variant.records,
                                                             variant.aggregatedStock.batchCount
+                                                        )}
+                                                    </p>
+                                                    <p className="variant-stock-status">
+                                                        {describeVariantStockStatus(
+                                                            variant.lowStockStatus
                                                         )}
                                                     </p>
 

@@ -21,14 +21,33 @@ import {
     createInitialApplicationState
 } from "./applicationState";
 import type { ApplicationState } from "./applicationState";
+import type { productStructure } from "./products/productStructure";
+import { adjustInventoryStock } from "./inventory/inventoryAdjustment";
+import { aggregateVariantStock } from "./inventory/inventoryAggregation";
+import { getAllInventoryDisplay } from "./inventory/inventoryLookup";
+import { getVariantLowStockStatus } from "./inventory/lowStock";
 import {
     prepareProductRecordDeletionPlan,
     type ProductRecordDeletionRequest
 } from "./products/productDeletion";
-import type { SaleDraft } from "./sales/salesDraft";
-import type { DeliveryDraft } from "./deliveries/deliveryDraft";
+import {
+    addSaleDraftItem,
+    createSaleDraft,
+    type SaleDraft
+} from "./sales/salesDraft";
+import {
+    addDeliveryDraftItem,
+    createDeliveryDraft,
+    type DeliveryDraft
+} from "./deliveries/deliveryDraft";
+import { prepareDeliveryApproval } from "./deliveries/deliveryApproval";
 import { removePackagingLevelFromHierarchy } from "./packaging/packagingValidation";
 import type { CompletedSale } from "./sales/salesEngine";
+import {
+    completeSale,
+    prepareSaleDraft,
+    resolveDefaultSellingPrice
+} from "./sales/salesEngine";
 import { getProductRecordDeletionBlockMessages } from "./products/productDeletion";
 import { createProductFromDraft } from "./products/productCreation";
 import {
@@ -50,6 +69,8 @@ function createProductResult() {
             key: "variant-draft",
             name: "",
             nafdacRegistrationNumber: "REG-1",
+            lowStockThresholdQuantity: "2",
+            lowStockThresholdPackagingLevelId: "",
             packaging: [{
                 key: "box-draft",
                 name: "Box",
@@ -65,6 +86,25 @@ function createProductResult() {
             unbatchedStock: {}
         }]
     });
+}
+
+function createApplicationStateWithConfiguredThresholds() {
+    const state = createInitialApplicationState();
+    return {
+        ...state,
+        products: state.products.map((product) => ({
+            ...product,
+            variant: product.variant.map((productVariant) =>
+                productVariant.packagingHierarchy.length > 0 &&
+                productVariant.lowStockThreshold === undefined
+                    ? {
+                        ...productVariant,
+                        lowStockThreshold: { quantity: 0 }
+                    }
+                    : productVariant
+            )
+        }))
+    };
 }
 
 function makeProductCreationAction(
@@ -110,7 +150,7 @@ function makeCatalogueCreationAction(
 }
 
 function makeCommittedProductUpdate() {
-    const state = createInitialApplicationState();
+    const state = createApplicationStateWithConfiguredThresholds();
     const product = state.products[0];
     if (!product) {
         throw new Error("Product update fixture requires a product.");
@@ -288,6 +328,159 @@ function makeProductDeletionState(): ApplicationState {
     };
 }
 
+function makeThresholdDeletionState() {
+    const state = makeProductDeletionState();
+    const product = state.products[0];
+    const productVariant = product?.variant[0];
+    const box = productVariant?.packagingHierarchy[0];
+    if (!product || !productVariant || !box) {
+        throw new Error("Threshold deletion fixture requires a packaged variant.");
+    }
+
+    const packId = `${productVariant.id}-pack-level`;
+    const cardId = `${productVariant.id}-card-level`;
+    const packagingHierarchy = [{
+        ...box,
+        name: "Box",
+        quantityofNextLevel: 10,
+        nextLevelId: packId
+    }, {
+        id: packId,
+        name: "Pack",
+        costPrice: null,
+        sellingPrice: 3,
+        quantityofNextLevel: 6,
+        nextLevelId: cardId
+    }, {
+        id: cardId,
+        name: "Card",
+        costPrice: null,
+        sellingPrice: 1,
+        quantityofNextLevel: null,
+        nextLevelId: null
+    }];
+    const thresholdVariant = {
+        ...productVariant,
+        lowStockThreshold: {
+            quantity: 2,
+            packagingLevelId: box.id
+        },
+        packagingHierarchy
+    };
+    const thresholdProduct = {
+        ...product,
+        variant: product.variant.map((candidate) =>
+            candidate.id === productVariant.id ? thresholdVariant : candidate
+        )
+    };
+
+    return {
+        state: { ...state, products: [thresholdProduct] },
+        product: thresholdProduct,
+        productVariant: thresholdVariant,
+        boxId: box.id,
+        packId,
+        cardId
+    };
+}
+
+function makeLegacyPackagingRemovalAction(
+    state: ApplicationState,
+    product: ApplicationState["products"][number],
+    variantId: string,
+    packagingLevelId: string,
+    operationId: string,
+    reason: string
+) {
+    const productVariant = product.variant.find(
+        (candidate) => candidate.id === variantId
+    );
+    const packagingLevel = productVariant?.packagingHierarchy.find(
+        (level) => level.id === packagingLevelId
+    );
+    if (!productVariant || !packagingLevel) {
+        throw new Error("Packaging removal fixture requires a matching level.");
+    }
+
+    const nextHierarchy = removePackagingLevelFromHierarchy(
+        productVariant.packagingHierarchy,
+        packagingLevelId
+    );
+    return {
+        type: "product.packaging_removed" as const,
+        product,
+        variantId,
+        packagingLevelId,
+        inventoryRecords: state.inventoryRecords.flatMap((record) => {
+            if (
+                record.productId !== product.id ||
+                record.variantId !== variantId ||
+                !record.stockQuantities.some(
+                    (stock) => stock.packagingLevelId === packagingLevelId
+                )
+            ) {
+                return [record];
+            }
+            const stockQuantities = record.stockQuantities.filter(
+                (stock) => stock.packagingLevelId !== packagingLevelId
+            );
+            return stockQuantities.length > 0
+                ? [{ ...record, stockQuantities }]
+                : [];
+        }),
+        inventoryBatches: state.inventoryBatches.map((batch) =>
+            batch.productId !== product.id ||
+            batch.variantId !== variantId
+                ? batch
+                : {
+                    ...batch,
+                    pricingByPackagingLevel:
+                        batch.pricingByPackagingLevel.filter(
+                            (pricing) =>
+                                pricing.packagingLevelId !== packagingLevelId
+                        )
+                }
+        ),
+        events: prepareActivityEvents([buildPackagingRemovalActivityInput(
+            operationId,
+            product,
+            productVariant,
+            packagingLevel,
+            nextHierarchy,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            reason
+        )])
+    };
+}
+
+function makeProductUpdateAction(
+    state: ApplicationState,
+    updatedProduct: ApplicationState["products"][number],
+    operationKey: string,
+    reason: string
+) {
+    const previousProduct = state.products.find(
+        (product) => product.id === updatedProduct.id
+    );
+    if (!previousProduct) {
+        throw new Error("Product update fixture requires a current product.");
+    }
+    return {
+        type: "product.updated" as const,
+        product: updatedProduct,
+        events: prepareActivityEvents(buildProductUpdateActivityInputs(
+            previousProduct,
+            updatedProduct,
+            state.inventoryRecords,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            operationKey,
+            reason
+        ))
+    };
+}
+
 function makeProductDeletionAction(state: ApplicationState) {
     const product = state.products[0];
     if (!product) {
@@ -332,6 +525,79 @@ function makeSalesDraft(productId: string): SaleDraft {
     };
 }
 
+function makeCommittedSaleReplay() {
+    const result = createProductResult();
+    const productVariant = result.product.variant[0];
+    const packagingLevel = productVariant?.packagingHierarchy[0];
+    const inventoryRecord = result.inventoryRecords[0];
+    if (!productVariant || !packagingLevel || !inventoryRecord) {
+        throw new Error("Sale replay fixture requires product inventory.");
+    }
+    const batch = result.inventoryBatches.find(
+        (candidate) => candidate.batchId === inventoryRecord.batchId
+    ) ?? null;
+    const defaultSellingPrice = resolveDefaultSellingPrice(
+        result.product,
+        productVariant.id,
+        packagingLevel.id,
+        batch
+    );
+    const appliedSellingPrice =
+        defaultSellingPrice ?? packagingLevel.sellingPrice;
+    if (appliedSellingPrice === null) {
+        throw new Error("Sale replay fixture requires a selling price.");
+    }
+    const createdAt = "2026-03-04T05:06:07.000Z";
+    const updatedAt = "2026-03-04T05:06:08.000Z";
+    const draft = addSaleDraftItem(
+        createSaleDraft({
+            makeId: () => "sale-replay-draft",
+            now: () => new Date(createdAt)
+        }),
+        {
+            lineId: "sale-replay-line",
+            productId: result.product.id,
+            variantId: productVariant.id,
+            inventoryRecordId: inventoryRecord.id,
+            batchId: inventoryRecord.batchId,
+            packagingLevelId: packagingLevel.id,
+            quantity: 1,
+            defaultSellingPrice,
+            appliedSellingPrice,
+            discountAmount: 0
+        },
+        updatedAt
+    );
+    const state: ApplicationState = {
+        ...createInitialApplicationState(),
+        products: [result.product],
+        inventoryRecords: result.inventoryRecords,
+        inventoryBatches: result.inventoryBatches,
+        activityEvents: [],
+        sales: [],
+        saleDrafts: [draft]
+    };
+    const plan = prepareSaleDraft(draft, {
+        products: state.products,
+        inventoryRecords: state.inventoryRecords,
+        inventoryBatches: state.inventoryBatches
+    }, {
+        now: () => new Date(updatedAt)
+    });
+    const completion = completeSale(plan, {
+        now: () => new Date("2026-03-04T05:06:09.000Z"),
+        makeId: () => "sale-replay-sale",
+        makeEventId: () => "sale-replay-event"
+    });
+    const action = {
+        type: "sale.completed" as const,
+        completion
+    };
+    const committed = applicationReducer(state, action);
+
+    return { state, action, committed };
+}
+
 function makeDeliveryDraft(
     productId: string,
     status: DeliveryDraft["status"] = "draft"
@@ -350,12 +616,752 @@ function makeDeliveryDraft(
             packagingLevelId: "packaging-draft",
             quantity: 3,
             batchNumber: "DELIVERY-LOT",
-            expiryDate: "2027-01-01"
+            expiryDate: "2027-01-01",
+            costPrice: null,
+            sellingPrice: null
         }]
     };
 }
 
 describe("application-level Activity state", () => {
+    it("preserves batch pricing and Product defaults during a stock-only adjustment", () => {
+        const initial = createInitialApplicationState();
+        const record = initial.inventoryRecords[0];
+        if (!record || record.batchId === null) {
+            throw new Error("Stock adjustment fixture requires a batched record.");
+        }
+        const product = initial.products.find(
+            (candidate) => candidate.id === record.productId
+        );
+        const productVariant = product?.variant.find(
+            (candidate) => candidate.id === record.variantId
+        );
+        if (!product || !productVariant || productVariant.packagingHierarchy.length < 2) {
+            throw new Error("Stock adjustment fixture requires a multi-level product.");
+        }
+        const batch = initial.inventoryBatches.find(
+            (candidate) => candidate.batchId === record.batchId
+        );
+        if (!batch) {
+            throw new Error("Stock adjustment fixture requires a batch.");
+        }
+
+        const pricingByPackagingLevel = productVariant.packagingHierarchy.map(
+            (level, index) => ({
+                packagingLevelId: level.id,
+                costPrice: index === 1 ? null : 20 + index,
+                sellingPrice: index === 0 ? null : 40 + index
+            })
+        );
+        const pricedBatch = { ...batch, pricingByPackagingLevel };
+        const productRecords = initial.inventoryRecords.filter(
+            (candidate) => candidate.productId === product.id
+        );
+        const productBatches = initial.inventoryBatches.filter(
+            (candidate) => candidate.productId === product.id
+        );
+        if (productRecords.length < 2 || productBatches.length < 2) {
+            throw new Error("Stock adjustment fixture requires unrelated product stock.");
+        }
+        const state = {
+            ...initial,
+            products: [product],
+            inventoryRecords: productRecords,
+            inventoryBatches: productBatches.map((candidate) =>
+                candidate.batchId === batch.batchId ? pricedBatch : candidate
+            ),
+            activityEvents: []
+        };
+        const packagingLevel = productVariant.packagingHierarchy[0];
+        if (!packagingLevel) {
+            throw new Error("Stock adjustment fixture requires a packaging level.");
+        }
+        const targetStock = record.stockQuantities.find(
+            (stock) => stock.packagingLevelId === packagingLevel.id
+        );
+        if (!targetStock) {
+            throw new Error("Stock adjustment fixture requires matching stock.");
+        }
+        const adjustment = adjustInventoryStock(
+            product,
+            record,
+            packagingLevel.id,
+            targetStock.quantity + 1,
+            "Physical count"
+        );
+        const operationId = "stock-only-pricing-preservation";
+        const adjustmentEvents = prepareActivityEvents([
+            buildStockAdjustmentActivityInput(
+                adjustment.adjustment,
+                product,
+                state.inventoryBatches,
+                operationId
+            )
+        ], {
+            makeId: () => "stock-only-pricing-event",
+            now: () => new Date("2026-03-04T05:06:07.000Z")
+        });
+        const [adjustmentEvent] = adjustmentEvents;
+        if (adjustmentEvent?.type !== "inventory.stock_adjusted") {
+            throw new Error("Stock adjustment Activity was not created.");
+        }
+        const updatedRecords = state.inventoryRecords.map((candidate) =>
+            candidate.id === record.id
+                ? adjustment.updatedInventory
+                : candidate
+        );
+        const stateBeforeRejectedSave = structuredClone(state);
+
+        expect(() => applicationReducer(state, {
+            type: "inventory.saved",
+            inventoryRecords: updatedRecords,
+            inventoryBatches: state.inventoryBatches,
+            events: [{
+            ...adjustmentEvent,
+            previousQuantity: adjustmentEvent.previousQuantity + 1
+            }]
+        })).toThrow("Stock adjustment Activity does not match current quantity.");
+        expect(state).toEqual(stateBeforeRejectedSave);
+
+        const committed = applicationReducer(state, {
+            type: "inventory.saved",
+            inventoryRecords: updatedRecords,
+            inventoryBatches: state.inventoryBatches,
+            events: adjustmentEvents
+        });
+
+        expect(committed.inventoryRecords).toEqual(updatedRecords);
+        expect(committed.inventoryRecords.filter(
+            (candidate) => candidate.id !== record.id
+        )).toEqual(state.inventoryRecords.filter(
+            (candidate) => candidate.id !== record.id
+        ));
+        expect(committed.inventoryBatches).toEqual(state.inventoryBatches);
+        expect(committed.inventoryRecords.find(
+            (candidate) => candidate.id === record.id
+        )?.stockQuantities).toEqual(record.stockQuantities.map((stock) =>
+            stock.packagingLevelId === packagingLevel.id
+                ? { ...stock, quantity: targetStock.quantity + 1 }
+                : stock
+        ));
+        expect(adjustment.updatedInventory.stockQuantities.find(
+            (stock) => stock.packagingLevelId === packagingLevel.id
+        )?.quantity).toBe(targetStock.quantity + 1);
+        expect(committed.inventoryBatches.find(
+            (candidate) => candidate.batchId === batch.batchId
+        )?.pricingByPackagingLevel).toEqual(pricingByPackagingLevel);
+        expect(pricingByPackagingLevel).toHaveLength(
+            productVariant.packagingHierarchy.length
+        );
+        expect(pricingByPackagingLevel).toContainEqual({
+            packagingLevelId: productVariant.packagingHierarchy[1]?.id,
+            costPrice: null,
+            sellingPrice: 41
+        });
+        expect(committed.products.find(
+            (candidate) => candidate.id === product.id
+        )).toEqual(product);
+        expect(committed.products).toBe(state.products);
+        const committedAdjustmentEvent = committed.activityEvents.find(
+            (event) => event.operationKey === adjustmentEvent.operationKey
+        );
+        if (committedAdjustmentEvent?.type !== "inventory.stock_adjusted") {
+            throw new Error("Committed stock adjustment Activity was not found.");
+        }
+        expect(committedAdjustmentEvent).toMatchObject({
+            inventoryId: record.id,
+            batch: {
+                batchId: batch.batchId,
+                pricingByPackagingLevel: pricingByPackagingLevel.map(
+                    (pricing) => ({
+                        ...pricing,
+                        packagingLevelName: productVariant.packagingHierarchy.find(
+                            (level) => level.id === pricing.packagingLevelId
+                        )?.name
+                    })
+                )
+            },
+            packagingLevel: { packagingLevelId: packagingLevel.id },
+            previousQuantity: targetStock.quantity,
+            newQuantity: targetStock.quantity + 1,
+            quantityDifference: 1,
+            reason: "Physical count"
+        });
+    });
+
+    it("replays an exact committed sale without changing state or deducting stock twice", () => {
+        const fixture = makeCommittedSaleReplay();
+        const beforeInventory = structuredClone(fixture.committed.inventoryRecords);
+
+        const replayed = applicationReducer(fixture.committed, fixture.action);
+
+        expect(replayed).toBe(fixture.committed);
+        expect(replayed.inventoryRecords).toEqual(beforeInventory);
+        expect(replayed.sales).toHaveLength(1);
+        expect(replayed.activityEvents.filter(
+            (event) => event.operationKey === "sale.completed:sale-replay-sale"
+        )).toHaveLength(1);
+        expect(replayed.saleDrafts).toHaveLength(1);
+        expect(replayed.saleDrafts[0]).toMatchObject({
+            draftId: "sale-replay-draft",
+            status: "approved",
+            updatedAt: fixture.action.completion.sale.completedAt
+        });
+    });
+
+    it("rejects a sale replay with a changed completed sale", () => {
+        const fixture = makeCommittedSaleReplay();
+        const replay = {
+            ...fixture.action,
+            completion: {
+                ...fixture.action.completion,
+                sale: {
+                    ...fixture.action.completion.sale,
+                    finalAmount:
+                        fixture.action.completion.sale.finalAmount + 1
+                }
+            }
+        };
+        const before = structuredClone(fixture.committed);
+
+        expect(() => applicationReducer(fixture.committed, replay)).toThrow(
+            "Sale operation key already exists without a matching completed sale."
+        );
+        expect(fixture.committed).toEqual(before);
+    });
+
+    it("rejects a sale replay with a changed Activity event", () => {
+        const fixture = makeCommittedSaleReplay();
+        const replay = {
+            ...fixture.action,
+            completion: {
+                ...fixture.action.completion,
+                events: fixture.action.completion.events.map((event) =>
+                    event.type === "sale.completed"
+                        ? { ...event, notes: "Changed Activity evidence" }
+                        : event
+                )
+            }
+        };
+        const before = structuredClone(fixture.committed);
+
+        expect(() => applicationReducer(fixture.committed, replay)).toThrow(
+            "Sale operation key already exists without a matching completed sale."
+        );
+        expect(fixture.committed).toEqual(before);
+    });
+
+    it("rejects a sale replay with changed updated inventory", () => {
+        const fixture = makeCommittedSaleReplay();
+        const replay = {
+            ...fixture.action,
+            completion: {
+                ...fixture.action.completion,
+                updatedInventory:
+                    fixture.action.completion.updatedInventory.map((record) => ({
+                        ...record,
+                        stockQuantities: record.stockQuantities.map(
+                            (stock, index) => index === 0
+                                ? { ...stock, quantity: stock.quantity + 1 }
+                                : stock
+                        )
+                    }))
+            }
+        };
+        const before = structuredClone(fixture.committed);
+
+        expect(() => applicationReducer(fixture.committed, replay)).toThrow(
+            "Sale replay inventory does not match the committed inventory."
+        );
+        expect(fixture.committed).toEqual(before);
+    });
+
+    it("rejects a sale replay with changed expected inventory quantities", () => {
+        const fixture = makeCommittedSaleReplay();
+        const replay = {
+            ...fixture.action,
+            completion: {
+                ...fixture.action.completion,
+                expectedInventory:
+                    fixture.action.completion.expectedInventory.map((record) => ({
+                        ...record,
+                        stockQuantities: record.stockQuantities.map(
+                            (stock, index) => index === 0
+                                ? { ...stock, quantity: stock.quantity + 1 }
+                                : stock
+                        )
+                    }))
+            }
+        };
+        const before = structuredClone(fixture.committed);
+
+        expect(() => applicationReducer(fixture.committed, replay)).toThrow(
+            "Sale replay allocation does not match the committed inventory."
+        );
+        expect(fixture.committed).toEqual(before);
+    });
+
+    it("replays multiple sale lines against the same inventory record", () => {
+        const fixture = makeCommittedSaleReplay();
+        const draft = fixture.state.saleDrafts[0];
+        const draftItem = draft?.items[0];
+        if (!draft || !draftItem) {
+            throw new Error("Sale replay fixture requires an active draft item.");
+        }
+        const multiLineDraft = addSaleDraftItem(
+            draft,
+            { ...draftItem, lineId: "sale-replay-line-2" },
+            "2026-03-04T05:06:10.000Z"
+        );
+        const state = {
+            ...fixture.state,
+            saleDrafts: [multiLineDraft]
+        };
+        const plan = prepareSaleDraft(multiLineDraft, {
+            products: state.products,
+            inventoryRecords: state.inventoryRecords,
+            inventoryBatches: state.inventoryBatches
+        }, {
+            now: () => new Date("2026-03-04T05:06:10.000Z")
+        });
+        const completion = completeSale(plan, {
+            now: () => new Date("2026-03-04T05:06:11.000Z"),
+            makeId: () => "sale-replay-multi-line",
+            makeEventId: () => "sale-replay-multi-line-event"
+        });
+        const action = {
+            type: "sale.completed" as const,
+            completion
+        };
+        const committed = applicationReducer(state, action);
+
+        expect(completion.expectedInventory).toHaveLength(1);
+        expect(completion.updatedInventory).toHaveLength(1);
+        expect(committed.inventoryRecords[0]?.stockQuantities[0]?.quantity)
+            .toBe(2);
+        expect(applicationReducer(committed, action)).toBe(committed);
+    });
+
+    it("rejects sale replays with missing or invalid draft evidence", () => {
+        const fixture = makeCommittedSaleReplay();
+        const missingDraftId = {
+            ...fixture.action,
+            completion: {
+                ...fixture.action.completion,
+                draftId: ""
+            }
+        };
+        const invalidExpectedDraft = {
+            ...fixture.action,
+            completion: {
+                ...fixture.action.completion,
+                expectedDraft: {
+                    ...fixture.action.completion.expectedDraft,
+                    status: "approved" as const
+                }
+            }
+        };
+        const missingExpectedDraft = {
+            ...fixture.action,
+            completion: {
+                ...fixture.action.completion,
+                expectedDraft: undefined
+            }
+        } as unknown as Parameters<typeof applicationReducer>[1];
+        const before = structuredClone(fixture.committed);
+
+        for (const replay of [
+            missingDraftId,
+            invalidExpectedDraft,
+            missingExpectedDraft
+        ]) {
+            expect(() => applicationReducer(fixture.committed, replay)).toThrow();
+            expect(fixture.committed).toEqual(before);
+        }
+    });
+
+    it("preserves sale pricing history through a Product update and later same-batch delivery", () => {
+        const initial = createApplicationStateWithConfiguredThresholds();
+        const originalProduct = initial.products[0];
+        const productVariant = originalProduct?.variant[0];
+        const selectedLevel = productVariant?.packagingHierarchy[0];
+        const inventoryRecord = initial.inventoryRecords.find(
+            (record) =>
+                record.productId === originalProduct?.id &&
+                record.variantId === productVariant?.id &&
+                record.batchId !== null
+        );
+        const sourceBatch = inventoryRecord?.batchId
+            ? initial.inventoryBatches.find(
+                (batch) => batch.batchId === inventoryRecord.batchId
+            )
+            : undefined;
+        if (
+            !originalProduct ||
+            !productVariant ||
+            !selectedLevel ||
+            productVariant.packagingHierarchy.length < 2 ||
+            !inventoryRecord ||
+            !sourceBatch ||
+            sourceBatch.batchNumber === null ||
+            sourceBatch.expiryDate === null ||
+            selectedLevel.sellingPrice === null
+        ) {
+            throw new Error("Historical pricing fixture requires a numbered multi-level batch.");
+        }
+
+        const productDefaultBefore = selectedLevel.sellingPrice;
+        const batchExpiryDate = sourceBatch.expiryDate.toISOString().slice(0, 10);
+        const batchSellingPriceBefore = productDefaultBefore + 100;
+        const initialBatchPricing = productVariant.packagingHierarchy.map(
+            (level, index) => ({
+                packagingLevelId: level.id,
+                costPrice: level.id === selectedLevel.id
+                    ? 7
+                    : index === 1
+                        ? null
+                        : 12 + index,
+                sellingPrice: level.id === selectedLevel.id
+                    ? batchSellingPriceBefore
+                    : index === productVariant.packagingHierarchy.length - 1
+                        ? null
+                        : 20 + index
+            })
+        );
+        const originalBatch = {
+            ...sourceBatch,
+            pricingByPackagingLevel: initialBatchPricing
+        };
+        let state: ApplicationState = {
+            ...initial,
+            inventoryBatches: initial.inventoryBatches.map((batch) =>
+                batch.batchId === originalBatch.batchId ? originalBatch : batch
+            ),
+            activityEvents: [],
+            sales: [],
+            saleDrafts: [],
+            deliveryDrafts: []
+        };
+
+        const saleDraftId = "historical-pricing-sale-draft";
+        const saleDraft = createSaleDraft({
+            makeId: () => saleDraftId,
+            now: () => new Date("2026-03-04T05:06:07.000Z")
+        });
+        state = applicationReducer(state, {
+            type: "sale.draft_created",
+            draft: saleDraft
+        });
+        const resolvedBatchPrice = resolveDefaultSellingPrice(
+            originalProduct,
+            productVariant.id,
+            selectedLevel.id,
+            originalBatch
+        );
+        if (resolvedBatchPrice === null) {
+            throw new Error("Historical pricing fixture requires a batch price.");
+        }
+        state = applicationReducer(state, {
+            type: "sale.draft_item_added",
+            draftId: saleDraftId,
+            item: {
+                lineId: "historical-pricing-sale-line",
+                productId: originalProduct.id,
+                variantId: productVariant.id,
+                inventoryRecordId: inventoryRecord.id,
+                batchId: originalBatch.batchId,
+                packagingLevelId: selectedLevel.id,
+                quantity: 1,
+                defaultSellingPrice: resolvedBatchPrice,
+                appliedSellingPrice: resolvedBatchPrice,
+                discountAmount: 0
+            },
+            updatedAt: "2026-03-04T05:06:08.000Z"
+        });
+        const activeSaleDraft = state.saleDrafts.find(
+            (draft) => draft.draftId === saleDraftId
+        );
+        if (!activeSaleDraft) {
+            throw new Error("Historical pricing fixture requires an active sale draft.");
+        }
+        const saleCompletion = completeSale(
+            prepareSaleDraft(activeSaleDraft, {
+                products: state.products,
+                inventoryRecords: state.inventoryRecords,
+                inventoryBatches: state.inventoryBatches
+            }, {
+                now: () => new Date("2026-03-04T05:06:08.000Z")
+            }),
+            {
+                makeId: () => "historical-pricing-sale",
+                makeEventId: () => "historical-pricing-sale-event",
+                now: () => new Date("2026-03-04T05:06:09.000Z")
+            }
+        );
+        state = applicationReducer(state, {
+            type: "sale.completed",
+            completion: saleCompletion
+        });
+
+        const completedSale = structuredClone(state.sales[0]);
+        const saleEvent = state.activityEvents.find(
+            (event) =>
+                event.type === "sale.completed" &&
+                event.saleId === saleCompletion.sale.saleId
+        );
+        if (!completedSale || saleEvent?.type !== "sale.completed") {
+            throw new Error("Historical pricing fixture requires a completed sale and event.");
+        }
+        const originalSaleEvent = structuredClone(saleEvent);
+        expect(completedSale.items[0]?.appliedSellingPrice)
+            .toBe(batchSellingPriceBefore);
+        expect(originalSaleEvent.items[0]?.appliedSellingPrice)
+            .toBe(batchSellingPriceBefore);
+
+        const productDefaultAfter = productDefaultBefore + 200;
+        const updatedProduct = {
+            ...originalProduct,
+            variant: originalProduct.variant.map((candidate) =>
+                candidate.id === productVariant.id
+                    ? {
+                        ...candidate,
+                        packagingHierarchy: candidate.packagingHierarchy.map(
+                            (level) => level.id === selectedLevel.id
+                                ? { ...level, sellingPrice: productDefaultAfter }
+                                : level
+                        )
+                    }
+                    : candidate
+            )
+        };
+        const productUpdateEvents = prepareActivityEvents(
+            buildProductUpdateActivityInputs(
+                originalProduct,
+                updatedProduct,
+                state.inventoryRecords,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                "product.updated:historical-pricing-sale",
+                "Update default selling price"
+            ),
+            {
+                makeId: () => "historical-pricing-product-update-event",
+                now: () => new Date("2026-03-04T05:06:10.000Z")
+            }
+        );
+        state = applicationReducer(state, {
+            type: "product.updated",
+            product: updatedProduct,
+            inventoryRecords: state.inventoryRecords,
+            inventoryBatches: state.inventoryBatches,
+            events: productUpdateEvents
+        });
+
+        const batchAfterProductUpdate = state.inventoryBatches.find(
+            (batch) => batch.batchId === originalBatch.batchId
+        );
+        if (!batchAfterProductUpdate) {
+            throw new Error("Product update fixture lost the selected batch.");
+        }
+        expect(state.products.find(
+            (candidate) => candidate.id === originalProduct.id
+        )?.variant.find(
+            (candidate) => candidate.id === productVariant.id
+        )?.packagingHierarchy.find(
+            (level) => level.id === selectedLevel.id
+        )?.sellingPrice).toBe(productDefaultAfter);
+        expect(batchAfterProductUpdate.pricingByPackagingLevel)
+            .toEqual(initialBatchPricing);
+        expect(state.activityEvents.find(
+            (event) =>
+                event.type === "sale.completed" &&
+                event.saleId === completedSale.saleId
+        )).toEqual(originalSaleEvent);
+
+        const priorActivityEvents = structuredClone(state.activityEvents);
+        const deliveryId = "historical-pricing-follow-up-delivery";
+        const deliveryQuantity = 3;
+        const receiptCostPrice = 27;
+        const receiptSellingPrice = productDefaultBefore + 300;
+        const deliveryDraft = addDeliveryDraftItem(
+            createDeliveryDraft({
+                deliveryDate: "2026-03-05",
+                receivedBy: "Pharmacist",
+                supplier: "Supplier"
+            }, {
+                makeId: () => deliveryId,
+                now: () => new Date("2026-03-05T09:00:00.000Z")
+            }),
+            {
+                deliveryItemId: "historical-pricing-delivery-item",
+                productId: originalProduct.id,
+                variantId: productVariant.id,
+                packagingLevelId: selectedLevel.id,
+                quantity: deliveryQuantity,
+                batchNumber: originalBatch.batchNumber,
+                expiryDate: batchExpiryDate,
+                costPrice: receiptCostPrice,
+                sellingPrice: receiptSellingPrice
+            },
+            "2026-03-05T09:01:00.000Z"
+        );
+        state = applicationReducer(state, {
+            type: "delivery.draft_created",
+            draft: deliveryDraft
+        });
+        const inventoryBeforeReceipt = state.inventoryRecords.find(
+            (record) => record.id === inventoryRecord.id
+        );
+        const stockBeforeReceipt = inventoryBeforeReceipt?.stockQuantities.find(
+            (stock) => stock.packagingLevelId === selectedLevel.id
+        );
+        if (!inventoryBeforeReceipt || !stockBeforeReceipt) {
+            throw new Error("Historical pricing fixture requires selected stock.");
+        }
+        const approvalPlan = prepareDeliveryApproval(
+            deliveryDraft,
+            state.products,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            {
+                makeId: () => "unused-batch-id",
+                now: () => new Date("2026-03-05T09:02:00.000Z")
+            }
+        );
+        const [deliveryEvent] = prepareActivityEvents(
+            [approvalPlan.activity],
+            {
+                makeId: () => "historical-pricing-delivery-event",
+                now: () => new Date(approvalPlan.draft.updatedAt)
+            }
+        );
+        if (deliveryEvent?.type !== "delivery.received") {
+            throw new Error("Historical pricing fixture requires receipt Activity.");
+        }
+        const tamperedPlan = {
+            ...approvalPlan,
+            inventoryBatches: approvalPlan.inventoryBatches.map((batch) =>
+                batch.batchId === originalBatch.batchId
+                    ? {
+                        ...batch,
+                        pricingByPackagingLevel:
+                            batch.pricingByPackagingLevel.map((pricing) =>
+                                pricing.packagingLevelId === selectedLevel.id
+                                    ? { ...pricing, sellingPrice: receiptSellingPrice + 1 }
+                                    : pricing
+                            )
+                    }
+                    : batch
+            )
+        };
+        const stateBeforeRejectedApproval = structuredClone(state);
+
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: tamperedPlan,
+            event: deliveryEvent
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(state).toEqual(stateBeforeRejectedApproval);
+
+        state = applicationReducer(state, {
+            type: "delivery.approved",
+            plan: approvalPlan,
+            event: deliveryEvent
+        });
+
+        const receivedRecord = state.inventoryRecords.find(
+            (record) => record.id === inventoryRecord.id
+        );
+        const receivedStock = receivedRecord?.stockQuantities.find(
+            (stock) => stock.packagingLevelId === selectedLevel.id
+        );
+        const expectedBatchPricing = initialBatchPricing.map((pricing) =>
+            pricing.packagingLevelId === selectedLevel.id
+                ? {
+                    ...pricing,
+                    costPrice: receiptCostPrice,
+                    sellingPrice: receiptSellingPrice
+                }
+                : pricing
+        );
+        expect(receivedStock?.quantity)
+            .toBe(stockBeforeReceipt.quantity + deliveryQuantity);
+        expect(receivedRecord?.stockQuantities).toEqual(
+            inventoryBeforeReceipt.stockQuantities.map((stock) =>
+                stock.packagingLevelId === selectedLevel.id
+                    ? { ...stock, quantity: stock.quantity + deliveryQuantity }
+                    : stock
+            )
+        );
+        expect(state.inventoryBatches.find(
+            (batch) => batch.batchId === originalBatch.batchId
+        )?.pricingByPackagingLevel).toEqual(expectedBatchPricing);
+        expect(state.products.find(
+            (candidate) => candidate.id === originalProduct.id
+        )?.variant.find(
+            (candidate) => candidate.id === productVariant.id
+        )?.packagingHierarchy.find(
+            (level) => level.id === selectedLevel.id
+        )?.sellingPrice).toBe(productDefaultAfter);
+
+        const saleAfterReceipt = state.sales.find(
+            (sale) => sale.saleId === completedSale.saleId
+        );
+        const saleEventAfterReceipt = state.activityEvents.find(
+            (event) =>
+                event.type === "sale.completed" &&
+                event.saleId === completedSale.saleId
+        );
+        expect(saleAfterReceipt).toEqual(completedSale);
+        expect(saleEventAfterReceipt).toEqual(originalSaleEvent);
+        expect(state.activityEvents.slice(0, priorActivityEvents.length))
+            .toEqual(priorActivityEvents);
+        const historicalSaleItem = completedSale.items[0];
+        const historicalSaleBatch = historicalSaleItem?.batch;
+        const historicalProductLevel = historicalSaleItem?.product.variants
+            .find((candidate) => candidate.variantId === productVariant.id)
+            ?.packaging.find((level) => level.packagingLevelId === selectedLevel.id);
+        if (!historicalSaleItem || !historicalSaleBatch || !historicalProductLevel) {
+            throw new Error("Completed sale is missing its historical pricing snapshots.");
+        }
+        expect(historicalSaleItem.appliedSellingPrice).toBe(batchSellingPriceBefore);
+        expect(historicalProductLevel.sellingPrice).toBe(productDefaultBefore);
+        expect(historicalSaleBatch.pricingByPackagingLevel.map(
+            (pricing) => ({
+                packagingLevelId: pricing.packagingLevelId,
+                costPrice: pricing.costPrice,
+                sellingPrice: pricing.sellingPrice
+            })
+        )).toEqual(initialBatchPricing);
+        const historicalSaleActivityItem = originalSaleEvent.items[0];
+        expect(historicalSaleActivityItem?.appliedSellingPrice)
+            .toBe(batchSellingPriceBefore);
+        expect(historicalSaleActivityItem?.allocations[0]?.batch?.pricingByPackagingLevel)
+            .toEqual(historicalSaleBatch.pricingByPackagingLevel);
+        expect(historicalSaleActivityItem?.product.variants
+            .find((candidate) => candidate.variantId === productVariant.id)
+            ?.packaging.find((level) => level.packagingLevelId === selectedLevel.id)
+            ?.sellingPrice).toBe(productDefaultBefore);
+        const recordedDelivery = state.activityEvents.find(
+            (event) => event.operationKey === `delivery.received:${deliveryId}`
+        );
+        if (recordedDelivery?.type !== "delivery.received") {
+            throw new Error("Approved delivery Activity was not committed.");
+        }
+        expect(recordedDelivery.items[0]?.pricingAtReceipt).toEqual({
+            packagingLevelId: selectedLevel.id,
+            costPrice: receiptCostPrice,
+            sellingPrice: receiptSellingPrice
+        });
+        expect(recordedDelivery.items[0]?.batch?.pricingByPackagingLevel)
+            .toEqual(expectedBatchPricing.map((pricing) => ({
+                ...pricing,
+                packagingLevelName: productVariant.packagingHierarchy.find(
+                    (level) => level.id === pricing.packagingLevelId
+                )?.name
+            })));
+    });
+
     it("identifies active Sales and Delivery draft references by record", () => {
         const saleDraft = makeSalesDraft("product-1");
         const deliveryDraft = makeDeliveryDraft("product-1");
@@ -459,7 +1465,8 @@ describe("application-level Activity state", () => {
             productId: product.id,
             variantId: productVariant.id,
             batchNumber: "LOT-1",
-            expiryDate: new Date("2027-01-31T00:00:00.000Z")
+            expiryDate: new Date("2027-01-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const numberedDraft = makeDeliveryDraft(product.id);
         numberedDraft.items[0].variantId = productVariant.id;
@@ -598,6 +1605,9 @@ describe("application-level Activity state", () => {
                         name: level.name,
                         packagingLevelId: level.packagingLevelId
                     })),
+                    ...(variant.lowStockThreshold === undefined
+                        ? {}
+                        : { lowStockThreshold: variant.lowStockThreshold }),
                     nafdacRegistrationNumber: variant.nafdacRegistrationNumber,
                     variantName: variant.variantName,
                     variantId: variant.variantId
@@ -1265,7 +2275,8 @@ describe("application-level Activity state", () => {
             productId: result.product.id,
             variantId: productVariant.id,
             batchNumber: "LATER-LOT",
-            expiryDate: new Date("2028-01-31T00:00:00.000Z")
+            expiryDate: new Date("2028-01-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const laterRecord = {
             id: "later-inventory-edit-record",
@@ -1490,7 +2501,8 @@ describe("application-level Activity state", () => {
             productId: baseProduct.id,
             variantId: retainedVariant.id,
             batchNumber: "SYRUP-LOT",
-            expiryDate: new Date("2028-01-01T00:00:00.000Z")
+            expiryDate: new Date("2028-01-01T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const retainedRecord = {
             id: "inventory-retained",
@@ -1568,6 +2580,11 @@ describe("application-level Activity state", () => {
             ...baseProduct,
             variant: [{
                 ...productVariant,
+                lowStockThreshold: {
+                    quantity: productVariant.lowStockThreshold?.quantity ?? 2,
+                    packagingLevelId:
+                        productVariant.packagingHierarchy[0].id
+                },
                 packagingHierarchy: [
                     {
                         ...productVariant.packagingHierarchy[0],
@@ -1592,10 +2609,23 @@ describe("application-level Activity state", () => {
             batchId: null,
             stockQuantities: [{ packagingLevelId: packagingLevel.id, quantity: 2 }]
         };
+        const batchWithPackagingPrices = {
+            ...baseState.inventoryBatches[0],
+            pricingByPackagingLevel: [{
+                packagingLevelId: productVariant.packagingHierarchy[0].id,
+                costPrice: 1,
+                sellingPrice: 2
+            }, {
+                packagingLevelId: packagingLevel.id,
+                costPrice: 3,
+                sellingPrice: 5
+            }]
+        };
         const state = {
             ...baseState,
             products: [updatedProduct],
-            inventoryRecords: [retainedStockRecord, removedOnlyStockRecord]
+            inventoryRecords: [retainedStockRecord, removedOnlyStockRecord],
+            inventoryBatches: [batchWithPackagingPrices]
         };
         const action = {
             type: "product.packaging_removed" as const,
@@ -1608,7 +2638,12 @@ describe("application-level Activity state", () => {
                     (stock) => stock.packagingLevelId !== packagingLevel.id
                 )
             }],
-            inventoryBatches: state.inventoryBatches,
+            inventoryBatches: state.inventoryBatches.map((batch) => ({
+                ...batch,
+                pricingByPackagingLevel: batch.pricingByPackagingLevel.filter(
+                    (pricing) => pricing.packagingLevelId !== packagingLevel.id
+                )
+            })),
             events: prepareActivityEvents([buildPackagingRemovalActivityInput(
                 "packaging-delete-test",
                 updatedProduct,
@@ -1653,7 +2688,14 @@ describe("application-level Activity state", () => {
                 (stock) => stock.packagingLevelId !== packagingLevel.id
             )
         }]);
-        expect(committed.inventoryBatches).toBe(state.inventoryBatches);
+        expect(committed.inventoryBatches).toEqual([{
+            ...batchWithPackagingPrices,
+            pricingByPackagingLevel: [{
+                packagingLevelId: productVariant.packagingHierarchy[0].id,
+                costPrice: 1,
+                sellingPrice: 2
+            }]
+        }]);
         expect(committed.activityEvents[0]).toMatchObject({
             type: "product.packaging_removed",
             removedPackaging: { packagingLevelId: packagingLevel.id },
@@ -1675,10 +2717,515 @@ describe("application-level Activity state", () => {
         });
     });
 
+    it("rejects legacy packaging removal of an explicitly selected threshold level atomically", () => {
+        const fixture = makeThresholdDeletionState();
+        const state = fixture.state;
+        const action = makeLegacyPackagingRemovalAction(
+            state,
+            fixture.product,
+            fixture.productVariant.id,
+            fixture.boxId,
+            "legacy-remove-threshold-box",
+            "Remove Box"
+        );
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "This packaging level is currently used by the variant's low-stock threshold."
+        );
+        expect(state).toEqual(before);
+        expect(state.products[0].variant[0].lowStockThreshold).toEqual({
+            quantity: 2,
+            packagingLevelId: fixture.boxId
+        });
+    });
+
+    it("rejects legacy packaging removal of the implicit lowest threshold level atomically", () => {
+        const fixture = makeThresholdDeletionState();
+        const defaultThresholdVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: { quantity: 2 }
+        };
+        const product = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === defaultThresholdVariant.id
+                    ? defaultThresholdVariant
+                    : candidate
+            )
+        };
+        const state = { ...fixture.state, products: [product] };
+        const action = makeLegacyPackagingRemovalAction(
+            state,
+            product,
+            defaultThresholdVariant.id,
+            fixture.cardId,
+            "legacy-remove-default-card",
+            "Remove default Card level"
+        );
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "This packaging level is currently used by the variant's low-stock threshold."
+        );
+        expect(state).toEqual(before);
+        expect(state.products[0].variant[0].lowStockThreshold).toEqual({
+            quantity: 2
+        });
+    });
+
+    it("rejects legacy packaging removal when the threshold reference is already dangling", () => {
+        const fixture = makeThresholdDeletionState();
+        const danglingVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: {
+                quantity: 2,
+                packagingLevelId: "missing-threshold-level"
+            }
+        };
+        const product = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === danglingVariant.id
+                    ? danglingVariant
+                    : candidate
+            )
+        };
+        const state = { ...fixture.state, products: [product] };
+        const action = makeLegacyPackagingRemovalAction(
+            state,
+            product,
+            danglingVariant.id,
+            fixture.cardId,
+            "legacy-remove-with-dangling-threshold",
+            "Remove Card"
+        );
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "Packaging level does not belong to this variant."
+        );
+        expect(state).toEqual(before);
+    });
+
+    it("rejects deletion of a packaging level used by the threshold without mutating the product", () => {
+        const fixture = makeThresholdDeletionState();
+        const deletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: fixture.productVariant.id,
+            packagingLevelId: fixture.boxId,
+            reason: "Remove Box",
+            operationId: "remove-threshold-box"
+        };
+        const before = structuredClone(fixture.state);
+        const expectedMessage =
+            "This packaging level is currently used by the variant's low-stock threshold. Change and save the threshold to another existing packaging level before deleting it.";
+
+        expect(() => prepareProductRecordDeletionPlan(
+            fixture.product,
+            fixture.state.inventoryRecords,
+            fixture.state.inventoryBatches,
+            [deletion]
+        )).toThrow(expectedMessage);
+        expect(fixture.state).toEqual(before);
+        expect(fixture.product).toEqual(before.products[0]);
+    });
+
+    it("blocks deletion of the implicit lowest-level threshold packaging", () => {
+        const fixture = makeThresholdDeletionState();
+        const defaultThresholdVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: { quantity: 2 }
+        };
+        const product = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === defaultThresholdVariant.id
+                    ? defaultThresholdVariant
+                    : candidate
+            )
+        };
+        const deletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: defaultThresholdVariant.id,
+            packagingLevelId: fixture.cardId,
+            reason: "Remove default level",
+            operationId: "remove-default-threshold-level"
+        };
+
+        expect(defaultThresholdVariant.lowStockThreshold).toEqual({ quantity: 2 });
+        expect(() => prepareProductRecordDeletionPlan(
+            product,
+            fixture.state.inventoryRecords,
+            fixture.state.inventoryBatches,
+            [deletion]
+        )).toThrow(
+            "This packaging level is currently used by the variant's low-stock threshold."
+        );
+    });
+
+    it("rejects reducer actions that would delete the threshold packaging atomically", () => {
+        const fixture = makeThresholdDeletionState();
+        const state = fixture.state;
+        const product = fixture.product;
+        const productVariant = fixture.productVariant;
+        const packagingLevel = productVariant.packagingHierarchy.find(
+            (level) => level.id === fixture.boxId
+        );
+        if (!packagingLevel) {
+            throw new Error("Threshold deletion fixture requires its Box level.");
+        }
+        const deletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: productVariant.id,
+            packagingLevelId: fixture.boxId,
+            reason: "Remove Box",
+            operationId: "reducer-remove-threshold-box"
+        };
+        const nextHierarchy = removePackagingLevelFromHierarchy(
+            productVariant.packagingHierarchy,
+            fixture.boxId
+        );
+        const candidateProduct = {
+            ...product,
+            variant: product.variant.map((candidate) =>
+                candidate.id === productVariant.id
+                    ? { ...candidate, packagingHierarchy: nextHierarchy }
+                    : candidate
+            )
+        };
+        const candidateInventoryRecords = state.inventoryRecords
+            .map((record) => ({
+                ...record,
+                stockQuantities: record.stockQuantities.filter(
+                    (stock) => stock.packagingLevelId !== fixture.boxId
+                )
+            }))
+            .filter((record) => record.stockQuantities.length > 0);
+        const candidateInventoryBatches = state.inventoryBatches.map((batch) => ({
+            ...batch,
+            pricingByPackagingLevel: batch.pricingByPackagingLevel.filter(
+                (pricing) => pricing.packagingLevelId !== fixture.boxId
+            )
+        }));
+        const action = {
+            type: "product.records_deleted" as const,
+            productId: product.id,
+            deletions: [deletion],
+            product: candidateProduct,
+            inventoryRecords: candidateInventoryRecords,
+            inventoryBatches: candidateInventoryBatches,
+            events: prepareActivityEvents([buildPackagingRemovalActivityInput(
+                deletion.operationId,
+                product,
+                productVariant,
+                packagingLevel,
+                nextHierarchy,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                deletion.reason
+            )])
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "This packaging level is currently used by the variant's low-stock threshold."
+        );
+        expect(state).toEqual(before);
+    });
+
+    it("allows deleting an unreferenced packaging level and preserves a valid threshold", () => {
+        const fixture = makeThresholdDeletionState();
+        const deletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: fixture.productVariant.id,
+            packagingLevelId: fixture.cardId,
+            reason: "Remove unused Card level",
+            operationId: "remove-unreferenced-card"
+        };
+
+        const plan = prepareProductRecordDeletionPlan(
+            fixture.product,
+            fixture.state.inventoryRecords,
+            fixture.state.inventoryBatches,
+            [deletion]
+        );
+        const resultingVariant = plan.product.variant[0];
+
+        expect(resultingVariant.packagingHierarchy.map((level) => level.id))
+            .toEqual([fixture.boxId, fixture.packId]);
+        expect(resultingVariant.lowStockThreshold).toEqual({
+            quantity: 2,
+            packagingLevelId: fixture.boxId
+        });
+        expect(resultingVariant.packagingHierarchy.some(
+            (level) => level.id === resultingVariant.lowStockThreshold?.packagingLevelId
+        )).toBe(true);
+    });
+
+    it("allows deleting the old level after saving another threshold and keeps inventory valid", () => {
+        const fixture = makeThresholdDeletionState();
+        const savedVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: {
+                quantity: fixture.productVariant.lowStockThreshold?.quantity ?? 2,
+                packagingLevelId: fixture.packId
+            }
+        };
+        const savedProduct = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === savedVariant.id ? savedVariant : candidate
+            )
+        };
+        const inventoryRecords = fixture.state.inventoryRecords.map(
+            (record, index) => index === 0
+                ? {
+                    ...record,
+                    stockQuantities: [
+                        ...record.stockQuantities,
+                        { packagingLevelId: fixture.cardId, quantity: 3 }
+                    ]
+                }
+                : record
+        );
+        const deletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: savedVariant.id,
+            packagingLevelId: fixture.boxId,
+            reason: "Remove Box after changing threshold",
+            operationId: "remove-box-after-threshold-change"
+        };
+
+        const plan = prepareProductRecordDeletionPlan(
+            savedProduct,
+            inventoryRecords,
+            fixture.state.inventoryBatches,
+            [deletion]
+        );
+        const resultingVariant = plan.product.variant[0];
+        const validPackagingIds = new Set(
+            resultingVariant.packagingHierarchy.map((level) => level.id)
+        );
+        const thresholdPackagingLevelId =
+            resultingVariant.lowStockThreshold?.packagingLevelId;
+        const inventoryDisplay = getAllInventoryDisplay(
+            plan.inventoryRecords,
+            [plan.product],
+            plan.inventoryBatches
+        );
+
+        expect(resultingVariant.lowStockThreshold).toEqual({
+            quantity: 2,
+            packagingLevelId: fixture.packId
+        });
+        expect(thresholdPackagingLevelId).toBe(fixture.packId);
+        expect(validPackagingIds.has(thresholdPackagingLevelId ?? "")).toBe(true);
+        expect(plan.inventoryRecords.flatMap((record) =>
+            record.stockQuantities.map((stock) => stock.packagingLevelId)
+        ).every((id) => validPackagingIds.has(id))).toBe(true);
+        expect(getVariantLowStockStatus(
+            resultingVariant,
+            aggregateVariantStock(inventoryDisplay)
+        )).toMatchObject({
+            thresholdConfigured: true,
+            thresholdPackagingLevelId: fixture.packId,
+            thresholdQuantity: 2,
+            hasStock: true,
+            isLowStock: true
+        });
+    });
+
+    it("rejects a product update that removes the selected level while changing the threshold", () => {
+        const fixture = makeThresholdDeletionState();
+        const state = {
+            ...fixture.state,
+            inventoryRecords: [],
+            inventoryBatches: []
+        };
+        const updatedVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: {
+                quantity: 2,
+                packagingLevelId: fixture.packId
+            },
+            packagingHierarchy: removePackagingLevelFromHierarchy(
+                fixture.productVariant.packagingHierarchy,
+                fixture.boxId
+            )
+        };
+        const updatedProduct = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === updatedVariant.id ? updatedVariant : candidate
+            )
+        };
+        const action = makeProductUpdateAction(
+            state,
+            updatedProduct,
+            "product.updated:remove-selected-and-remap",
+            "Change threshold and remove Box"
+        );
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "This packaging level is currently used by the variant's low-stock threshold."
+        );
+        expect(state).toEqual(before);
+    });
+
+    it("rejects a product update that removes the implicit lowest threshold level", () => {
+        const fixture = makeThresholdDeletionState();
+        const defaultThresholdVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: { quantity: 2 }
+        };
+        const product = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === defaultThresholdVariant.id
+                    ? defaultThresholdVariant
+                    : candidate
+            )
+        };
+        const state = {
+            ...fixture.state,
+            products: [product],
+            inventoryRecords: [],
+            inventoryBatches: []
+        };
+        const updatedVariant = {
+            ...defaultThresholdVariant,
+            packagingHierarchy: removePackagingLevelFromHierarchy(
+                defaultThresholdVariant.packagingHierarchy,
+                fixture.cardId
+            )
+        };
+        const updatedProduct = {
+            ...product,
+            variant: product.variant.map((candidate) =>
+                candidate.id === updatedVariant.id
+                    ? updatedVariant
+                    : candidate
+            )
+        };
+        const action = makeProductUpdateAction(
+            state,
+            updatedProduct,
+            "product.updated:remove-default-lowest",
+            "Remove current default level"
+        );
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "This packaging level is currently used by the variant's low-stock threshold."
+        );
+        expect(state).toEqual(before);
+    });
+
+    it("allows saving a threshold change before a later packaging deletion", () => {
+        const fixture = makeThresholdDeletionState();
+        let state: ApplicationState = {
+            ...fixture.state,
+            inventoryRecords: [],
+            inventoryBatches: []
+        };
+        const changedVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: {
+                quantity: 2,
+                packagingLevelId: fixture.packId
+            }
+        };
+        const changedProduct = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === changedVariant.id ? changedVariant : candidate
+            )
+        };
+
+        state = applicationReducer(state, makeProductUpdateAction(
+            state,
+            changedProduct,
+            "product.updated:save-pack-threshold-first",
+            "Change threshold to Pack"
+        ));
+
+        const savedProduct = state.products[0];
+        const deletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: changedVariant.id,
+            packagingLevelId: fixture.boxId,
+            reason: "Remove Box after changing threshold",
+            operationId: "remove-box-after-saved-threshold"
+        };
+        const plan = prepareProductRecordDeletionPlan(
+            savedProduct,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            [deletion]
+        );
+        const committed = applicationReducer(state, {
+            type: "product.records_deleted",
+            productId: savedProduct.id,
+            deletions: [deletion],
+            product: plan.product,
+            inventoryRecords: plan.inventoryRecords,
+            inventoryBatches: plan.inventoryBatches,
+            events: prepareActivityEvents(plan.events)
+        });
+
+        expect(committed.products[0].variant[0].packagingHierarchy.map(
+            (level) => level.id
+        )).toEqual([fixture.packId, fixture.cardId]);
+        expect(committed.products[0].variant[0].lowStockThreshold).toEqual({
+            quantity: 2,
+            packagingLevelId: fixture.packId
+        });
+    });
+
+    it("allows ordinary product updates that retain the selected packaging level", () => {
+        const fixture = makeThresholdDeletionState();
+        const updatedProduct = {
+            ...fixture.product,
+            description: "Updated without changing packaging"
+        };
+        const action = makeProductUpdateAction(
+            fixture.state,
+            updatedProduct,
+            "product.updated:ordinary-product-edit",
+            "Update product description"
+        );
+
+        const committed = applicationReducer(fixture.state, action);
+
+        expect(committed.products[0].description)
+            .toBe("Updated without changing packaging");
+        expect(committed.products[0].variant[0].lowStockThreshold).toEqual({
+            quantity: 2,
+            packagingLevelId: fixture.boxId
+        });
+        expect(committed.products[0].variant[0].packagingHierarchy)
+            .toEqual(fixture.productVariant.packagingHierarchy);
+        expect(committed.inventoryRecords).toEqual(fixture.state.inventoryRecords);
+        expect(committed.inventoryBatches).toEqual(fixture.state.inventoryBatches);
+    });
+
     it("blocks variant and packaging removal when an active workflow references them", () => {
-        const state = makeProductDeletionState();
-        const product = state.products[0];
-        const productVariant = product.variant[0];
+        const baseState = makeProductDeletionState();
+        const originalProduct = baseState.products[0];
+        const originalVariant = originalProduct.variant[0];
+        const productVariant = {
+            ...originalVariant,
+            lowStockThreshold: undefined
+        };
+        const product = {
+            ...originalProduct,
+            variant: originalProduct.variant.map((candidate) =>
+                candidate.id === productVariant.id ? productVariant : candidate
+            )
+        };
+        const state = { ...baseState, products: [product] };
         const level = productVariant.packagingHierarchy[0];
         const variantAction = {
             type: "product.variant_removed" as const,
@@ -2006,7 +3553,8 @@ describe("application-level Activity state", () => {
             productId: product.id,
             variantId: secondVariant.id,
             batchNumber: "SYRUP-LOT",
-            expiryDate: new Date("2028-01-31T00:00:00.000Z")
+            expiryDate: new Date("2028-01-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const secondRecord = {
             id: "inventory-record-deletion-target",
@@ -2216,10 +3764,24 @@ describe("application-level Activity state", () => {
     });
 
     it("commits staged deletion and descriptive edits in one reducer action", () => {
-        const state = makeProductDeletionState();
-        const product = state.products[0];
-        const productVariant = product.variant[0];
-        const level = productVariant.packagingHierarchy[0];
+        const fixture = makeThresholdDeletionState();
+        const productVariant = {
+            ...fixture.productVariant,
+            lowStockThreshold: {
+                quantity: 2,
+                packagingLevelId: fixture.packId
+            }
+        };
+        const product = {
+            ...fixture.product,
+            variant: fixture.product.variant.map((candidate) =>
+                candidate.id === productVariant.id ? productVariant : candidate
+            )
+        };
+        const state = { ...fixture.state, products: [product] };
+        const level = productVariant.packagingHierarchy.find(
+            (candidate) => candidate.id === fixture.boxId
+        );
         if (!level) {
             throw new Error("Fixture requires a packaging level.");
         }
@@ -2227,7 +3789,7 @@ describe("application-level Activity state", () => {
             type: "packaging",
             variantId: productVariant.id,
             packagingLevelId: level.id,
-            reason: "Remove obsolete pack",
+            reason: "Remove obsolete Box",
             operationId: "remove-obsolete-pack"
         }];
         const plan = prepareProductRecordDeletionPlan(
@@ -2274,6 +3836,99 @@ describe("application-level Activity state", () => {
         ]);
     });
 
+    it("rejects staged deletion combined with retained packaging price edits atomically", () => {
+        const baseState = makeProductDeletionState();
+        const originalProduct = baseState.products[0];
+        const originalVariant = originalProduct.variant[0];
+        const originalLevel = originalVariant.packagingHierarchy[0];
+        if (!originalLevel) {
+            throw new Error("Deletion fixture requires a packaging level.");
+        }
+        const product = {
+            ...originalProduct,
+            variant: originalProduct.variant.map((productVariant) =>
+                productVariant.id === originalVariant.id
+                    ? {
+                        ...productVariant,
+                        lowStockThreshold: {
+                            quantity: 2,
+                            packagingLevelId: originalLevel.id
+                        },
+                        packagingHierarchy: [{
+                            ...originalLevel,
+                            nextLevelId: "unit",
+                            quantityofNextLevel: 10
+                        }, {
+                            id: "unit",
+                            name: "Unit",
+                            costPrice: null,
+                            sellingPrice: 1.25,
+                            quantityofNextLevel: null,
+                            nextLevelId: null
+                        }]
+                    }
+                    : productVariant
+            )
+        };
+        const state = { ...baseState, products: [product] };
+        const deletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: originalVariant.id,
+            packagingLevelId: "unit",
+            reason: "Remove obsolete unit",
+            operationId: "remove-unit-with-price-edit"
+        };
+        const plan = prepareProductRecordDeletionPlan(
+            product,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            [deletion]
+        );
+        const updatedProduct = {
+            ...plan.product,
+            variant: plan.product.variant.map((productVariant) =>
+                productVariant.id === originalVariant.id
+                    ? {
+                        ...productVariant,
+                        packagingHierarchy: productVariant.packagingHierarchy.map(
+                            (level) => level.id === originalLevel.id
+                                ? { ...level, sellingPrice: 16.25 }
+                                : level
+                        )
+                    }
+                    : productVariant
+            )
+        };
+        const events = prepareActivityEvents([
+            ...plan.events,
+            ...buildProductUpdateActivityInputs(
+                plan.product,
+                updatedProduct,
+                plan.inventoryRecords,
+                plan.inventoryRecords,
+                plan.inventoryBatches,
+                "product.updated:deletion-with-price-edit",
+                "Update retained packaging price"
+            )
+        ]);
+        const action = {
+            type: "product.records_deleted" as const,
+            productId: product.id,
+            deletions: [deletion],
+            product: plan.product,
+            updatedProduct,
+            inventoryRecords: plan.inventoryRecords,
+            inventoryBatches: plan.inventoryBatches,
+            events
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "A product update accompanying deletion must preserve the deletion plan."
+        );
+        expect(state).toEqual(before);
+    });
+
     it("commits batch creation with stock and blocks batch deletion atomically", () => {
         const state = makeProductDeletionState();
         const product = state.products[0];
@@ -2283,7 +3938,8 @@ describe("application-level Activity state", () => {
             productId: product.id,
             variantId: productVariant.id,
             batchNumber: "LOT-2",
-            expiryDate: new Date("2028-01-31T00:00:00.000Z")
+            expiryDate: new Date("2028-01-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const newRecord = {
             id: "inventory-added",
@@ -2381,7 +4037,8 @@ describe("application-level Activity state", () => {
                 productId: product.id,
                 variantId: productVariant.id,
                 batchNumber: "LOT-NEW",
-                expiryDate: new Date("2028-01-31T00:00:00.000Z")
+                expiryDate: new Date("2028-01-31T00:00:00.000Z"),
+                pricingByPackagingLevel: []
             };
             const record = {
                 id: inventoryId,
@@ -2429,7 +4086,8 @@ describe("application-level Activity state", () => {
             productId: product.id,
             variantId: productVariant.id,
             batchNumber: "LOT-NEW",
-            expiryDate: new Date("2028-01-31T00:00:00.000Z")
+            expiryDate: new Date("2028-01-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const record = {
             id: "inventory-forged-snapshot",
@@ -2684,7 +4342,8 @@ describe("application-level Activity state", () => {
             productId: otherProduct.id,
             variantId: otherProduct.variant[0].id,
             batchNumber: "OTHER-LOT",
-            expiryDate: new Date("2028-01-01T00:00:00.000Z")
+            expiryDate: new Date("2028-01-01T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const unrelatedRecord = {
             id: "unrelated-inventory",
@@ -2821,6 +4480,8 @@ describe("application-level Activity state", () => {
                 key: "variant-draft",
                 name: "",
                 nafdacRegistrationNumber: "",
+                lowStockThresholdQuantity: "2",
+                lowStockThresholdPackagingLevelId: "",
                 packaging: [],
                 batches: [],
                 unbatchedStock: {}
@@ -3116,7 +4777,8 @@ describe("application-level Activity state", () => {
             productId: product.id,
             variantId: productVariant.id,
             batchNumber: "LATER-LOT",
-            expiryDate: new Date("2028-01-31T00:00:00.000Z")
+            expiryDate: new Date("2028-01-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
         };
         const laterRecord = {
             id: "catalogue-later-inventory-edit-record",
@@ -3277,6 +4939,7 @@ describe("application-level Activity state", () => {
         const productVariant = {
             id: "delivery-created-variant",
             variantName: "Delivery variant",
+            lowStockThreshold: { quantity: 2 },
             packagingHierarchy: [{
                 id: "delivery-created-packaging",
                 name: "Unit",
@@ -3324,7 +4987,8 @@ describe("application-level Activity state", () => {
             productId: product.id,
             variantId: productVariant.id,
             batchNumber: "INIT-1",
-            expiryDate: new Date("2027-01-31")
+            expiryDate: new Date("2027-01-31"),
+            pricingByPackagingLevel: []
         }];
         const draft = addPackagingLevelToUpdateDraft(
             createProductUpdateDraft(product),
@@ -3660,7 +5324,7 @@ describe("application-level Activity state", () => {
     });
 
     it("commits a product update with historical product and inventory snapshots", () => {
-        const state = createInitialApplicationState();
+        const state = createApplicationStateWithConfiguredThresholds();
         const original = state.products[0];
         const updated = {
             ...original,
@@ -3714,8 +5378,55 @@ describe("application-level Activity state", () => {
         expect(applicationReducer(committed, action)).toBe(committed);
     });
 
+    it("rejects an unrelated edit that leaves a packaged variant without a threshold", () => {
+        const original: productStructure = {
+            id: "product-without-threshold",
+            name: "Product without threshold",
+            variant: [{
+                id: "variant-without-threshold",
+                variantName: "Packaged variant without threshold",
+                packagingHierarchy: [{
+                    id: "unit-without-threshold",
+                    name: "Unit",
+                    costPrice: null,
+                    sellingPrice: null,
+                    quantityofNextLevel: null,
+                    nextLevelId: null
+                }]
+            }]
+        };
+        const initialState = createInitialApplicationState();
+        const state = {
+            ...initialState,
+            products: [original],
+            inventoryRecords: [],
+            inventoryBatches: []
+        };
+        const updated = {
+            ...original,
+            description: "Updated without configuring the threshold"
+        };
+        const events = prepareActivityEvents(buildProductUpdateActivityInputs(
+            original,
+            updated,
+            state.inventoryRecords,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            `product.updated:${original.id}:missing-threshold`,
+            "Update product description"
+        ));
+
+        expect(() => applicationReducer(state, {
+            type: "product.updated",
+            product: updated,
+            events
+        })).toThrow(
+            "A low-stock threshold is required for variants with packaging."
+        );
+    });
+
     it("keeps all inventory records and batches unchanged when a product conversion changes", () => {
-        const initial = createInitialApplicationState();
+        const initial = createApplicationStateWithConfiguredThresholds();
         const original = initial.products[0];
         const state = {
             ...initial,
@@ -3734,7 +5445,8 @@ describe("application-level Activity state", () => {
                 productId: original.id,
                 variantId: original.variant[0].id,
                 batchNumber: "KEEP-1",
-                expiryDate: new Date("2027-01-01")
+                expiryDate: new Date("2027-01-01"),
+                pricingByPackagingLevel: []
             }]
         };
         const inventoryBefore = structuredClone(state.inventoryRecords);
@@ -3786,7 +5498,7 @@ describe("application-level Activity state", () => {
     });
 
     it("persists product fields and a new variant without creating inventory or batches", () => {
-        const state = createInitialApplicationState();
+        const state = createApplicationStateWithConfiguredThresholds();
         const original = state.products[0];
         const draft = addVariantToUpdateDraft(
             createProductUpdateDraft(original),
@@ -3804,6 +5516,7 @@ describe("application-level Activity state", () => {
         const addedVariant = draft.variants.at(-1)!;
         addedVariant.name = "Added variant";
         addedVariant.nafdacRegistrationNumber = "REG-ADDED";
+        addedVariant.lowStockThresholdQuantity = "5";
         addedVariant.packaging.push({
             id: "added-packaging",
             name: "Added unit",
@@ -3834,6 +5547,7 @@ describe("application-level Activity state", () => {
             id: "variant-added",
             variantName: "Added variant",
             nafdacRegistrationNumber: "REG-ADDED",
+            lowStockThreshold: { quantity: 5 },
             packagingHierarchy: [{
                 id: "added-packaging",
                 name: "Added unit",
@@ -3897,7 +5611,7 @@ describe("application-level Activity state", () => {
     });
 
     it("validates product update snapshots, structure, and complete inventory atomically", () => {
-        const state = createInitialApplicationState();
+        const state = createApplicationStateWithConfiguredThresholds();
         const original = state.products[0];
         const updated = { ...original, name: "Updated medicine" };
         const events = prepareActivityEvents(buildProductUpdateActivityInputs(
@@ -4013,7 +5727,7 @@ describe("application-level Activity state", () => {
     });
 
     it("stores the complete committed product-scoped inventory and batch snapshot", () => {
-        const initial = createInitialApplicationState();
+        const initial = createApplicationStateWithConfiguredThresholds();
         const product = initial.products[0];
         if (!product) {
             throw new Error("Product update fixture requires a product.");
@@ -4032,10 +5746,11 @@ describe("application-level Activity state", () => {
                 ? {
                     ...candidate,
                     receivedDate: "2026-02-01T00:00:00.000Z",
-                    receivedPricing: {
+                    pricingByPackagingLevel: [{
                         packagingLevelId,
+                        costPrice: null,
                         sellingPrice: 18
-                    }
+                    }]
                 }
                 : candidate
         );
@@ -4101,7 +5816,7 @@ describe("application-level Activity state", () => {
     });
 
     it("rejects a forged first-time product inventory snapshot atomically", () => {
-        const state = createInitialApplicationState();
+        const state = createApplicationStateWithConfiguredThresholds();
         const product = state.products[0];
         if (!product) {
             throw new Error("Product update fixture requires a product.");

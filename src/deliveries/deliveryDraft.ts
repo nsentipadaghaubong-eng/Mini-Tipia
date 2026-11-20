@@ -1,3 +1,5 @@
+import { hasAtMostTwoDecimalPlaces } from "../pricing/pricePrecision";
+
 export type DeliveryDraftStatus = "draft" | "cancelled" | "received";
 
 export interface DeliveryDraftItem {
@@ -8,6 +10,8 @@ export interface DeliveryDraftItem {
     quantity: number;
     batchNumber: string | null;
     expiryDate: string | null;
+    costPrice: number | null;
+    sellingPrice: number | null;
 }
 
 export interface DeliveryDraft {
@@ -48,6 +52,8 @@ export interface DeliveryDraftItemChanges {
     quantity?: number;
     batchNumber?: string | null;
     expiryDate?: string | null;
+    costPrice?: number | null;
+    sellingPrice?: number | null;
 }
 
 function normalizedId(value: unknown, label: string): string {
@@ -93,6 +99,27 @@ function normalizeOptionalDate(value: unknown, label: string): string | null {
         return null;
     }
     return normalizeDate(value, label);
+}
+
+function normalizeOptionalPrice(value: unknown, label: string): number | null {
+    if (value === null) {
+        return null;
+    }
+    if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < 0
+    ) {
+        throw new Error(
+            `${label} must be null or a finite non-negative number.`
+        );
+    }
+    if (!hasAtMostTwoDecimalPlaces(value)) {
+        throw new Error(
+            `${label} must have at most two decimal places.`
+        );
+    }
+    return value;
 }
 
 function validTimestamp(value: unknown, label: string): string {
@@ -157,7 +184,12 @@ function validateItem(item: unknown): DeliveryDraftItem {
         ),
         quantity,
         batchNumber,
-        expiryDate: normalizeOptionalDate(source.expiryDate, "Expiry date")
+        expiryDate: normalizeOptionalDate(source.expiryDate, "Expiry date"),
+        costPrice: normalizeOptionalPrice(source.costPrice, "Cost price"),
+        sellingPrice: normalizeOptionalPrice(
+            source.sellingPrice,
+            "Selling price"
+        )
     };
 }
 

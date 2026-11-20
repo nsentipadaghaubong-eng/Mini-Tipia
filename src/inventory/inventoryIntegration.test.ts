@@ -76,8 +76,8 @@ const product: productStructure = {
 };
 
 const batches: inventoryBatch[] = [
-    { batchId: "BATCH001", productId: "PROD001", variantId: "VAR001", batchNumber: "B1-1001", expiryDate: new Date("2027-12-31") },
-    { batchId: "BATCH002", productId: "PROD001", variantId: "VAR002", batchNumber: null, expiryDate: new Date("2027-10-31") }
+    { batchId: "BATCH001", productId: "PROD001", variantId: "VAR001", batchNumber: "B1-1001", expiryDate: new Date("2027-12-31"), pricingByPackagingLevel: [] },
+    { batchId: "BATCH002", productId: "PROD001", variantId: "VAR002", batchNumber: null, expiryDate: new Date("2027-10-31"), pricingByPackagingLevel: [] }
 ];
 
 // --------------------------------------------------

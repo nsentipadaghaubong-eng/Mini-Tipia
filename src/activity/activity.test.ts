@@ -39,7 +39,12 @@ const inventoryBatch: inventoryBatch = {
     productId: product.id,
     variantId: product.variant[0].id,
     batchNumber: "LOT-1",
-    expiryDate: new Date("2027-01-31T00:00:00.000Z")
+    expiryDate: new Date("2027-01-31T00:00:00.000Z"),
+    pricingByPackagingLevel: [{
+        packagingLevelId: "box-1",
+        costPrice: 8,
+        sellingPrice: 12
+    }]
 };
 
 function makeEvents(
@@ -107,7 +112,14 @@ describe("Activity event recording", () => {
                 variantId: product.variant[0].id,
                 variantName: product.variant[0].variantName,
                 batchNumber: inventoryBatch.batchNumber,
-                expiryDate: inventoryBatch.expiryDate?.toISOString() ?? null
+                expiryDate: inventoryBatch.expiryDate?.toISOString() ?? null,
+                pricingByPackagingLevel:
+                    inventoryBatch.pricingByPackagingLevel.map(
+                        (pricing) => ({
+                            ...pricing,
+                            packagingLevelName: "Box"
+                        })
+                    )
             }
         };
         expect(() => makeEvents([input])).toThrow(
@@ -141,7 +153,12 @@ describe("Activity event recording", () => {
                 )
             }]
         };
-        const batchSnapshotSource = { ...inventoryBatch };
+        const batchSnapshotSource = {
+            ...inventoryBatch,
+            pricingByPackagingLevel: inventoryBatch.pricingByPackagingLevel.map(
+                (pricing) => ({ ...pricing })
+            )
+        };
         const inputs = buildProductCreationActivityInputs(
             original,
             [{
@@ -158,6 +175,7 @@ describe("Activity event recording", () => {
         original.name = "Renamed";
         original.variant[0].packagingHierarchy[0].name = "Case";
         batchSnapshotSource.batchNumber = "LOT-CHANGED";
+        batchSnapshotSource.pricingByPackagingLevel[0]!.sellingPrice = 99;
 
         expect(created.type).toBe("product.created");
         if (created.type === "product.created") {
@@ -173,6 +191,12 @@ describe("Activity event recording", () => {
             expect(batchCreated.batch.expiryDate).toBe(
                 "2027-01-31T00:00:00.000Z"
             );
+            expect(batchCreated.batch.pricingByPackagingLevel).toEqual([{
+                packagingLevelId: "box-1",
+                costPrice: 8,
+                sellingPrice: 12,
+                packagingLevelName: "Box"
+            }]);
         }
     });
 
@@ -285,6 +309,54 @@ describe("Activity event recording", () => {
         )).toBeUndefined();
     });
 
+    it("captures pricing-only batch edits and ignores unchanged pricing", () => {
+        const productAtUpdate = structuredClone(product);
+        const updatedBatch = {
+            ...inventoryBatch,
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box-1",
+                costPrice: 9,
+                sellingPrice: 14
+            }]
+        };
+        const eventInput = buildBatchUpdatedActivityInput(
+            "price-update",
+            inventoryBatch,
+            updatedBatch,
+            productAtUpdate,
+            "Updated received prices"
+        );
+
+        productAtUpdate.variant[0].packagingHierarchy[0].name = "Case";
+        expect(eventInput?.type).toBe("inventory.batch_updated");
+        if (eventInput?.type === "inventory.batch_updated") {
+            expect(eventInput.before.pricingByPackagingLevel[0]).toEqual({
+                packagingLevelId: "box-1",
+                costPrice: 8,
+                sellingPrice: 12,
+                packagingLevelName: "Box"
+            });
+            expect(eventInput.after.pricingByPackagingLevel[0]).toEqual({
+                packagingLevelId: "box-1",
+                costPrice: 9,
+                sellingPrice: 14,
+                packagingLevelName: "Box"
+            });
+        }
+        expect(buildBatchUpdatedActivityInput(
+            "price-no-op",
+            inventoryBatch,
+            {
+                ...inventoryBatch,
+                pricingByPackagingLevel: inventoryBatch.pricingByPackagingLevel.map(
+                    (entry) => ({ ...entry })
+                )
+            },
+            product,
+            "No price change"
+        )).toBeUndefined();
+    });
+
     it("provides strongly typed future delivery and sale contracts without operation logic", () => {
         const futureContracts: ActivityEventInput[] = [
             {
@@ -326,6 +398,8 @@ describe("Activity event recording", () => {
                 key: "variant-draft",
                 name: "",
                 nafdacRegistrationNumber: "",
+                lowStockThresholdQuantity: "2",
+                lowStockThresholdPackagingLevelId: "",
                 packaging: [{
                     key: "box-draft",
                     name: "Box",

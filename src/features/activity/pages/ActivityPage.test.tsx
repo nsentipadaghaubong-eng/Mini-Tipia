@@ -45,7 +45,8 @@ const stockAdjustment: ActivityEventInput = {
         variantId: "variant-id-private",
         variantName: "500 mg tablets",
         batchNumber: "LOT-44",
-        expiryDate: "2027-12-31"
+        expiryDate: "2027-12-31",
+        pricingByPackagingLevel: []
     },
     packagingLevel: {
         packagingLevelId: "packaging-id-private",
@@ -134,7 +135,13 @@ const delivery: ActivityEventInput = {
             variantId: "variant-id-private",
             variantName: "500 mg tablets",
             batchNumber: "LOT-44",
-            expiryDate: "2027-12-31"
+            expiryDate: "2027-12-31",
+            pricingByPackagingLevel: []
+        },
+        pricingAtReceipt: {
+            packagingLevelId: "packaging-id-private",
+            costPrice: null,
+            sellingPrice: 12
         },
         stock: [{
             packagingLevel: {

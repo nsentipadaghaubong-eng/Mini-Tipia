@@ -372,7 +372,9 @@ export default function ReceiveDeliveryPage({
                     packagingLevelId: item.packagingLevelId,
                     quantity: item.quantity,
                     batchNumber: item.batchNumber,
-                    expiryDate: item.expiryDate
+                    expiryDate: item.expiryDate,
+                    costPrice: item.costPrice,
+                    sellingPrice: item.sellingPrice
                 };
                 updateDeliveryDraftItem(
                     selectedDraft,
@@ -732,6 +734,11 @@ export default function ReceiveDeliveryPage({
                                                     Batch {item.batchNumber ?? "not specified"}
                                                     {" · "}
                                                     Expiry {item.expiryDate ?? "not specified"}
+                                                </span>
+                                                <span>
+                                                    Cost {item.costPrice ?? "empty"}
+                                                    {" · "}
+                                                    Selling {item.sellingPrice ?? "empty"}
                                                 </span>
                                                 {selectedDraft.status === "draft" && (
                                                     <div className="delivery-item-actions">

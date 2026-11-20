@@ -17,6 +17,8 @@ function variantDraft(
         key,
         name: key,
         nafdacRegistrationNumber,
+        lowStockThresholdQuantity: "",
+        lowStockThresholdPackagingLevelId: "",
         packaging: [],
         batches: [],
         unbatchedStock: {}

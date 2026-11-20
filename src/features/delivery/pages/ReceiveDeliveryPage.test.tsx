@@ -40,7 +40,7 @@ const products: productStructure[] = [{
         packagingHierarchy: [{
             id: "box",
             name: "Box",
-            costPrice: null,
+            costPrice: 8.5,
             sellingPrice: 12,
             quantityofNextLevel: 10,
             nextLevelId: "bottle"
@@ -48,7 +48,7 @@ const products: productStructure[] = [{
             id: "bottle",
             name: "Bottle",
             costPrice: null,
-            sellingPrice: 2,
+            sellingPrice: null,
             quantityofNextLevel: null,
             nextLevelId: null
         }]
@@ -80,7 +80,9 @@ function draftWithItem(deliveryId: string, supplier: string): DeliveryDraft {
             packagingLevelId: "box",
             quantity: 4,
             batchNumber: "LOT-1",
-            expiryDate: "2027-12-31"
+            expiryDate: "2027-12-31",
+            costPrice: null,
+            sellingPrice: null
         }]
     };
 }
@@ -244,6 +246,56 @@ function clickVariant(name: string) {
 }
 
 describe("Receive Delivery page", () => {
+    it("prefills packaging-level defaults and allows nullable prices", () => {
+        const page = renderPage();
+        fillRequiredHeader();
+        fireEvent.change(screen.getByLabelText("Search products"), {
+            target: { value: "Example medicine" }
+        });
+        fireEvent.click(screen.getByRole("option", {
+            name: "Select product Example medicine"
+        }));
+        clickVariant("10 mg tablets");
+
+        const dialog = screen.getByRole("dialog", { name: "Receive Item" });
+        fireEvent.change(within(dialog).getByLabelText("Packaging level received"), {
+            target: { value: "box" }
+        });
+        expect(within(dialog).getByLabelText("Cost price")).toHaveValue(8.5);
+        expect(within(dialog).getByLabelText("Selling price")).toHaveValue(12);
+        fireEvent.change(within(dialog).getByLabelText("Cost price"), {
+            target: { value: "9.25" }
+        });
+        fireEvent.change(within(dialog).getByLabelText("Selling price"), {
+            target: { value: "13.75" }
+        });
+        fireEvent.click(within(dialog).getByRole("button", {
+            name: "Add to Delivery"
+        }));
+
+        clickVariant("10 mg tablets");
+        clickVariant("10 mg tablets");
+        const secondDialog = screen.getByRole("dialog", { name: "Receive Item" });
+        fireEvent.change(within(secondDialog).getByLabelText("Packaging level received"), {
+            target: { value: "bottle" }
+        });
+        expect(within(secondDialog).getByLabelText("Cost price")).toHaveValue(null);
+        expect(within(secondDialog).getByLabelText("Selling price")).toHaveValue(null);
+        fireEvent.click(within(secondDialog).getByRole("button", {
+            name: "Add to Delivery"
+        }));
+
+        expect(page.state.deliveryDrafts[0].items).toMatchObject([{
+            packagingLevelId: "box",
+            costPrice: 9.25,
+            sellingPrice: 13.75
+        }, {
+            packagingLevelId: "bottle",
+            costPrice: null,
+            sellingPrice: null
+        }]);
+    });
+
     it("renders a local-date header form without creating a draft or exposing approval", () => {
         const initial = makeState();
         const page = renderPage(initial);
@@ -525,6 +577,31 @@ describe("Receive Delivery page", () => {
 
         expect(within(dialog).getByRole("alert")).toHaveTextContent(
             "The selected variant does not belong to this product."
+        );
+        expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("does not call onSave when a packaging-level price is invalid", () => {
+        const onSave = vi.fn(() => undefined);
+        render(
+            <ReceiveDeliveryItemModal
+                onClose={() => undefined}
+                onSave={onSave}
+                product={products[0]}
+                productVariant={products[0].variant[0]}
+            />
+        );
+        const dialog = screen.getByRole("dialog", { name: "Receive Item" });
+        fireEvent.change(within(dialog).getByLabelText("Packaging level received"), {
+            target: { value: "box" }
+        });
+        fireEvent.change(within(dialog).getByLabelText("Cost price"), {
+            target: { value: "-1" }
+        });
+        fireEvent.submit(dialog.querySelector("form")!);
+
+        expect(within(dialog).getByRole("alert")).toHaveTextContent(
+            "Cost price must be a non-negative number or empty."
         );
         expect(onSave).not.toHaveBeenCalled();
     });
@@ -820,6 +897,9 @@ describe("Receive Delivery page", () => {
         fireEvent.change(screen.getByLabelText(/Name or description/), {
             target: { value: "Capsule" }
         });
+        fireEvent.change(screen.getByLabelText(/Threshold quantity/), {
+            target: { value: "5" }
+        });
         fireEvent.click(screen.getByRole("button", { name: "Add Packaging Level" }));
         fireEvent.change(screen.getByLabelText(/Packaging name/), {
             target: { value: "Bottle" }
@@ -834,6 +914,7 @@ describe("Receive Delivery page", () => {
             (productVariant) => productVariant.variantName === "Capsule"
         );
         expect(addedVariant).toMatchObject({
+            lowStockThreshold: { quantity: 5 },
             packagingHierarchy: [{
                 name: "Bottle",
                 sellingPrice: 15.5

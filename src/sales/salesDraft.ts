@@ -1,3 +1,5 @@
+import { hasAtMostTwoDecimalPlaces } from "../pricing/pricePrecision";
+
 export type SaleDraftStatus = "draft" | "cancelled" | "approved";
 
 export interface SaleDraftStaffMember {
@@ -13,7 +15,7 @@ export interface SaleDraftItem {
     batchId: string | null;
     packagingLevelId: string;
     quantity: number;
-    defaultSellingPrice: number;
+    defaultSellingPrice: number | null;
     appliedSellingPrice: number;
     discountAmount: number;
 }
@@ -43,7 +45,7 @@ export interface SaleDraftItemChanges {
     batchId?: string | null;
     packagingLevelId?: string;
     quantity?: number;
-    defaultSellingPrice?: number;
+    defaultSellingPrice?: number | null;
     appliedSellingPrice?: number;
     discountAmount?: number;
 }
@@ -94,6 +96,18 @@ function roundMoney(value: number, label: string): number {
         throw new Error(`${label} must be a finite amount.`);
     }
     return rounded;
+}
+
+function validateCanonicalMoney(value: number, label: string): void {
+    if (
+        !Number.isFinite(value) ||
+        value < 0 ||
+        !hasAtMostTwoDecimalPlaces(value)
+    ) {
+        throw new Error(
+            `${label} must be a non-negative number with at most two decimal places.`
+        );
+    }
 }
 
 function requireString(value: unknown, label: string): string {
@@ -151,10 +165,12 @@ function validateItem(item: unknown): SaleDraftItem {
             "Packaging level ID"
         ),
         quantity: requireNumber(source.quantity, "Sale draft quantity"),
-        defaultSellingPrice: requireNumber(
-            source.defaultSellingPrice,
-            "Default selling price"
-        ),
+        defaultSellingPrice: source.defaultSellingPrice === null
+            ? null
+            : requireNumber(
+                source.defaultSellingPrice,
+                "Default selling price"
+            ),
         appliedSellingPrice: requireNumber(
             source.appliedSellingPrice,
             "Applied selling price"
@@ -169,18 +185,11 @@ function validateItem(item: unknown): SaleDraftItem {
         throw new Error("Sale draft quantity must be a positive safe integer.");
     }
 
-    normalized.defaultSellingPrice = roundMoney(
-        normalized.defaultSellingPrice,
-        "Default selling price"
-    );
-    normalized.appliedSellingPrice = roundMoney(
-        normalized.appliedSellingPrice,
-        "Applied selling price"
-    );
-    normalized.discountAmount = roundMoney(
-        normalized.discountAmount,
-        "Discount amount"
-    );
+    if (normalized.defaultSellingPrice !== null) {
+        validateCanonicalMoney(normalized.defaultSellingPrice, "Default selling price");
+    }
+    validateCanonicalMoney(normalized.appliedSellingPrice, "Applied selling price");
+    validateCanonicalMoney(normalized.discountAmount, "Discount amount");
 
     const subtotal = roundMoney(
         normalized.appliedSellingPrice * normalized.quantity,

@@ -761,7 +761,51 @@ const presentations: {
             event.before.expiryDate,
             event.after.expiryDate
         );
-        const changes = section("Batch changes", batchNumberChange, expiryChange);
+        const beforePricing = new Map(
+            event.before.pricingByPackagingLevel.map((entry) => [
+                entry.packagingLevelId,
+                entry
+            ])
+        );
+        const afterPricing = new Map(
+            event.after.pricingByPackagingLevel.map((entry) => [
+                entry.packagingLevelId,
+                entry
+            ])
+        );
+        const pricingChanges = [...new Set([
+            ...beforePricing.keys(),
+            ...afterPricing.keys()
+        ])].flatMap((packagingLevelId) => {
+            const before = beforePricing.get(packagingLevelId);
+            const after = afterPricing.get(packagingLevelId);
+            if (
+                before?.costPrice === after?.costPrice &&
+                before?.sellingPrice === after?.sellingPrice &&
+                Boolean(before) === Boolean(after)
+            ) {
+                return [];
+            }
+            const summary = (pricing: typeof before) => pricing
+                ? `Cost ${formatMoney(pricing.costPrice) ?? "Empty"}; Selling ${
+                    formatMoney(pricing.sellingPrice) ?? "Empty"
+                }`
+                : "Not recorded";
+            const packagingLevelName =
+                after?.packagingLevelName ?? before?.packagingLevelName;
+            return [field(
+                packagingLevelName
+                    ? `${packagingLevelName} pricing`
+                    : "Packaging-level pricing",
+                `${summary(before)} → ${summary(after)}`
+            )];
+        });
+        const changes = section(
+            "Batch changes",
+            batchNumberChange,
+            expiryChange,
+            ...pricingChanges
+        );
         const firstChange = changes?.fields[0];
         return {
             title: "Inventory batch updated",
@@ -780,7 +824,17 @@ const presentations: {
                     "Batch details",
                     textField("Batch number", event.after.batchNumber),
                     dateField("Expiry date", event.after.expiryDate),
-                    dateField("Received date", event.after.receivedDate)
+                    dateField("Received date", event.after.receivedDate),
+                    ...event.after.pricingByPackagingLevel.flatMap((pricing) => [
+                        moneyField(
+                            `${pricing.packagingLevelName} cost price`,
+                            pricing.costPrice
+                        ),
+                        moneyField(
+                            `${pricing.packagingLevelName} selling price`,
+                            pricing.sellingPrice
+                        )
+                    ])
                 ),
                 changes,
                 section("Reason", textField("Reason", event.reason))
@@ -880,7 +934,15 @@ const presentations: {
                     ]),
                     textField("Batch", item.batch?.batchNumber),
                     dateField("Expiry date", item.batch?.expiryDate),
-                    dateField("Received date", item.batch?.receivedDate)
+                    dateField("Received date", item.batch?.receivedDate),
+                    field(
+                        "Cost price received",
+                        formatMoney(item.pricingAtReceipt.costPrice) ?? "Empty"
+                    ),
+                    field(
+                        "Selling price received",
+                        formatMoney(item.pricingAtReceipt.sellingPrice) ?? "Empty"
+                    )
                 ))
             )
         };

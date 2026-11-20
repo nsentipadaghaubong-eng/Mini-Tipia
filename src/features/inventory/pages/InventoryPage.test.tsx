@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { productStructure } from "../../../products/productStructure";
+import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
 import type { InventoryCommit } from "./InventoryPage";
 import InventoryPage from "./InventoryPage";
@@ -29,12 +30,13 @@ const editableProduct: productStructure = {
     }]
 };
 
-const editableBatch = {
+const editableBatch: inventoryBatch = {
     batchId: "batch-editable",
     productId: editableProduct.id,
     variantId: editableProduct.variant[0].id,
     batchNumber: "LOT-1",
-    expiryDate: new Date("2027-01-31T00:00:00.000Z")
+    expiryDate: new Date("2027-01-31T00:00:00.000Z"),
+    pricingByPackagingLevel: []
 };
 
 const editableRecord = {
@@ -134,6 +136,53 @@ function renderInventoryDetails(options: {
     return onInventoryCommit;
 }
 
+function renderLowStockStatusPage(
+    quantity: number,
+    threshold: number | null = 10
+) {
+    const productId = "product-low-stock";
+    const variantId = "variant-low-stock";
+    const product: productStructure = {
+        id: productId,
+        name: "Low-stock medicine",
+        variant: [{
+            id: variantId,
+            variantName: "Cards",
+            packagingHierarchy: [{
+                id: "card",
+                name: "Card",
+                costPrice: null,
+                sellingPrice: null,
+                quantityofNextLevel: null,
+                nextLevelId: null
+            }],
+            ...(threshold === null ? {} : {
+                lowStockThreshold: {
+                    quantity: threshold,
+                    packagingLevelId: "card"
+                }
+            })
+        }]
+    };
+
+    render(createElement(InventoryPage, {
+        products: [product],
+        inventoryRecords: [{
+            id: "inventory-low-stock",
+            productId,
+            variantId,
+            batchId: null,
+            stockQuantities: [{ packagingLevelId: "card", quantity }]
+        }],
+        inventoryBatches: [],
+        onInventoryCommit: () => undefined,
+        navigationRequest: null,
+        onNavigate: () => undefined,
+        onNavigationConsumed: () => undefined,
+        onNavigationDismissed: () => undefined
+    }));
+}
+
 describe("InventoryPage navigation", () => {
     it("opens a locked inventory editor with an explanation for an active product draft", () => {
         const saleDraft = {
@@ -201,7 +250,8 @@ describe("InventoryPage navigation", () => {
             productId: product.id,
             variantId: "variant-2",
             batchNumber: "B2",
-            expiryDate: null
+            expiryDate: null,
+            pricingByPackagingLevel: []
         }];
         const onInventoryCommit = vi.fn();
         const markup = renderToStaticMarkup(createElement(InventoryPage, {
@@ -228,7 +278,11 @@ describe("InventoryPage navigation", () => {
         expect(markup).toContain('role="dialog"');
         expect(markup).toContain("<h2 id=\"edit-modal-title\">Edit Inventory</h2>");
         expect(markup).toContain("<p>Medicine</p>");
-        expect(markup.indexOf("Syrup")).toBeLessThan(markup.indexOf("Tablets"));
+        const dialogMarkup = markup.slice(
+            markup.indexOf('aria-labelledby="edit-modal-title"')
+        );
+        expect(dialogMarkup.indexOf("Syrup"))
+            .toBeLessThan(dialogMarkup.indexOf("Tablets"));
         expect(markup).toContain("B2");
         expect(markup).toContain('value="8"');
         expect(onInventoryCommit).not.toHaveBeenCalled();
@@ -312,6 +366,7 @@ describe("InventoryPage navigation", () => {
         expect(onInventoryCommit).toHaveBeenCalledOnce();
         const commit = onInventoryCommit.mock.calls[0][0];
         expect(commit.inventoryBatches).toHaveLength(2);
+        expect(commit.inventoryBatches[1]?.pricingByPackagingLevel).toEqual([]);
         expect(commit.inventoryRecords).toHaveLength(2);
         expect(commit.inventoryRecords).toContainEqual(expect.objectContaining({
             batchId: expect.any(String),
@@ -325,6 +380,47 @@ describe("InventoryPage navigation", () => {
                     packagingLevel: expect.objectContaining({ name: "Box" }),
                     quantity: 7
                 }]
+            })
+        }));
+    });
+
+    it("preserves existing batch prices when batch metadata is edited", () => {
+        const existingPricing = [{
+            packagingLevelId: "box-editable",
+            costPrice: 12,
+            sellingPrice: 18
+        }];
+        const activityPricing = [{
+            ...existingPricing[0],
+            packagingLevelName: "Box"
+        }];
+        const batchWithPricing = {
+            ...editableBatch,
+            pricingByPackagingLevel: existingPricing
+        };
+        const onInventoryCommit = renderInventoryEditor({
+            inventoryBatches: [batchWithPricing]
+        });
+
+        fireEvent.change(screen.getByLabelText("Batch number"), {
+            target: { value: "LOT-UPDATED" }
+        });
+        fireEvent.change(screen.getByLabelText("Why are you making these changes?"), {
+            target: { value: "Corrected batch number" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(onInventoryCommit).toHaveBeenCalledOnce();
+        const commit = onInventoryCommit.mock.calls[0][0];
+        expect(commit.inventoryBatches[0]?.pricingByPackagingLevel)
+            .toEqual(existingPricing);
+        expect(commit.activityEvents).toContainEqual(expect.objectContaining({
+            type: "inventory.batch_updated",
+            before: expect.objectContaining({
+                pricingByPackagingLevel: activityPricing
+            }),
+            after: expect.objectContaining({
+                pricingByPackagingLevel: activityPricing
             })
         }));
     });
@@ -437,7 +533,9 @@ describe("InventoryPage navigation", () => {
                 packagingLevelId: "box-editable",
                 quantity: 3,
                 batchNumber: "LOT-1",
-                expiryDate: "2027-01-31"
+                expiryDate: "2027-01-31",
+                costPrice: null,
+                sellingPrice: null
             }]
         };
         const onInventoryCommit = renderInventoryDetails({
@@ -514,5 +612,44 @@ describe("InventoryPage navigation", () => {
         expect(onInventoryCommit).not.toHaveBeenCalled();
         expect(screen.queryByRole("dialog", { name: "Edit Inventory" }))
             .not.toBeInTheDocument();
+    });
+});
+
+describe("InventoryPage low-stock status", () => {
+    it("shows Out of stock for zero stock even when no threshold is configured", () => {
+        renderLowStockStatusPage(0, null);
+
+        expect(screen.getByText("Out of stock", { selector: "strong" }))
+            .toBeInTheDocument();
+        expect(screen.queryByText("Threshold not configured"))
+            .not.toBeInTheDocument();
+    });
+
+    it("excludes zero-stock variants from Low stock results", () => {
+        renderLowStockStatusPage(0);
+
+        expect(screen.getByText("Out of stock", { selector: "strong" }))
+            .toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText("Filter by stock level"), {
+            target: { value: "low-stock" }
+        });
+
+        expect(screen.queryByRole("heading", {
+            name: "Low-stock medicine"
+        })).not.toBeInTheDocument();
+    });
+
+    it("shows positive stock within the threshold as Low stock in filtered results", () => {
+        renderLowStockStatusPage(1);
+
+        fireEvent.change(screen.getByLabelText("Filter by stock level"), {
+            target: { value: "low-stock" }
+        });
+
+        expect(screen.getByRole("heading", {
+            name: "Low-stock medicine"
+        })).toBeInTheDocument();
+        expect(screen.getByText("Low stock", { selector: "strong" }))
+            .toBeInTheDocument();
     });
 });

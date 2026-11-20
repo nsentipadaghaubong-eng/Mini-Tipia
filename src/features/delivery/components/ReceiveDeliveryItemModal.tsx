@@ -3,6 +3,22 @@ import type { DeliveryDraftItem } from "../../../deliveries/deliveryDraft";
 import type { productStructure, variant } from "../../../products/productStructure";
 import { validatePackagingHierarchy } from "../../../packaging/packagingValidation";
 
+function priceInput(value: number | null | undefined): string {
+    return value === null || value === undefined ? "" : String(value);
+}
+
+function parseOptionalPrice(value: string, label: string): number | null {
+    const normalized = value.trim();
+    if (normalized === "") {
+        return null;
+    }
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`${label} must be a non-negative number or empty.`);
+    }
+    return parsed;
+}
+
 interface ReceiveDeliveryItemModalProps {
     product: productStructure;
     productVariant: variant;
@@ -26,7 +42,22 @@ export default function ReceiveDeliveryItemModal({
     );
     const [batchNumber, setBatchNumber] = useState(item?.batchNumber ?? "");
     const [expiryDate, setExpiryDate] = useState(item?.expiryDate ?? "");
+    const [costPrice, setCostPrice] = useState(
+        priceInput(item?.costPrice)
+    );
+    const [sellingPrice, setSellingPrice] = useState(
+        priceInput(item?.sellingPrice)
+    );
     const [errorMessage, setErrorMessage] = useState("");
+
+    function handlePackagingLevelChange(value: string) {
+        setPackagingLevelId(value);
+        const packagingLevel = productVariant.packagingHierarchy.find(
+            (level) => level.id === value
+        );
+        setCostPrice(priceInput(packagingLevel?.costPrice));
+        setSellingPrice(priceInput(packagingLevel?.sellingPrice));
+    }
 
     function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -59,7 +90,9 @@ export default function ReceiveDeliveryItemModal({
                 packagingLevelId,
                 quantity: parsedQuantity,
                 batchNumber: batchNumber.trim() || null,
-                expiryDate: expiryDate || null
+                expiryDate: expiryDate || null,
+                costPrice: parseOptionalPrice(costPrice, "Cost price"),
+                sellingPrice: parseOptionalPrice(sellingPrice, "Selling price")
             });
             if (message) {
                 setErrorMessage(message);
@@ -107,9 +140,9 @@ export default function ReceiveDeliveryItemModal({
                             <span>Packaging level received</span>
                             <select
                                 aria-label="Packaging level received"
-                                onChange={(event) =>
-                                    setPackagingLevelId(event.target.value)
-                                }
+                                onChange={(event) => handlePackagingLevelChange(
+                                    event.target.value
+                                )}
                                 required
                                 value={packagingLevelId}
                             >
@@ -154,6 +187,32 @@ export default function ReceiveDeliveryItemModal({
                                     onChange={(event) => setExpiryDate(event.target.value)}
                                     type="date"
                                     value={expiryDate}
+                                />
+                            </label>
+                            <label className="delivery-item-field">
+                                <span>Cost price</span>
+                                <input
+                                    aria-label="Cost price"
+                                    min="0"
+                                    onChange={(event) =>
+                                        setCostPrice(event.target.value)
+                                    }
+                                    step="0.01"
+                                    type="number"
+                                    value={costPrice}
+                                />
+                            </label>
+                            <label className="delivery-item-field">
+                                <span>Selling price</span>
+                                <input
+                                    aria-label="Selling price"
+                                    min="0"
+                                    onChange={(event) =>
+                                        setSellingPrice(event.target.value)
+                                    }
+                                    step="0.01"
+                                    type="number"
+                                    value={sellingPrice}
                                 />
                             </label>
                         </div>

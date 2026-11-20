@@ -22,19 +22,27 @@ import {
 } from "./activity/activity";
 import type { inventory } from "./inventory/inventoryStock";
 import { adjustInventoryStock } from "./inventory/inventoryAdjustment";
-import type { inventoryBatch } from "./inventory/inventoryBatch";
+import {
+    validateBatchPricingCollection,
+    type inventoryBatch
+} from "./inventory/inventoryBatch";
 import { validateInventoryRelationships } from "./inventory/inventoryValidation";
 import { demoInventory, demoInventoryBatches, demoProducts } from "./data/demoInventory";
 import type { ProductCreationResult } from "./products/productCreation";
 import type { productStructure } from "./products/productStructure";
 import type { variant } from "./products/productStructure";
-import { getPackagingLevelById, getVariantById } from "./products/productValidation";
+import {
+    getPackagingLevelById,
+    getVariantById,
+    validateVariantLowStockThreshold
+} from "./products/productValidation";
 import { validatePackagingHierarchy } from "./packaging/packagingValidation";
 import { removePackagingLevelFromHierarchy } from "./packaging/packagingValidation";
 import {
     prepareSaleDraft,
     type CompletedSale,
-    type SaleCompletion
+    type SaleCompletion,
+    type SaleContext
 } from "./sales/salesEngine";
 import {
     addSaleDraftItem,
@@ -65,7 +73,9 @@ import {
 } from "./deliveries/deliveryApproval";
 import {
     getProductDeletionBlockMessages,
+    getPackagingLevelThresholdDeletionBlockMessage,
     getProductRecordDeletionBlockMessages,
+    getProductPackagingThresholdRemovalBlockMessage,
     prepareProductRecordDeletionPlan,
     type ProductRecordDeletionRequest
 } from "./products/productDeletion";
@@ -275,9 +285,9 @@ function inventoryBatchFromSnapshot(
         ...(snapshot.receivedDate === undefined
             ? {}
             : { receivedDate: snapshot.receivedDate }),
-        ...(snapshot.receivedPricing === undefined
-            ? {}
-            : { receivedPricing: { ...snapshot.receivedPricing } })
+        pricingByPackagingLevel: snapshot.pricingByPackagingLevel.map(
+            (pricing) => ({ ...pricing })
+        )
     };
 }
 
@@ -794,6 +804,7 @@ function validateProductStructure(product: productStructure): void {
             throw new Error("Packaging level names must be trimmed.");
         }
         validatePackagingHierarchy(productVariant.packagingHierarchy);
+        validateVariantLowStockThreshold(productVariant);
     }
 }
 
@@ -848,6 +859,15 @@ function validateProductCreationPayload(
     errorPrefix: string
 ): void {
     validateProductStructure(product);
+    if (product.variant.some(
+        (productVariant) =>
+            productVariant.packagingHierarchy.length > 0 &&
+            productVariant.lowStockThreshold === undefined
+    )) {
+        throw new Error(
+            `${errorPrefix} requires a low-stock threshold for every new variant.`
+        );
+    }
     const existingIds = getApplicationEntityIds(state);
     const newIds = [
         ...getProductStructureIds(product),
@@ -881,16 +901,10 @@ function validateProductCreationPayload(
             throw new Error(`${errorPrefix} contains an invalid batch relationship.`);
         }
         const productVariant = getVariantById(product, batch.variantId);
-        if (
-            batch.receivedPricing &&
-            (!productVariant.packagingHierarchy.some(
-                (level) => level.id === batch.receivedPricing?.packagingLevelId
-            ) ||
-                !Number.isFinite(batch.receivedPricing.sellingPrice) ||
-                batch.receivedPricing.sellingPrice < 0)
-        ) {
-            throw new Error(`${errorPrefix} contains invalid batch pricing.`);
-        }
+        validateBatchPricingCollection(
+            batch.pricingByPackagingLevel,
+            productVariant.packagingHierarchy.map((level) => level.id)
+        );
         snapshotBatch(batch, product);
         batchIds.add(batch.batchId);
     }
@@ -1057,6 +1071,20 @@ function productFromActivitySnapshot(
                     nafdacRegistrationNumber:
                         productVariant.nafdacRegistrationNumber
                 }),
+            ...(productVariant.lowStockThreshold === undefined
+                ? {}
+                : {
+                    lowStockThreshold: {
+                        quantity: productVariant.lowStockThreshold.quantity,
+                        ...(productVariant.lowStockThreshold.packagingLevelId ===
+                            undefined
+                            ? {}
+                            : {
+                                packagingLevelId:
+                                    productVariant.lowStockThreshold.packagingLevelId
+                            })
+                    }
+                }),
             packagingHierarchy: productVariant.packaging.map((level) => ({
                 id: level.packagingLevelId,
                 name: level.name,
@@ -1098,9 +1126,9 @@ function inventoryBatchesFromActivitySnapshot(
         ...(batch.receivedDate === undefined
             ? {}
             : { receivedDate: batch.receivedDate }),
-        ...(batch.receivedPricing === undefined
-            ? {}
-            : { receivedPricing: { ...batch.receivedPricing } })
+        pricingByPackagingLevel: batch.pricingByPackagingLevel.map(
+            (pricing) => ({ ...pricing })
+        )
     }));
 }
 
@@ -1272,6 +1300,12 @@ function createProductUpdateDraftFromProduct(
             name: productVariant.variantName,
             nafdacRegistrationNumber:
                 productVariant.nafdacRegistrationNumber ?? "",
+            lowStockThresholdQuantity:
+                productVariant.lowStockThreshold === undefined
+                    ? ""
+                    : String(productVariant.lowStockThreshold.quantity),
+            lowStockThresholdPackagingLevelId:
+                productVariant.lowStockThreshold?.packagingLevelId ?? "",
             packaging: productVariant.packagingHierarchy.map((level) => ({
                 id: level.id,
                 name: level.name,
@@ -1436,6 +1470,128 @@ function validateProductUpdateInventory(
     }
 }
 
+function saleDraftMatchesCompletion(
+    draft: SaleDraft,
+    sale: CompletedSale
+): boolean {
+    return (
+        draft.items.length === sale.items.length &&
+        draft.customerName === sale.customerName &&
+        draft.customerAddress === sale.customerAddress &&
+        draft.saleDate === sale.saleDate &&
+        JSON.stringify(draft.staffMember) === JSON.stringify(sale.staffMember) &&
+        draft.notes === sale.notes &&
+        draft.items.every((draftItem, index) => {
+            const saleItem = sale.items[index];
+            return (
+                draftItem.lineId === saleItem.lineId &&
+                draftItem.productId === saleItem.product.productId &&
+                draftItem.variantId === saleItem.variant.variantId &&
+                draftItem.inventoryRecordId === saleItem.inventoryRecordId &&
+                draftItem.batchId === (saleItem.batch?.batchId ?? null) &&
+                draftItem.packagingLevelId ===
+                    saleItem.packagingLevel.packagingLevelId &&
+                draftItem.quantity === saleItem.quantity &&
+                draftItem.defaultSellingPrice ===
+                    saleItem.defaultSellingPrice &&
+                draftItem.appliedSellingPrice ===
+                    saleItem.appliedSellingPrice &&
+                draftItem.discountAmount === saleItem.discountAmount
+            );
+        })
+    );
+}
+
+function saleContextFromCompletion(
+    sale: CompletedSale,
+    inventoryRecords: readonly inventory[]
+): SaleContext {
+    const products = new Map<string, productStructure>();
+    const batches = new Map<string, inventoryBatch>();
+
+    for (const item of sale.items) {
+        const productSnapshot = item.product;
+        const product: productStructure = {
+            id: productSnapshot.productId,
+            name: productSnapshot.productName,
+            ...(productSnapshot.description === undefined
+                ? {}
+                : { description: productSnapshot.description }),
+            ...(productSnapshot.genericName === undefined
+                ? {}
+                : { genericName: productSnapshot.genericName }),
+            ...(productSnapshot.manufacturer === undefined
+                ? {}
+                : { manufacturer: productSnapshot.manufacturer }),
+            ...(productSnapshot.category === undefined
+                ? {}
+                : { category: productSnapshot.category }),
+            variant: productSnapshot.variants.map((variantSnapshot) => ({
+                id: variantSnapshot.variantId,
+                variantName: variantSnapshot.variantName,
+                ...(variantSnapshot.nafdacRegistrationNumber === undefined
+                    ? {}
+                    : {
+                        nafdacRegistrationNumber:
+                            variantSnapshot.nafdacRegistrationNumber
+                    }),
+                packagingHierarchy: variantSnapshot.packaging.map((level) => ({
+                    id: level.packagingLevelId,
+                    name: level.name,
+                    costPrice: level.costPrice,
+                    sellingPrice: level.sellingPrice,
+                    quantityofNextLevel: level.quantityOfNextLevel,
+                    nextLevelId: level.nextLevelId
+                }))
+            }))
+        };
+        const existingProduct = products.get(product.id);
+        if (
+            existingProduct &&
+            JSON.stringify(existingProduct) !== JSON.stringify(product)
+        ) {
+            throw new Error("Sale replay contains conflicting product snapshots.");
+        }
+        products.set(product.id, product);
+
+        if (item.batch !== null) {
+            const batchSnapshot = item.batch;
+            const batch: inventoryBatch = {
+                batchId: batchSnapshot.batchId,
+                productId: batchSnapshot.productId,
+                variantId: batchSnapshot.variantId,
+                batchNumber: batchSnapshot.batchNumber,
+                expiryDate: batchSnapshot.expiryDate === null
+                    ? null
+                    : new Date(batchSnapshot.expiryDate),
+                ...(batchSnapshot.receivedDate === undefined
+                    ? {}
+                    : { receivedDate: batchSnapshot.receivedDate }),
+                pricingByPackagingLevel:
+                    batchSnapshot.pricingByPackagingLevel.map((pricing) => ({
+                        packagingLevelId: pricing.packagingLevelId,
+                        costPrice: pricing.costPrice,
+                        sellingPrice: pricing.sellingPrice
+                    }))
+            };
+            const existingBatch = batches.get(batch.batchId);
+            if (
+                existingBatch &&
+                JSON.stringify(existingBatch) !== JSON.stringify(batch)
+            ) {
+                throw new Error("Sale replay contains conflicting batch snapshots.");
+            }
+            batches.set(batch.batchId, batch);
+        }
+    }
+
+    return {
+        products: [...products.values()],
+        inventoryRecords,
+        inventoryBatches: [...batches.values()]
+    };
+}
+
 export function applicationReducer(
     state: ApplicationState,
     action: ApplicationAction
@@ -1587,6 +1743,12 @@ export function applicationReducer(
                 throw new Error("Catalogue variant contains an invalid or duplicate ID.");
             }
             validatePackagingHierarchy(action.variant.packagingHierarchy);
+            if (action.variant.lowStockThreshold === undefined) {
+                throw new Error(
+                    "A new variant requires a low-stock threshold."
+                );
+            }
+            validateVariantLowStockThreshold(action.variant);
             const products = [...state.products];
             products[productIndex] = {
                 ...product,
@@ -1801,6 +1963,14 @@ export function applicationReducer(
                 throw new Error(`Product not found: ${action.product.id}`);
             }
             const previousProduct = productMatches[0];
+            const thresholdRemovalBlockMessage =
+                getProductPackagingThresholdRemovalBlockMessage(
+                    previousProduct,
+                    action.product
+                );
+            if (thresholdRemovalBlockMessage !== null) {
+                throw new Error(thresholdRemovalBlockMessage);
+            }
             const [updateEvent] = updateEvents;
             if (
                 updateEvent.type !== "product.updated" ||
@@ -2058,6 +2228,15 @@ export function applicationReducer(
             )) {
                 throw new Error(`Packaging level not found: ${action.packagingLevelId}`);
             }
+            validateVariantLowStockThreshold(currentVariant);
+            const thresholdBlockMessage =
+                getPackagingLevelThresholdDeletionBlockMessage(
+                    currentVariant,
+                    action.packagingLevelId
+                );
+            if (thresholdBlockMessage !== null) {
+                throw new Error(thresholdBlockMessage);
+            }
             const packagingBlockers = getProductRecordDeletionBlockMessages(
                 {
                     kind: "packaging",
@@ -2129,9 +2308,23 @@ export function applicationReducer(
                     ? [{ ...record, stockQuantities }]
                     : [];
             });
+            const expectedBatches = state.inventoryBatches.map((batch) =>
+                batch.productId !== action.product.id ||
+                batch.variantId !== action.variantId
+                    ? batch
+                    : {
+                        ...batch,
+                        pricingByPackagingLevel:
+                            batch.pricingByPackagingLevel.filter(
+                                (pricing) =>
+                                    pricing.packagingLevelId !==
+                                    action.packagingLevelId
+                            )
+                    }
+            );
             if (
                 JSON.stringify(action.inventoryRecords) !== JSON.stringify(expectedRecords) ||
-                JSON.stringify(action.inventoryBatches) !== JSON.stringify(state.inventoryBatches)
+                JSON.stringify(action.inventoryBatches) !== JSON.stringify(expectedBatches)
             ) {
                 throw new Error("Packaging removal does not match its inventory records.");
             }
@@ -2153,7 +2346,7 @@ export function applicationReducer(
                 ...state,
                 products,
                 inventoryRecords: action.inventoryRecords,
-                inventoryBatches: action.inventoryBatches,
+                inventoryBatches: expectedBatches,
                 activityEvents: appendActivityEvents(
                     state.activityEvents,
                     action.events
@@ -2427,11 +2620,12 @@ export function applicationReducer(
         }
         case "sale.completed": {
             const { sale, expectedInventory, updatedInventory, events } = action.completion;
+            const operationKey = `sale.completed:${sale.saleId}`;
             if (
                 events.length !== 1 ||
                 events[0].type !== "sale.completed" ||
                 events[0].saleId !== sale.saleId ||
-                events[0].operationKey !== `sale.completed:${sale.saleId}` ||
+                events[0].operationKey !== operationKey ||
                 events[0].occurredAt !== sale.completedAt ||
                 !sale.saleId.trim() ||
                 !Number.isFinite(Date.parse(sale.completedAt)) ||
@@ -2440,17 +2634,40 @@ export function applicationReducer(
                 throw new Error("A sale completion requires matching Activity.");
             }
 
-            const existingOperation = state.activityEvents.find(
-                (event) => event.operationKey === events[0].operationKey
-            );
+            const draftId = action.completion.draftId;
+            const expectedDraftValue = action.completion.expectedDraft;
+            if (
+                typeof draftId !== "string" ||
+                draftId.trim() === "" ||
+                !expectedDraftValue
+            ) {
+                throw new Error("Sale completion requires an active draft snapshot.");
+            }
+            const expectedDraft = validateSaleDraft(expectedDraftValue);
+            if (
+                expectedDraft.draftId !== draftId ||
+                expectedDraft.status !== "draft" ||
+                JSON.stringify(expectedDraft) !==
+                    JSON.stringify(expectedDraftValue)
+            ) {
+                throw new Error("Sale completion requires a valid active draft snapshot.");
+            }
 
-            if (existingOperation) {
-                const existingSale = state.sales.find(
+            const matchingOperations = state.activityEvents.filter(
+                (event) => event.operationKey === operationKey
+            );
+            if (matchingOperations.length > 0) {
+                const existingOperation = matchingOperations[0];
+                const existingSales = state.sales.filter(
                     (existing) => existing.saleId === sale.saleId
                 );
-
+                const matchingDrafts = state.saleDrafts.filter(
+                    (draft) => draft.draftId === draftId
+                );
                 const activityMatches =
+                    matchingOperations.length === 1 &&
                     existingOperation.type === "sale.completed" &&
+                    existingOperation.operationKey === operationKey &&
                     events[0].type === "sale.completed" &&
                     JSON.stringify({
                         ...existingOperation,
@@ -2460,22 +2677,192 @@ export function applicationReducer(
                         ...events[0],
                         eventId: undefined,
                     });
-
                 if (
-                    activityMatches &&
-                    existingOperation.saleId === sale.saleId &&
-                    existingSale &&
-                    JSON.stringify(existingSale) === JSON.stringify(sale)
+                    !activityMatches ||
+                    existingOperation.saleId !== sale.saleId ||
+                    existingSales.length !== 1 ||
+                    JSON.stringify(existingSales[0]) !== JSON.stringify(sale) ||
+                    matchingDrafts.length !== 1 ||
+                    matchingDrafts[0].status !== "approved"
                 ) {
-                    return state;
+                    throw new Error(
+                        "Sale operation key already exists without a matching completed sale."
+                    );
                 }
 
-                throw new Error(
-                    "Sale operation key already exists without a matching completed sale."
+                const approvedDraft = validateSaleDraft(matchingDrafts[0]);
+                const expectedApprovedDraft = validateSaleDraft({
+                    ...expectedDraft,
+                    status: "approved",
+                    updatedAt: sale.completedAt
+                });
+                if (
+                    JSON.stringify(approvedDraft) !==
+                    JSON.stringify(expectedApprovedDraft)
+                ) {
+                    throw new Error(
+                        "Sale replay does not match the approved draft."
+                    );
+                }
+
+                if (!saleDraftMatchesCompletion(expectedDraft, sale)) {
+                    throw new Error(
+                        "Sale replay does not match the approved draft."
+                    );
+                }
+
+                const replayExpectedIds = new Set(
+                    expectedInventory.map((record) => record.id)
                 );
+                const replayUpdatedIds = new Set(
+                    updatedInventory.map((record) => record.id)
+                );
+                const replayUpdatedById = new Map(
+                    updatedInventory.map((record) => [record.id, record])
+                );
+                if (
+                    expectedInventory.length === 0 ||
+                    expectedInventory.length !== updatedInventory.length ||
+                    replayExpectedIds.size !== expectedInventory.length ||
+                    replayUpdatedIds.size !== updatedInventory.length ||
+                    [...replayExpectedIds].some((id) => !replayUpdatedIds.has(id))
+                ) {
+                    throw new Error(
+                        "Sale replay inventory records must be unique and complete."
+                    );
+                }
+
+                for (const expectedRecord of expectedInventory) {
+                    const updatedRecord = replayUpdatedById.get(expectedRecord.id);
+                    if (
+                        !updatedRecord ||
+                        expectedRecord.productId !== updatedRecord.productId ||
+                        expectedRecord.variantId !== updatedRecord.variantId ||
+                        expectedRecord.batchId !== updatedRecord.batchId
+                    ) {
+                        throw new Error(
+                            "Sale replay inventory identities do not match."
+                        );
+                    }
+                }
+
+                for (const updatedRecord of updatedInventory) {
+                    const matchingRecords = state.inventoryRecords.filter(
+                        (record) => record.id === updatedRecord.id
+                    );
+                    const matchingProducts = state.products.filter(
+                        (product) => product.id === updatedRecord.productId
+                    );
+                    if (
+                        typeof updatedRecord.id !== "string" ||
+                        updatedRecord.id.trim() === "" ||
+                        matchingRecords.length !== 1 ||
+                        JSON.stringify(matchingRecords[0]) !==
+                            JSON.stringify(updatedRecord) ||
+                        matchingProducts.length !== 1
+                    ) {
+                        throw new Error(
+                            "Sale replay inventory does not match the committed inventory."
+                        );
+                    }
+                    validateInventoryRelationships(
+                        matchingProducts[0],
+                        updatedRecord,
+                        [...state.inventoryBatches]
+                    );
+                }
+
+                const replayReferencedIds = new Set<string>();
+                for (const item of sale.items) {
+                    const updatedRecord = replayUpdatedById.get(
+                        item.inventoryRecordId
+                    );
+                    if (
+                        !updatedRecord ||
+                        updatedRecord.productId !== item.product.productId ||
+                        updatedRecord.variantId !== item.variant.variantId ||
+                        updatedRecord.batchId !== (item.batch?.batchId ?? null)
+                    ) {
+                        throw new Error(
+                            "Sale replay inventory does not match its sale allocations."
+                        );
+                    }
+                    replayReferencedIds.add(item.inventoryRecordId);
+                }
+                if (replayReferencedIds.size !== updatedInventory.length) {
+                    throw new Error(
+                        "Sale replay inventory does not match its sale allocations."
+                    );
+                }
+
+                const replayPlan = prepareSaleDraft(
+                    expectedDraft,
+                    saleContextFromCompletion(sale, expectedInventory),
+                    { now: () => new Date(sale.completedAt) }
+                );
+                const replayPlanExpectedById = new Map(
+                    replayPlan.expectedInventory.map((record) => [record.id, record])
+                );
+                const replayPlanUpdatedById = new Map(
+                    replayPlan.updatedInventory.map((record) => [record.id, record])
+                );
+                if (
+                    replayPlan.expectedInventory.length !== expectedInventory.length ||
+                    replayPlan.updatedInventory.length !== updatedInventory.length ||
+                    replayPlan.linePlans.length !== sale.items.length ||
+                    expectedInventory.some((record) =>
+                        JSON.stringify(replayPlanExpectedById.get(record.id)) !==
+                        JSON.stringify(record)
+                    ) ||
+                    updatedInventory.some((record) =>
+                        JSON.stringify(replayPlanUpdatedById.get(record.id)) !==
+                        JSON.stringify(record)
+                    ) ||
+                    replayPlan.linePlans.some((linePlan, index) => {
+                        const item = sale.items[index];
+                        return (
+                            linePlan.product.id !== item.product.productId ||
+                            linePlan.variant.id !== item.variant.variantId ||
+                            linePlan.request.inventoryRecordId !==
+                                item.inventoryRecordId ||
+                            linePlan.request.batchId !==
+                                (item.batch?.batchId ?? null) ||
+                            linePlan.packagingLevel.id !==
+                                item.packagingLevel.packagingLevelId ||
+                            linePlan.request.quantity !== item.quantity ||
+                            linePlan.defaultSellingPrice !==
+                                item.defaultSellingPrice ||
+                            linePlan.appliedSellingPrice !==
+                                item.appliedSellingPrice ||
+                            linePlan.subtotal !== item.subtotal ||
+                            linePlan.discountAmount !== item.discountAmount ||
+                            linePlan.finalAmount !== item.finalAmount ||
+                            linePlan.expiredBatch !== item.expiredBatch
+                        );
+                    })
+                ) {
+                    throw new Error(
+                        "Sale replay allocation does not match the committed inventory."
+                    );
+                }
+
+                return state;
             }
-            if (state.sales.some((existing) => existing.saleId === sale.saleId)) {
-                throw new Error(`Sale already exists: ${sale.saleId}`);
+
+            const draftIndex = state.saleDrafts.findIndex(
+                (draft) => draft.draftId === draftId
+            );
+            const currentDraft = state.saleDrafts[draftIndex];
+            if (
+                draftIndex === -1 ||
+                !currentDraft ||
+                currentDraft.status !== "draft" ||
+                JSON.stringify(validateSaleDraft(currentDraft)) !==
+                    JSON.stringify(expectedDraft)
+            ) {
+                throw new Error(
+                    "Sale draft changed after approval was prepared. Prepare the sale again."
+                );
             }
             if (
                 expectedInventory.length === 0 ||
@@ -2507,8 +2894,9 @@ export function applicationReducer(
                     lineIds.has(item.lineId) ||
                     !Number.isSafeInteger(item.quantity) ||
                     item.quantity <= 0 ||
-                    !Number.isFinite(item.defaultSellingPrice) ||
-                    item.defaultSellingPrice < 0 ||
+                    (item.defaultSellingPrice !== null &&
+                        (!Number.isFinite(item.defaultSellingPrice) ||
+                            item.defaultSellingPrice < 0)) ||
                     !Number.isFinite(item.appliedSellingPrice) ||
                     item.appliedSellingPrice < 0 ||
                     !Number.isFinite(item.discountAmount)
@@ -2724,6 +3112,12 @@ export function applicationReducer(
                 throw new Error("Sale Activity does not match the completed transaction.");
             }
 
+            if (!saleDraftMatchesCompletion(expectedDraft, sale)) {
+                throw new Error(
+                    "Sale draft changed after approval was prepared. Prepare the sale again."
+                );
+            }
+
             for (const [recordId, expectedRecord] of expectedById) {
                 const matchingRecords = state.inventoryRecords.filter(
                     (record) => record.id === recordId
@@ -2757,62 +3151,15 @@ export function applicationReducer(
                 );
             }
 
-            let saleDrafts = state.saleDrafts;
-            if (action.completion.draftId !== undefined) {
-                const draftIndex = state.saleDrafts.findIndex(
-                    (draft) => draft.draftId === action.completion.draftId
-                );
-                const expectedDraft = action.completion.expectedDraft;
-                const currentDraft = state.saleDrafts[draftIndex];
-                const draftMatchesSale = expectedDraft !== undefined &&
-                    expectedDraft.items.length === sale.items.length &&
-                    expectedDraft.customerName === sale.customerName &&
-                    expectedDraft.customerAddress === sale.customerAddress &&
-                    expectedDraft.saleDate === sale.saleDate &&
-                    JSON.stringify(expectedDraft.staffMember) ===
-                        JSON.stringify(sale.staffMember) &&
-                    expectedDraft.notes === sale.notes &&
-                    expectedDraft.items.every((draftItem, index) => {
-                        const saleItem = sale.items[index];
-                        return (
-                            draftItem.lineId === saleItem.lineId &&
-                            draftItem.productId === saleItem.product.productId &&
-                            draftItem.variantId === saleItem.variant.variantId &&
-                            draftItem.inventoryRecordId === saleItem.inventoryRecordId &&
-                            draftItem.batchId === (saleItem.batch?.batchId ?? null) &&
-                            draftItem.packagingLevelId ===
-                                saleItem.packagingLevel.packagingLevelId &&
-                            draftItem.quantity === saleItem.quantity &&
-                            draftItem.defaultSellingPrice ===
-                                saleItem.defaultSellingPrice &&
-                            draftItem.appliedSellingPrice ===
-                                saleItem.appliedSellingPrice &&
-                            draftItem.discountAmount === saleItem.discountAmount
-                        );
-                    });
-                if (
-                    draftIndex === -1 ||
-                    !expectedDraft ||
-                    !currentDraft ||
-                    currentDraft.status !== "draft" ||
-                    !draftMatchesSale ||
-                    JSON.stringify(validateSaleDraft(currentDraft)) !==
-                        JSON.stringify(expectedDraft) ||
-                    expectedDraft.status !== "draft"
-                ) {
-                    throw new Error(
-                        "Sale draft changed after approval was prepared. Prepare the sale again."
-                    );
-                }
-                saleDrafts = [...state.saleDrafts];
-                saleDrafts[draftIndex] = validateSaleDraft({
-                    ...currentDraft,
-                    status: "approved",
-                    updatedAt: sale.completedAt
-                });
-            } else if (action.completion.expectedDraft !== undefined) {
-                throw new Error("Sale completion has an unexpected draft snapshot.");
+            if (state.sales.some((existing) => existing.saleId === sale.saleId)) {
+                throw new Error(`Sale already exists: ${sale.saleId}`);
             }
+            const saleDrafts = [...state.saleDrafts];
+            saleDrafts[draftIndex] = validateSaleDraft({
+                ...currentDraft,
+                status: "approved",
+                updatedAt: sale.completedAt
+            });
 
             const inventoryRecords = [...state.inventoryRecords];
             for (const [recordId, updatedRecord] of updatedById) {

@@ -138,6 +138,70 @@ export default function AddDeliveryVariantModal({
                         </label>
 
                         <section className="create-subsection">
+                            <h3 className="modal-section-title">
+                                Low-stock threshold
+                            </h3>
+                            <div className="create-product-fields">
+                                <label className="create-field">
+                                    <span>Threshold quantity</span>
+                                    <input
+                                        inputMode="numeric"
+                                        min="0"
+                                        onChange={(event) => updateDraft((current) => ({
+                                            ...current,
+                                            lowStockThresholdQuantity:
+                                                event.target.value
+                                        }))}
+                                        step="1"
+                                        type="number"
+                                        value={draft.lowStockThresholdQuantity}
+                                    />
+                                    {fieldError(
+                                        errors,
+                                        `${variantPrefix}.lowStockThresholdQuantity`
+                                    )}
+                                </label>
+                                <label className="create-field">
+                                    <span>
+                                        Threshold packaging level
+                                        {" "}
+                                        <span className="create-optional">
+                                            (default: lowest level)
+                                        </span>
+                                    </span>
+                                    <select
+                                        onChange={(event) => updateDraft((current) => ({
+                                            ...current,
+                                            lowStockThresholdPackagingLevelId:
+                                                event.target.value
+                                        }))}
+                                        value={
+                                            draft.lowStockThresholdPackagingLevelId
+                                        }
+                                    >
+                                        <option value="">
+                                            Lowest packaging level
+                                            {draft.packaging.length > 0
+                                                ? ` (${draft.packaging[
+                                                    draft.packaging.length - 1
+                                                ].name || "unnamed"})`
+                                                : ""}
+                                        </option>
+                                        {draft.packaging.map((level) => (
+                                            <option key={level.key} value={level.key}>
+                                                {level.name || "Unnamed packaging"}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    {fieldError(
+                                        errors,
+                                        `${variantPrefix}.lowStockThresholdPackagingLevelId`
+                                    )}
+                                </label>
+                            </div>
+                        </section>
+
+                        <section className="create-subsection">
                             <div className="delivery-variant-heading">
                                 <h3 className="modal-section-title">Packaging hierarchy</h3>
                                 <button
@@ -239,7 +303,7 @@ export default function AddDeliveryVariantModal({
                                                                 : candidate
                                                         )
                                                     }))}
-                                                    step="any"
+                                                    step="0.01"
                                                     type="number"
                                                     value={level.costPrice}
                                                 />
@@ -260,7 +324,7 @@ export default function AddDeliveryVariantModal({
                                                                 : candidate
                                                         )
                                                     }))}
-                                                    step="any"
+                                                    step="0.01"
                                                     type="number"
                                                     value={level.sellingPrice}
                                                 />

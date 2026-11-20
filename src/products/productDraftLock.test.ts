@@ -46,7 +46,9 @@ function makeDeliveryDraft(
             packagingLevelId: "box",
             quantity: 1,
             batchNumber: "LOT-1",
-            expiryDate: "2027-01-01"
+            expiryDate: "2027-01-01",
+            costPrice: null,
+            sellingPrice: null
         }]
     };
 }

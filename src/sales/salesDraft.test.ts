@@ -210,6 +210,9 @@ describe("Sales draft domain", () => {
         ["unsafe quantity", { quantity: Number.MAX_SAFE_INTEGER + 1 }],
         ["negative default price", { defaultSellingPrice: -1 }],
         ["infinite applied price", { appliedSellingPrice: Number.POSITIVE_INFINITY }],
+        ["over-precise default price", { defaultSellingPrice: 125.005 }],
+        ["over-precise applied price", { appliedSellingPrice: 125.005 }],
+        ["over-precise discount", { discountAmount: 1.005 }],
         ["negative discount", { discountAmount: -1 }],
         ["discount above subtotal", { discountAmount: 19 }]
     ])("rejects invalid %s", (_label, changes) => {

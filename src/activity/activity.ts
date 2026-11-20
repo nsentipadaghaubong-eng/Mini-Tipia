@@ -1,5 +1,9 @@
 import type { inventory } from "../inventory/inventoryStock";
-import type { inventoryBatch } from "../inventory/inventoryBatch";
+import {
+    validateBatchPricingCollection,
+    type BatchPackagingPricing,
+    type inventoryBatch
+} from "../inventory/inventoryBatch";
 import type { stockAdjustment } from "../inventory/inventoryAdjustment";
 import { getStockQuantityOrZero } from "../inventory/inventoryStock";
 import type { packagingLevel } from "../packaging/packagingHierarchy";
@@ -20,6 +24,10 @@ export interface ActivityVariantSnapshot {
     readonly variantId: string;
     readonly variantName: string;
     readonly nafdacRegistrationNumber?: string;
+    readonly lowStockThreshold?: {
+        readonly quantity: number;
+        readonly packagingLevelId?: string;
+    };
     readonly packaging: readonly ActivityPackagingSnapshot[];
 }
 
@@ -42,10 +50,9 @@ export interface ActivityBatchSnapshot {
     readonly batchNumber: string | null;
     readonly expiryDate: string | null;
     readonly receivedDate?: string;
-    readonly receivedPricing?: {
-        readonly packagingLevelId: string;
-        readonly sellingPrice: number;
-    };
+    readonly pricingByPackagingLevel: readonly (
+        BatchPackagingPricing & { readonly packagingLevelName: string }
+    )[];
 }
 
 export interface ActivityStockSnapshot {
@@ -81,10 +88,7 @@ export interface ActivityInventoryBatchStateSnapshot {
     readonly batchNumber: string | null;
     readonly expiryDate: string | null;
     readonly receivedDate?: string;
-    readonly receivedPricing?: {
-        readonly packagingLevelId: string;
-        readonly sellingPrice: number;
-    };
+    readonly pricingByPackagingLevel: readonly BatchPackagingPricing[];
 }
 
 export interface ActivityProductInventoryStateSnapshot {
@@ -226,6 +230,7 @@ export type ActivityEventInput = ActivityBaseInput & (
             readonly variantId: string;
             readonly variantName: string;
             readonly batch: ActivityBatchSnapshot | null;
+            readonly pricingAtReceipt: BatchPackagingPricing;
             readonly stock: readonly ActivityStockSnapshot[];
         }[];
     }
@@ -253,7 +258,7 @@ export type ActivityEventInput = ActivityBaseInput & (
             readonly variant: ActivityVariantSnapshot;
             readonly packagingLevel: ActivityPackagingSnapshot;
             readonly quantity: number;
-            readonly defaultSellingPrice: number;
+            readonly defaultSellingPrice: number | null;
             readonly appliedSellingPrice: number;
             readonly subtotal: number;
             readonly discountAmount: number;
@@ -305,6 +310,20 @@ export function snapshotVariant(
         ...(productVariant.nafdacRegistrationNumber === undefined
             ? {}
             : { nafdacRegistrationNumber: productVariant.nafdacRegistrationNumber }),
+        ...(productVariant.lowStockThreshold === undefined
+            ? {}
+            : {
+                lowStockThreshold: {
+                    quantity: productVariant.lowStockThreshold.quantity,
+                    ...(productVariant.lowStockThreshold.packagingLevelId ===
+                        undefined
+                        ? {}
+                        : {
+                            packagingLevelId:
+                                productVariant.lowStockThreshold.packagingLevelId
+                        })
+                }
+            }),
         packaging: productVariant.packagingHierarchy.map((level) =>
             snapshotPackagingLevel(level, productVariant.packagingHierarchy)
         )
@@ -362,15 +381,9 @@ export function snapshotProductInventoryState(
                 ...(batch.receivedDate === undefined
                     ? {}
                     : { receivedDate: batch.receivedDate }),
-                ...(batch.receivedPricing === undefined
-                    ? {}
-                    : {
-                        receivedPricing: {
-                            packagingLevelId:
-                                batch.receivedPricing.packagingLevelId,
-                            sellingPrice: batch.receivedPricing.sellingPrice
-                        }
-                    })
+                pricingByPackagingLevel: batch.pricingByPackagingLevel.map(
+                    (pricing) => ({ ...pricing })
+                )
             }))
     };
 }
@@ -385,6 +398,10 @@ export function snapshotBatch(
     if (!productVariant || product.id !== batch.productId) {
         throw new Error("Cannot snapshot a batch with invalid product relationships.");
     }
+    validateBatchPricingCollection(
+        batch.pricingByPackagingLevel,
+        productVariant.packagingHierarchy.map((level) => level.id)
+    );
 
     return {
         batchId: batch.batchId,
@@ -397,14 +414,22 @@ export function snapshotBatch(
         ...(batch.receivedDate === undefined
             ? {}
             : { receivedDate: batch.receivedDate }),
-        ...(batch.receivedPricing === undefined
-            ? {}
-            : {
-                receivedPricing: {
-                    packagingLevelId: batch.receivedPricing.packagingLevelId,
-                    sellingPrice: batch.receivedPricing.sellingPrice
+        pricingByPackagingLevel: batch.pricingByPackagingLevel.map(
+            (pricing) => {
+                const packagingLevel = productVariant.packagingHierarchy.find(
+                    (level) => level.id === pricing.packagingLevelId
+                );
+                if (!packagingLevel) {
+                    throw new Error(
+                        "Cannot snapshot pricing for an unknown packaging level."
+                    );
                 }
-            })
+                return {
+                    ...pricing,
+                    packagingLevelName: packagingLevel.name
+                };
+            }
+        )
     };
 }
 
@@ -676,9 +701,30 @@ export function buildBatchUpdatedActivityInput(
 ): ActivityEventInput | undefined {
     const before = snapshotBatch(previousBatch, product);
     const after = snapshotBatch(updatedBatch, product);
+    const beforePricing = new Map(
+        before.pricingByPackagingLevel.map((entry) => [
+            entry.packagingLevelId,
+            entry
+        ])
+    );
+    const afterPricing = new Map(
+        after.pricingByPackagingLevel.map((entry) => [
+            entry.packagingLevelId,
+            entry
+        ])
+    );
+    const pricingChanged =
+        beforePricing.size !== afterPricing.size ||
+        [...beforePricing].some(([packagingLevelId, entry]) => {
+            const nextEntry = afterPricing.get(packagingLevelId);
+            return !nextEntry ||
+                entry.costPrice !== nextEntry.costPrice ||
+                entry.sellingPrice !== nextEntry.sellingPrice;
+        });
     if (
         before.batchNumber === after.batchNumber &&
-        before.expiryDate === after.expiryDate
+        before.expiryDate === after.expiryDate &&
+        !pricingChanged
     ) {
         return undefined;
     }

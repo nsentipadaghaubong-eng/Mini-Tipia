@@ -4,7 +4,10 @@ import type { inventoryBatch } from "./inventoryBatch";
 import {
    getVariantById
 } from "../products/productValidation";
-import { getInventoryBatchById } from "./inventoryBatch";
+import {
+   getInventoryBatchById,
+   validateBatchPricingCollection
+} from "./inventoryBatch";
 import { validatePackagingHierarchy } from "../packaging/packagingValidation";
 
 export function validateInventoryPackagingRelationships(
@@ -58,7 +61,7 @@ export function validateInventoryRelationships(
    }
 
    //Validation 2: Variant relationship
-   getVariantById(product, inventoryRecord.variantId)
+   const selectedVariant = getVariantById(product, inventoryRecord.variantId);
 
    //Validation 3: Batch relationship
    if (inventoryRecord.batchId !== null) {
@@ -72,6 +75,10 @@ export function validateInventoryRelationships(
       ) {
          throw new Error("Batch does not belong to this variant.");
       }
+      validateBatchPricingCollection(
+         batch.pricingByPackagingLevel,
+         selectedVariant.packagingHierarchy.map((level) => level.id)
+      );
    }
 
    //Validation 4: Packaging relationship

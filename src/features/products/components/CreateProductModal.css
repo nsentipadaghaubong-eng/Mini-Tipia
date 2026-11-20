@@ -35,7 +35,8 @@
     font-weight: 550;
 }
 
-.create-field input {
+.create-field input,
+.create-field select {
     width: 100%;
     min-width: 0;
     height: 40px;
@@ -49,7 +50,8 @@
     font-weight: 400;
 }
 
-.create-field input:focus {
+.create-field input:focus,
+.create-field select:focus {
     border-color: var(--color-blue);
     box-shadow: 0 0 0 2px rgb(40 84 197 / 12%);
 }

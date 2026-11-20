@@ -6,28 +6,62 @@ import {
     validateProductCreationDraft,
     type ProductCreationDraft
 } from "./productCreation";
+import type { VariantCreationDraft } from "./productCreation";
 import { getInventoryDisplay } from "../inventory/inventoryLookup";
 import { validateInventoryRelationships } from "../inventory/inventoryValidation";
 import type { inventory } from "../inventory/inventoryStock";
 
-function draft(overrides: Partial<ProductCreationDraft> = {}): ProductCreationDraft {
-    return {
+type TestVariantDraft = Omit<
+    VariantCreationDraft,
+    "lowStockThresholdQuantity" | "lowStockThresholdPackagingLevelId"
+> & Partial<Pick<
+    VariantCreationDraft,
+    "lowStockThresholdQuantity" | "lowStockThresholdPackagingLevelId"
+>>;
+
+function draft(
+    overrides: Omit<Partial<ProductCreationDraft>, "variants"> & {
+        variants?: TestVariantDraft[];
+    } = {},
+    options: { defaultPackaging?: boolean } = {}
+): ProductCreationDraft {
+    const result = {
         name: "Medicine",
         genericName: "",
         manufacturer: "",
         category: "",
         addVariants: false,
-        variants: [
-            {
-                key: "variant-1",
-                name: "",
-                nafdacRegistrationNumber: "",
-                packaging: [],
-                batches: [],
-                unbatchedStock: {}
-            }
-        ],
-        ...overrides
+        ...overrides,
+        variants: overrides.variants ?? [{
+            key: "variant-1",
+            name: "",
+            nafdacRegistrationNumber: "",
+            lowStockThresholdQuantity: "0",
+            lowStockThresholdPackagingLevelId: "",
+            packaging: [],
+            batches: [],
+            unbatchedStock: {}
+        }]
+    };
+    return {
+        ...result,
+        variants: result.variants.map((productVariant) => ({
+            ...productVariant,
+            lowStockThresholdQuantity:
+                productVariant.lowStockThresholdQuantity ?? "0",
+            lowStockThresholdPackagingLevelId:
+                productVariant.lowStockThresholdPackagingLevelId ?? "",
+            packaging: productVariant.packaging.length > 0 ||
+                options.defaultPackaging === false
+                ? productVariant.packaging
+                : [{
+                    key: `${productVariant.key}-unit`,
+                    name: "Unit",
+                    quantityOfNextLevel: "",
+                    costPrice: "",
+                    sellingPrice: ""
+                }]
+        }))
     };
 }
 
@@ -91,6 +125,8 @@ describe("product creation", () => {
                 key: "new-variant",
                 name: "Syrup",
                 nafdacRegistrationNumber: "REG-1",
+                lowStockThresholdQuantity: "4",
+                lowStockThresholdPackagingLevelId: "",
                 packaging: [{
                     key: "bottle",
                     name: "Bottle",
@@ -109,6 +145,7 @@ describe("product creation", () => {
         expect(productVariant).toMatchObject({
             variantName: "Syrup",
             nafdacRegistrationNumber: "REG-1",
+            lowStockThreshold: { quantity: 4 },
             packagingHierarchy: [{
                 name: "Bottle",
                 costPrice: null,
@@ -120,7 +157,7 @@ describe("product creation", () => {
 
     it("creates a named product with one internal default variant", () => {
         const result = createProductFromDraft(
-            draft({ name: "  Medicine  " }),
+            draft({ name: "  Medicine  " }, { defaultPackaging: false }),
             [],
             [],
             idGenerator()
@@ -237,6 +274,8 @@ describe("product creation", () => {
                         key: "variant-tablets",
                         name: "500mg Tablets",
                         nafdacRegistrationNumber: "",
+                        lowStockThresholdQuantity: "4",
+                        lowStockThresholdPackagingLevelId: "",
                         packaging: [
                             { key: "carton", name: "Custom carton", quantityOfNextLevel: "3", costPrice: "1.25", sellingPrice: "" },
                             { key: "tablet", name: "Tablet", quantityOfNextLevel: "", costPrice: "", sellingPrice: "2.5" }
@@ -248,6 +287,8 @@ describe("product creation", () => {
                         key: "variant-syrup",
                         name: "Syrup",
                         nafdacRegistrationNumber: "",
+                        lowStockThresholdQuantity: "6",
+                        lowStockThresholdPackagingLevelId: "bottle",
                         packaging: [
                             { key: "bottle", name: "Bottle", quantityOfNextLevel: "", costPrice: "", sellingPrice: "" }
                         ],
@@ -272,9 +313,46 @@ describe("product creation", () => {
         expect(syrup.packagingHierarchy[0].id).not.toBe(
             tablets.packagingHierarchy[0].id
         );
+        expect(tablets.lowStockThreshold).toEqual({ quantity: 4 });
+        expect(syrup.lowStockThreshold).toEqual({
+            quantity: 6,
+            packagingLevelId: syrup.packagingHierarchy[0].id
+        });
         expect(result.inventoryRecords[0].batchId).toBeNull();
         expect(result.inventoryRecords[0].stockQuantities.map((item) => item.quantity)).toEqual([2, 7]);
         expect(result.inventoryRecords[1].stockQuantities[0].quantity).toBe(0);
+    });
+
+    it("requires a whole-number threshold and a packaging level for every new variant", () => {
+        const value = draft({
+            addVariants: true,
+            variants: [{
+                key: "variant-1",
+                name: "",
+                nafdacRegistrationNumber: "",
+                lowStockThresholdQuantity: "1.5",
+                lowStockThresholdPackagingLevelId: "",
+                packaging: [{
+                    key: "unit",
+                    name: "Unit",
+                    quantityOfNextLevel: "",
+                    costPrice: "",
+                    sellingPrice: ""
+                }],
+                batches: [],
+                unbatchedStock: {}
+            }]
+        });
+
+        expect(validateProductCreationDraft(value)[
+            "variants.0.lowStockThresholdQuantity"
+        ]).toContain("whole-number");
+
+        value.variants[0].lowStockThresholdQuantity = "2";
+        value.variants[0].packaging = [];
+        expect(validateProductCreationDraft(value)[
+            "variants.0.packaging"
+        ]).toContain("packaging level");
     });
 
     it("validates conversions, prices, quantities, and invalid supplied expiry", () => {
@@ -299,6 +377,41 @@ describe("product creation", () => {
         expect(errors["variants.0.batches.0.stock.box"]).toBeTruthy();
         expect(errors["variants.0.batches.0.stock.tablet"]).toBeTruthy();
     });
+
+    it.each(["costPrice", "sellingPrice"] as const)(
+        "rejects a packaging %s with more than two decimal places",
+        (priceField) => {
+            const value = draft({
+                addVariants: true,
+                variants: [{
+                    key: "variant-1",
+                    name: "Tablets",
+                    nafdacRegistrationNumber: "",
+                    packaging: [{
+                        key: "box",
+                        name: "Box",
+                        quantityOfNextLevel: "",
+                        costPrice: priceField === "costPrice" ? "12.345" : "10.25",
+                        sellingPrice: priceField === "sellingPrice" ? "12.345" : "10.25"
+                    }],
+                    batches: [],
+                    unbatchedStock: {}
+                }]
+            });
+
+            expect(
+                validateProductCreationDraft(value)[
+                    `variants.0.packaging.0.${priceField}`
+                ]
+            ).toContain("at most two decimal places");
+            expect(() => createCatalogueProductFromDraft(
+                value,
+                [],
+                [],
+                idGenerator()
+            )).toThrow("at most two decimal places");
+        }
+    );
 
     it.each(["1.5", "0", "-1", "9007199254740992"])(
         "rejects invalid packaging conversions: %s",
@@ -369,6 +482,9 @@ describe("product creation", () => {
         );
 
         expect(result.inventoryBatches[0].batchNumber).toBeNull();
+        expect(result.inventoryBatches.map((batch) =>
+            batch.pricingByPackagingLevel
+        )).toEqual([[], []]);
         expect(result.inventoryBatches.map((batch) => [
             batch.productId,
             batch.variantId

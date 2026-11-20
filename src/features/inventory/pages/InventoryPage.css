@@ -600,6 +600,33 @@ select {
     line-height: 1.5;
 }
 
+.product-card-stock-status {
+    display: grid;
+    gap: 4px;
+    margin: 8px 0 0;
+    padding: 0;
+    color: var(--color-muted);
+    font-size: 12px;
+    list-style: none;
+}
+
+.product-card-stock-status li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+}
+
+.product-card-stock-status strong,
+.variant-stock-status {
+    color: #53647b;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.variant-stock-status {
+    margin: 8px 0 0;
+}
+
 .product-card-actions {
     display: flex;
     flex-shrink: 0;

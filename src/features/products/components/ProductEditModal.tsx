@@ -21,7 +21,10 @@ import {
     createInventoryManageIntent,
     resolveInventoryManageTarget
 } from "../../../navigation/navigationIntent";
-import type { ProductRecordDeletionDraft } from "../../../products/productDeletion";
+import {
+    getPackagingLevelThresholdDeletionBlockMessage,
+    type ProductRecordDeletionDraft
+} from "../../../products/productDeletion";
 import "./ProductEditModal.css";
 
 interface ProductEditModalProps {
@@ -82,6 +85,10 @@ function getProductStructureDraft(variants: VariantUpdateDraft[]) {
         id: productVariant.id,
         name: productVariant.name,
         nafdacRegistrationNumber: productVariant.nafdacRegistrationNumber,
+        lowStockThresholdQuantity:
+            productVariant.lowStockThresholdQuantity,
+        lowStockThresholdPackagingLevelId:
+            productVariant.lowStockThresholdPackagingLevelId,
         packaging: productVariant.packaging.map((level) => ({
             id: level.id,
             name: level.name,
@@ -247,9 +254,24 @@ export default function ProductEditModal({
         }
         if (hasStructuralChanges) {
             setSaveError(
-                "Save or cancel product structure changes before staging a deletion."
+                "Product structure edits and deletions must be saved separately. Save or cancel product structure changes before staging a deletion."
             );
             return;
+        }
+        if (deletion.type === "packaging") {
+            const selectedVariant = product.variant.find(
+                (item) => item.id === deletion.variantId
+            );
+            const thresholdBlockMessage = selectedVariant
+                ? getPackagingLevelThresholdDeletionBlockMessage(
+                    selectedVariant,
+                    deletion.packagingLevelId
+                )
+                : null;
+            if (thresholdBlockMessage !== null) {
+                setSaveError(thresholdBlockMessage);
+                return;
+            }
         }
         const alreadyStaged = stagedDeletions.some(({ deletion: staged }) =>
             staged.variantId === deletion.variantId &&
@@ -576,6 +598,87 @@ export default function ProductEditModal({
                                                 value={productVariant.nafdacRegistrationNumber}
                                             />
                                         </label>
+                                        <div className="product-edit-field-grid">
+                                            <label className="product-edit-field">
+                                                Low-stock threshold quantity
+                                                <input
+                                                    disabled={isProductStructureReadOnly}
+                                                    inputMode="numeric"
+                                                    min="0"
+                                                    onChange={(event) => updateDraft((current) =>
+                                                        updateVariant(
+                                                            current,
+                                                            variantIndex,
+                                                            (item) => ({
+                                                                ...item,
+                                                                lowStockThresholdQuantity:
+                                                                    event.target.value
+                                                            })
+                                                        )
+                                                    )}
+                                                    step="1"
+                                                    type="number"
+                                                    value={
+                                                        productVariant.lowStockThresholdQuantity
+                                                    }
+                                                />
+                                                {fieldError(
+                                                    errors,
+                                                    `${variantPrefix}.lowStockThresholdQuantity`
+                                                )}
+                                                {!product.variant.some(
+                                                    (item) => item.id === productVariant.id
+                                                ) && (
+                                                    <span className="product-edit-help">
+                                                        Required for new variants.
+                                                    </span>
+                                                )}
+                                                {product.variant.some(
+                                                    (item) =>
+                                                        item.id === productVariant.id &&
+                                                        item.lowStockThreshold === undefined
+                                                ) &&
+                                                productVariant.packaging.length === 0 &&
+                                                productVariant.lowStockThresholdQuantity.trim() === "" && (
+                                                    <span className="product-edit-help">
+                                                        This empty placeholder may remain without a threshold. A threshold is required if packaging is added.
+                                                    </span>
+                                                )}
+                                            </label>
+                                            <label className="product-edit-field">
+                                                Threshold packaging level
+                                                <select
+                                                    disabled={isProductStructureReadOnly}
+                                                    onChange={(event) => updateDraft((current) =>
+                                                        updateVariant(
+                                                            current,
+                                                            variantIndex,
+                                                            (item) => ({
+                                                                ...item,
+                                                                lowStockThresholdPackagingLevelId:
+                                                                    event.target.value
+                                                            })
+                                                        )
+                                                    )}
+                                                    value={
+                                                        productVariant.lowStockThresholdPackagingLevelId
+                                                    }
+                                                >
+                                                    <option value="">
+                                                        Lowest packaging level (default)
+                                                    </option>
+                                                    {productVariant.packaging.map((level) => (
+                                                        <option key={level.id} value={level.id}>
+                                                            {level.name || "Unnamed packaging"}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {fieldError(
+                                                    errors,
+                                                    `${variantPrefix}.lowStockThresholdPackagingLevelId`
+                                                )}
+                                            </label>
+                                        </div>
                                         <div className="product-edit-inventory">
                                             <h5>Inventory (read only)</h5>
                                             {variantInventoryRecords(productVariant.id).length === 0 ? (
@@ -810,7 +913,7 @@ export default function ProductEditModal({
                                                                         )
                                                                     )
                                                                 )}
-                                                                step="any"
+                                                                step="0.01"
                                                                 type="number"
                                                                 value={level.costPrice}
                                                             />
@@ -838,7 +941,7 @@ export default function ProductEditModal({
                                                                         )
                                                                     )
                                                                 )}
-                                                                step="any"
+                                                                step="0.01"
                                                                 type="number"
                                                                 value={level.sellingPrice}
                                                             />

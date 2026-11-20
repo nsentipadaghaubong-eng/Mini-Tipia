@@ -38,7 +38,8 @@ const inventoryBatches: inventoryBatch[] = [{
     productId: "product-2",
     variantId: "variant-2",
     batchNumber: "B2",
-    expiryDate: null
+    expiryDate: null,
+    pricingByPackagingLevel: []
 }];
 
 describe("navigation intents", () => {

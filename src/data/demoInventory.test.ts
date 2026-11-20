@@ -38,6 +38,12 @@ function getDemoIdSnapshot(
 }
 
 describe("demo inventory identifiers", () => {
+    it("initializes every demo batch without batch-specific prices", () => {
+        expect(demoInventoryBatches.every(
+            (batch) => batch.pricingByPackagingLevel.length === 0
+        )).toBe(true);
+    });
+
     it("keeps demo IDs stable across repeated module imports", async () => {
         const importDemoData = async () => {
             vi.resetModules();

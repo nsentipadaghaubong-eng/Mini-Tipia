@@ -40,7 +40,8 @@ const batches: inventoryBatch[] = [{
     productId: product.id,
     variantId: product.variant[0].id,
     batchNumber: "B1",
-    expiryDate: new Date("2027-01-01")
+    expiryDate: new Date("2027-01-01"),
+    pricingByPackagingLevel: []
 }];
 
 afterEach(cleanup);

@@ -25,6 +25,7 @@ import {
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import { getPackagingLevelById, getVariantById } from "../products/productValidation";
 import type { productStructure, variant } from "../products/productStructure";
+import { hasAtMostTwoDecimalPlaces } from "../pricing/pricePrecision";
 import {
     normalizeSaleDate,
     validateSaleDraft,
@@ -81,7 +82,7 @@ export interface CompletedSaleItem {
     readonly inventoryRecordId: string;
     readonly packagingLevel: ReturnType<typeof snapshotPackagingLevel>;
     readonly quantity: number;
-    readonly defaultSellingPrice: number;
+    readonly defaultSellingPrice: number | null;
     readonly appliedSellingPrice: number;
     readonly subtotal: number;
     readonly discountAmount: number;
@@ -116,7 +117,7 @@ export interface SalePlan {
     variantSnapshot: ActivityVariantSnapshot;
     batchSnapshot: ActivityBatchSnapshot | null;
     packagingLevel: packagingLevel;
-    defaultSellingPrice: number;
+    defaultSellingPrice: number | null;
     appliedSellingPrice: number;
     subtotal: number;
     discountAmount: number;
@@ -129,8 +130,8 @@ export interface SaleCompletion {
     expectedInventory: readonly inventory[];
     updatedInventory: readonly inventory[];
     events: readonly ActivityEvent[];
-    draftId?: string;
-    expectedDraft?: SaleDraft;
+    draftId: string;
+    expectedDraft: SaleDraft;
 }
 
 export interface SaleDraftPlan {
@@ -164,6 +165,7 @@ export function resolveDefaultSellingPrice(
         packagingLevelId
     );
 
+    let resolvedPrice = packagingLevel.sellingPrice;
     if (batch) {
         if (
             batch.productId !== product.id ||
@@ -172,25 +174,22 @@ export function resolveDefaultSellingPrice(
             throw new Error("Batch does not belong to this variant.");
         }
 
-        const receivedPricing = batch.receivedPricing;
-        if (receivedPricing) {
-            getPackagingLevelById(
-                selectedVariant,
-                receivedPricing.packagingLevelId
-            );
-            if (
-                !Number.isFinite(receivedPricing.sellingPrice) ||
-                receivedPricing.sellingPrice < 0
-            ) {
-                throw new Error("Batch received selling price must be non-negative.");
-            }
-            if (receivedPricing.packagingLevelId === packagingLevel.id) {
-                return receivedPricing.sellingPrice;
-            }
-        }
+        const batchPricing = batch.pricingByPackagingLevel.find(
+            (pricing) => pricing.packagingLevelId === packagingLevel.id
+        );
+        resolvedPrice =
+            batchPricing?.sellingPrice ?? packagingLevel.sellingPrice;
     }
 
-    return packagingLevel.sellingPrice;
+    if (
+        resolvedPrice !== null &&
+        !hasAtMostTwoDecimalPlaces(resolvedPrice)
+    ) {
+        throw new Error(
+            "Default selling price must have at most two decimal places."
+        );
+    }
+    return resolvedPrice;
 }
 
 function isValidDate(date: Date, label: string): number {
@@ -454,21 +453,30 @@ export function prepareSale(
         selectedPackaging.id,
         selectedBatch
     );
-    if (
-        defaultSellingPrice === null ||
-        !Number.isFinite(defaultSellingPrice) ||
-        defaultSellingPrice < 0
-    ) {
+    const hasValidDefaultPrice =
+        defaultSellingPrice !== null &&
+        Number.isFinite(defaultSellingPrice) &&
+        defaultSellingPrice >= 0;
+    const canOverrideMissingBatchPrice =
+        selectedBatch !== null &&
+        defaultSellingPrice === null &&
+        request.appliedSellingPrice !== undefined;
+    if (!hasValidDefaultPrice && !canOverrideMissingBatchPrice) {
         throw new Error("A valid default selling price is required for the selected packaging level.");
     }
 
-    const appliedSellingPrice = request.appliedSellingPrice ??
-        defaultSellingPrice;
+    const appliedSellingPrice = request.appliedSellingPrice !== undefined
+        ? request.appliedSellingPrice
+        : defaultSellingPrice;
     if (
+        appliedSellingPrice === null ||
         !Number.isFinite(appliedSellingPrice) ||
-        appliedSellingPrice < 0
+        appliedSellingPrice < 0 ||
+        !hasAtMostTwoDecimalPlaces(appliedSellingPrice)
     ) {
-        throw new Error("Applied selling price must be a non-negative number.");
+        throw new Error(
+            "Applied selling price must be a non-negative number with at most two decimal places."
+        );
     }
     const subtotal = roundMoney(appliedSellingPrice * request.quantity);
     const discountAmount = roundMoney(request.discountAmount ?? 0);
@@ -624,10 +632,8 @@ export function prepareSaleDraft(
     };
 }
 
-type SalePlanInput = SalePlan | SaleDraftPlan;
-
 export function completeSale(
-    plan: SalePlanInput,
+    plan: SaleDraftPlan,
     options: {
         continueWithExpiredBatch?: boolean;
         now?: () => Date;
@@ -637,7 +643,7 @@ export function completeSale(
 ): SaleCompletion {
     const completedAt = options.now?.() ?? new Date();
     isValidDate(completedAt, "Sale completion date");
-    const linePlans = "linePlans" in plan ? plan.linePlans : [plan];
+    const linePlans = plan.linePlans;
     if (linePlans.length === 0) {
         throw new Error("A sale must contain at least one item.");
     }
@@ -681,24 +687,15 @@ export function completeSale(
         completedItems.reduce((sum, item) => sum + item.finalAmount, 0)
     );
     const makeId = options.makeId ?? (() => crypto.randomUUID());
-    const saleId = ("linePlans" in plan ? makeId() : plan.saleId).trim();
+    const saleId = makeId().trim();
     if (!saleId) {
         throw new Error("Sale ID must not be empty.");
     }
-    const firstPlan = linePlans[0];
-    const customerName = "linePlans" in plan
-        ? plan.customerName
-        : firstPlan.request.customerName;
-    const customerAddress = "linePlans" in plan
-        ? plan.customerAddress
-        : firstPlan.request.customerAddress;
-    const saleDate = "linePlans" in plan
-        ? plan.saleDate
-        : firstPlan.request.saleDate;
-    const staffMember = "linePlans" in plan
-        ? plan.staffMember
-        : firstPlan.request.staffMember;
-    const notes = "linePlans" in plan ? plan.notes : firstPlan.request.notes;
+    const customerName = plan.customerName;
+    const customerAddress = plan.customerAddress;
+    const saleDate = plan.saleDate;
+    const staffMember = plan.staffMember;
+    const notes = plan.notes;
     const sale: CompletedSale = {
         saleId,
         completedAt: completedAt.toISOString(),
@@ -754,20 +751,12 @@ export function completeSale(
         makeId: options.makeEventId,
         now: () => completedAt
     });
-    const expectedInventory = "linePlans" in plan
-        ? plan.expectedInventory
-        : [plan.expectedInventory];
-    const updatedInventory = "linePlans" in plan
-        ? plan.updatedInventory
-        : [plan.updatedInventory];
-
     return {
         sale,
-        expectedInventory,
-        updatedInventory,
+        expectedInventory: plan.expectedInventory,
+        updatedInventory: plan.updatedInventory,
         events,
-        ...("linePlans" in plan
-            ? { draftId: plan.draftId, expectedDraft: plan.draft }
-            : {})
+        draftId: plan.draftId,
+        expectedDraft: plan.draft
     };
 }

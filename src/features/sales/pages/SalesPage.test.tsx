@@ -88,7 +88,16 @@ const inventoryBatches: inventoryBatch[] = [{
     productId: "product-1",
     variantId: "variant-1",
     batchNumber: "B-100",
-    expiryDate: new Date("2027-06-30T00:00:00.000Z")
+    expiryDate: new Date("2027-06-30T00:00:00.000Z"),
+    pricingByPackagingLevel: [{
+        packagingLevelId: "box",
+        costPrice: null,
+        sellingPrice: 100
+    }, {
+        packagingLevelId: "unit",
+        costPrice: null,
+        sellingPrice: 10
+    }]
 }];
 
 function makeState(
@@ -657,6 +666,171 @@ describe("Sales item calculations and draft workflow", () => {
 
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         expect(screen.getByText(/Line total 21\.60/)).toBeInTheDocument();
+    });
+
+    it("displays and approves with the Product price when a batch has no pricing entries", () => {
+        const batchWithoutPricing = {
+            ...inventoryBatches[0],
+            pricingByPackagingLevel: []
+        };
+        const page = renderSales(makeState({
+            inventoryBatches: [batchWithoutPricing]
+        }));
+        searchAndChooseVariant();
+        selectStockAndPackaging();
+
+        expect(screen.getByLabelText("Selling price")).toHaveValue(10);
+        fireEvent.click(screen.getByRole("button", { name: "Add to Sales" }));
+        expect(page.state.saleDrafts[0].items[0]).toMatchObject({
+            defaultSellingPrice: 10,
+            appliedSellingPrice: 10
+        });
+
+        enterReceivedBy();
+        fireEvent.click(screen.getByRole("button", { name: "Approve Sale" }));
+
+        expect(page.state.sales[0].items[0]).toMatchObject({
+            defaultSellingPrice: 10,
+            appliedSellingPrice: 10
+        });
+    });
+
+    it("falls back to the Product price when the selected batch price is null", () => {
+        const batchWithoutUnitPrice = {
+            ...inventoryBatches[0],
+            pricingByPackagingLevel: [{
+                packagingLevelId: "unit",
+                costPrice: null,
+                sellingPrice: null
+            }]
+        };
+        const page = renderSales(makeState({
+            inventoryBatches: [batchWithoutUnitPrice]
+        }));
+        searchAndChooseVariant();
+        selectStockAndPackaging();
+
+        expect(screen.getByLabelText("Selling price")).toHaveValue(10);
+        fireEvent.click(screen.getByRole("button", { name: "Add to Sales" }));
+        expect(page.state.saleDrafts[0].items[0]).toMatchObject({
+            defaultSellingPrice: 10,
+            appliedSellingPrice: 10
+        });
+    });
+
+    it("does not display a price when both the batch and Product level are unpriced", () => {
+        const productWithoutUnitPrice: productStructure = {
+            ...products[0],
+            variant: products[0].variant.map((selectedVariant) => ({
+                ...selectedVariant,
+                packagingHierarchy: selectedVariant.packagingHierarchy.map(
+                    (level) => level.id === "unit"
+                        ? { ...level, sellingPrice: null }
+                        : level
+                )
+            }))
+        };
+        const batchWithoutUnitPrice = {
+            ...inventoryBatches[0],
+            pricingByPackagingLevel: [{
+                packagingLevelId: "unit",
+                costPrice: null,
+                sellingPrice: null
+            }]
+        };
+        renderSales(makeState({
+            products: [productWithoutUnitPrice, products[1]],
+            inventoryBatches: [batchWithoutUnitPrice]
+        }));
+        searchAndChooseVariant();
+        selectStockAndPackaging();
+
+        expect(screen.getByLabelText("Selling price")).toHaveValue(null);
+        expect(screen.getByRole("button", { name: "Add to Sales" })).toBeDisabled();
+    });
+
+    it("allows an explicit override when a batch has no selected-level price", () => {
+        const batchWithoutUnitPrice = {
+            ...inventoryBatches[0],
+            pricingByPackagingLevel: [{
+                packagingLevelId: "unit",
+                costPrice: null,
+                sellingPrice: null
+            }]
+        };
+        const page = renderSales(makeState({
+            inventoryBatches: [batchWithoutUnitPrice]
+        }));
+        searchAndChooseVariant();
+        selectStockAndPackaging();
+        fireEvent.change(screen.getByLabelText("Selling price"), {
+            target: { value: "14" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Add to Sales" }));
+
+        expect(page.state.saleDrafts[0].items[0]).toMatchObject({
+            defaultSellingPrice: 10,
+            appliedSellingPrice: 14
+        });
+        expect(page.state.inventoryBatches[0]).toEqual(batchWithoutUnitPrice);
+        expect(page.state.products[0].variant[0].packagingHierarchy[1].sellingPrice)
+            .toBe(10);
+    });
+
+    it("refreshes the displayed price when switching between batches", () => {
+        const firstBatch = {
+            ...inventoryBatches[0],
+            pricingByPackagingLevel: [{
+                packagingLevelId: "unit",
+                costPrice: null,
+                sellingPrice: 21
+            }]
+        };
+        const secondRecord = {
+            ...inventoryRecords[0],
+            id: "inventory-2",
+            batchId: "batch-2"
+        };
+        const secondBatch = {
+            ...firstBatch,
+            batchId: "batch-2",
+            batchNumber: "B-200",
+            pricingByPackagingLevel: [{
+                packagingLevelId: "unit",
+                costPrice: null,
+                sellingPrice: 32
+            }]
+        };
+        renderSales(makeState({
+            inventoryRecords: [inventoryRecords[0], secondRecord],
+            inventoryBatches: [firstBatch, secondBatch]
+        }));
+        searchAndChooseVariant();
+        selectStockAndPackaging();
+
+        expect(screen.getByLabelText("Selling price")).toHaveValue(21);
+        fireEvent.change(screen.getByLabelText("Select inventory record"), {
+            target: { value: "inventory-2" }
+        });
+
+        expect(screen.getByLabelText("Selling price")).toHaveValue(32);
+    });
+
+    it("restores the resolved price when a sale-specific override is cleared", () => {
+        const page = renderSales();
+        searchAndChooseVariant();
+        selectStockAndPackaging();
+        const price = screen.getByLabelText("Selling price");
+        fireEvent.change(price, { target: { value: "12" } });
+        fireEvent.change(price, { target: { value: "" } });
+        fireEvent.blur(price);
+
+        expect(screen.getByLabelText("Selling price")).toHaveValue(10);
+        fireEvent.click(screen.getByRole("button", { name: "Add to Sales" }));
+        expect(page.state.saleDrafts[0].items[0]).toMatchObject({
+            defaultSellingPrice: 10,
+            appliedSellingPrice: 10
+        });
     });
 
     it("shows package-aware availability and disables adding quantities above stock", () => {

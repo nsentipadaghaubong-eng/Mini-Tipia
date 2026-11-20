@@ -4,6 +4,7 @@ import type { inventory, stockQuantity } from "../inventory/inventoryStock";
 import type { inventoryBatch } from "../inventory/inventoryBatch";
 import { createInventory } from "../inventory/inventoryStock";
 import type { productStructure, variant } from "./productStructure";
+import { hasAtMostTwoDecimalPlaces } from "../pricing/pricePrecision";
 
 export interface PackagingUpdateDraft {
     id: string;
@@ -20,6 +21,8 @@ export interface VariantUpdateDraft {
     id: string;
     name: string;
     nafdacRegistrationNumber: string;
+    lowStockThresholdQuantity: string;
+    lowStockThresholdPackagingLevelId: string;
     packaging: PackagingUpdateDraft[];
 }
 
@@ -52,6 +55,12 @@ export function createProductUpdateDraft(
             name: productVariant.variantName,
             nafdacRegistrationNumber:
                 productVariant.nafdacRegistrationNumber ?? "",
+            lowStockThresholdQuantity:
+                productVariant.lowStockThreshold === undefined
+                    ? ""
+                    : String(productVariant.lowStockThreshold.quantity),
+            lowStockThresholdPackagingLevelId:
+                productVariant.lowStockThreshold?.packagingLevelId ?? "",
             packaging: productVariant.packagingHierarchy.map((level) => ({
                 id: level.id,
                 name: level.name,
@@ -97,6 +106,8 @@ export function addVariantToUpdateDraft(
                 id,
                 name: "",
                 nafdacRegistrationNumber: "",
+                lowStockThresholdQuantity: "",
+                lowStockThresholdPackagingLevelId: "",
                 packaging: []
             }
         ]
@@ -165,7 +176,11 @@ function parseOptionalPrice(value: string): number | null | undefined {
     }
 
     const price = Number(value);
-    return Number.isFinite(price) && price >= 0 ? price : undefined;
+    return Number.isFinite(price) &&
+        price >= 0 &&
+        hasAtMostTwoDecimalPlaces(price)
+        ? price
+        : undefined;
 }
 
 function parseOptionalSafeInteger(value: string | undefined): number | undefined {
@@ -178,6 +193,16 @@ function parseOptionalSafeInteger(value: string | undefined): number | undefined
     return Number.isSafeInteger(quantity) && quantity >= 0
         ? quantity
         : undefined;
+}
+
+function parseLowStockThresholdQuantity(value: string): number | undefined {
+    const normalized = value.trim();
+    if (!/^\d+$/.test(normalized)) {
+        return undefined;
+    }
+
+    const quantity = Number(normalized);
+    return Number.isSafeInteger(quantity) ? quantity : undefined;
 }
 
 export function applyPackagingLevelInitialStock(
@@ -385,11 +410,11 @@ export function validateProductUpdateDraft(
                 }
                 if (costPrice === undefined) {
                     errors[`${prefix}.packaging.${levelIndex}.costPrice`] =
-                        "Enter a non-negative price.";
+                        "Enter a non-negative price with at most two decimal places.";
                 }
                 if (sellingPrice === undefined) {
                     errors[`${prefix}.packaging.${levelIndex}.sellingPrice`] =
-                        "Enter a non-negative price.";
+                        "Enter a non-negative price with at most two decimal places.";
                 }
 
                 const initialStock = parseOptionalSafeInteger(level.initialStock);
@@ -417,6 +442,43 @@ export function validateProductUpdateDraft(
                     ? error.message
                     : "Packaging hierarchy is invalid.";
         }
+
+        const isNewVariant = !original.variant.some(
+            (item) => item.id === productVariant.id
+        );
+        const thresholdQuantity =
+            (productVariant.lowStockThresholdQuantity ?? "").trim();
+        const hasPackaging = productVariant.packaging.length > 0;
+        const thresholdRequired = hasPackaging || isNewVariant;
+        if (thresholdRequired && thresholdQuantity === "") {
+            errors[`${prefix}.lowStockThresholdQuantity`] =
+                "A low-stock threshold is required for variants with packaging.";
+        }
+        if (
+            !hasPackaging &&
+            (isNewVariant || thresholdQuantity !== "")
+        ) {
+            errors[`${prefix}.packaging`] =
+                "Add a packaging level to configure the low-stock threshold.";
+        }
+        if (
+            thresholdQuantity !== "" &&
+            parseLowStockThresholdQuantity(thresholdQuantity) === undefined
+        ) {
+            errors[`${prefix}.lowStockThresholdQuantity`] =
+                "Enter a non-negative whole-number low-stock threshold.";
+        }
+        if (
+            (productVariant.lowStockThresholdPackagingLevelId ?? "") !== "" &&
+            !productVariant.packaging.some(
+                (level) =>
+                    level.id ===
+                    productVariant.lowStockThresholdPackagingLevelId
+            )
+        ) {
+            errors[`${prefix}.lowStockThresholdPackagingLevelId`] =
+                "Select a valid threshold packaging level.";
+        }
     });
 
     return errors;
@@ -437,6 +499,19 @@ export function buildUpdatedProduct(
         ...(item.nafdacRegistrationNumber.trim() === ""
             ? {}
             : { nafdacRegistrationNumber: item.nafdacRegistrationNumber.trim() }),
+        ...((item.lowStockThresholdQuantity ?? "").trim() === ""
+            ? {}
+            : {
+                lowStockThreshold: {
+                    quantity: Number(item.lowStockThresholdQuantity),
+                    ...((item.lowStockThresholdPackagingLevelId ?? "") === ""
+                        ? {}
+                        : {
+                            packagingLevelId:
+                                item.lowStockThresholdPackagingLevelId
+                        })
+                }
+            }),
         packagingHierarchy: item.packaging.map((level) => ({
             id: level.id,
             name: level.name.trim(),

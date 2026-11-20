@@ -14,6 +14,7 @@ import {
 } from "./deliveryDraft";
 import { prepareDeliveryApproval } from "./deliveryApproval";
 import type { productStructure } from "../products/productStructure";
+import { resolveDefaultSellingPrice } from "../sales/salesEngine";
 
 const product: productStructure = {
     id: "medicine",
@@ -67,6 +68,8 @@ function makeItem(
         quantity: 3,
         batchNumber: "LOT-1",
         expiryDate: "2027-12-31",
+        costPrice: null,
+        sellingPrice: null,
         ...overrides
     };
 }
@@ -165,12 +168,53 @@ describe("Delivery approval and stock-in", () => {
         expect(plan.inventoryBatches.map((batch) =>
             batch.expiryDate?.toISOString().slice(0, 10)
         )).toEqual(["2027-12-31", "2028-12-31"]);
+        expect(plan.inventoryBatches.map((batch) =>
+            batch.pricingByPackagingLevel
+        )).toEqual([[
+            { packagingLevelId: "box", costPrice: null, sellingPrice: null }
+        ], [
+            { packagingLevelId: "box", costPrice: null, sellingPrice: null }
+        ]]);
         expect(plan.inventoryRecords).toHaveLength(2);
         expect(plan.inventoryRecords.map((record) => record.stockQuantities))
             .toEqual([
                 [{ packagingLevelId: "box", quantity: 2 }],
                 [{ packagingLevelId: "box", quantity: 5 }]
             ]);
+    });
+
+    it("records entered prices for a new batch without changing Product defaults", () => {
+            const state = initialState([]);
+            const productBefore = structuredClone(product);
+            const draft = withItems(makeDraft("priced-new-batch"), [
+                makeItem("priced-item", {
+                    costPrice: 7.25,
+                    sellingPrice: 11.5
+                })
+            ]);
+            const plan = makePlan(draft, state);
+
+            expect(plan.inventoryBatches).toHaveLength(1);
+            expect(plan.inventoryBatches[0].pricingByPackagingLevel).toEqual([{
+                packagingLevelId: "box",
+                costPrice: 7.25,
+                sellingPrice: 11.5
+            }]);
+            expect(plan.draft.items[0]).toMatchObject({
+                costPrice: 7.25,
+                sellingPrice: 11.5
+            });
+            expect(product).toEqual(productBefore);
+
+            const event = makeApprovalEvent(plan);
+            expect(event.type).toBe("delivery.received");
+            if (event.type === "delivery.received") {
+                expect(event.items[0].pricingAtReceipt).toEqual({
+                    packagingLevelId: "box",
+                    costPrice: 7.25,
+                    sellingPrice: 11.5
+                });
+            }
     });
 
     it("adds later receipts to matching numbered batches without packaging conversion", () => {
@@ -199,6 +243,120 @@ describe("Delivery approval and stock-in", () => {
             { packagingLevelId: "box", quantity: 6 }
         ]);
     });
+
+    it.each([
+        {
+            name: "original line order",
+            prices: [
+                { costPrice: 20, sellingPrice: 30 },
+                { costPrice: 21, sellingPrice: 31 }
+            ],
+            expectedPrice: { costPrice: 21, sellingPrice: 31 }
+        },
+        {
+            name: "reversed line order",
+            prices: [
+                { costPrice: 21, sellingPrice: 31 },
+                { costPrice: 20, sellingPrice: 30 }
+            ],
+            expectedPrice: { costPrice: 20, sellingPrice: 30 }
+        }
+    ])(
+        "approves repeated receipt lines using the last line's price ($name)",
+        ({ prices, expectedPrice }) => {
+            const draft = withItems(makeDraft(`duplicate-lines-${prices[0].costPrice}`), [
+                makeItem("item-first", {
+                    quantity: 2,
+                    ...prices[0]
+                }),
+                makeItem("item-second", {
+                    quantity: 4,
+                    ...prices[1]
+                })
+            ]);
+            const targetBatch = {
+                batchId: "batch-target",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchNumber: "LOT-1",
+                expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+                pricingByPackagingLevel: [{
+                    packagingLevelId: "box",
+                    costPrice: 40,
+                    sellingPrice: 48
+                }, {
+                    packagingLevelId: "unit",
+                    costPrice: null,
+                    sellingPrice: 15
+                }]
+            };
+            const otherBatch = {
+                batchId: "batch-other",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchNumber: "LOT-2",
+                expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+                pricingByPackagingLevel: [{
+                    packagingLevelId: "box",
+                    costPrice: 70,
+                    sellingPrice: 80
+                }]
+            };
+            const state = {
+                ...initialState([draft]),
+                inventoryBatches: [targetBatch, otherBatch],
+                inventoryRecords: [{
+                    id: "inventory-target",
+                    productId: product.id,
+                    variantId: product.variant[0].id,
+                    batchId: targetBatch.batchId,
+                    stockQuantities: [{ packagingLevelId: "box", quantity: 5 }]
+                }, {
+                    id: "inventory-other",
+                    productId: product.id,
+                    variantId: product.variant[0].id,
+                    batchId: otherBatch.batchId,
+                    stockQuantities: [{ packagingLevelId: "box", quantity: 9 }]
+                }]
+            };
+            const productBefore = structuredClone(state.products[0]);
+            const plan = makePlan(draft, state);
+            const committed = applicationReducer(state, {
+                type: "delivery.approved",
+                plan,
+                event: makeApprovalEvent(plan)
+            });
+
+            expect(committed.inventoryRecords.find(
+                (record) => record.batchId === targetBatch.batchId
+            )?.stockQuantities).toEqual([
+                { packagingLevelId: "box", quantity: 11 }
+            ]);
+            expect(committed.inventoryRecords.find(
+                (record) => record.batchId === otherBatch.batchId
+            )?.stockQuantities).toEqual([
+                { packagingLevelId: "box", quantity: 9 }
+            ]);
+            expect(committed.inventoryBatches.find(
+                (batch) => batch.batchId === targetBatch.batchId
+            )?.pricingByPackagingLevel).toEqual([
+                {
+                    packagingLevelId: "box",
+                    ...expectedPrice
+                },
+                {
+                    packagingLevelId: "unit",
+                    costPrice: null,
+                    sellingPrice: 15
+                }
+            ]);
+            expect(committed.inventoryBatches.find(
+                (batch) => batch.batchId === otherBatch.batchId
+            )).toEqual(otherBatch);
+            expect(committed.products[0]).toEqual(productBefore);
+            expect(committed.deliveryDrafts[0].items).toEqual(draft.items);
+        }
+    );
 
     it("commits multiple products, variants, batches, and received packaging quantities together", () => {
         const capsuleVariant = {
@@ -358,6 +516,11 @@ describe("Delivery approval and stock-in", () => {
             makeItem("item-1", {
                 batchNumber: null,
                 expiryDate: null
+            }),
+            makeItem("item-2", {
+                batchNumber: null,
+                expiryDate: null,
+                quantity: 2
             })
         ]);
         const firstPlan = makePlan(first, state);
@@ -382,6 +545,9 @@ describe("Delivery approval and stock-in", () => {
         expect(secondPlan.inventoryBatches.map((batch) => batch.receivedDate))
             .toEqual(["2026-11-07", "2026-11-08"]);
         expect(secondPlan.inventoryRecords).toHaveLength(2);
+        expect(firstPlan.inventoryRecords[0].stockQuantities).toEqual([
+            { packagingLevelId: "box", quantity: 5 }
+        ]);
     });
 
     it("commits inventory, batches, received status, and one Activity event atomically", () => {
@@ -450,14 +616,26 @@ describe("Delivery approval and stock-in", () => {
 
     it("rechecks matching existing batches and exact inventory deltas at commit", () => {
         const draft = withItems(makeDraft("delivery-existing-batch"), [
-            makeItem("item-1")
+            makeItem("item-1", {
+                costPrice: 18,
+                sellingPrice: 23
+            })
         ]);
         const batch = {
             batchId: "batch-existing",
             productId: product.id,
             variantId: product.variant[0].id,
             batchNumber: "LOT-1",
-            expiryDate: new Date("2027-12-31T00:00:00.000Z")
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box",
+                costPrice: 10,
+                sellingPrice: 15
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 1,
+                sellingPrice: 2
+            }]
         };
         const record = {
             id: "inventory-existing",
@@ -479,12 +657,288 @@ describe("Delivery approval and stock-in", () => {
             event
         });
 
-        expect(committed.inventoryBatches).toEqual([batch]);
+        expect(committed.inventoryBatches).toEqual([{
+            ...batch,
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box",
+                costPrice: 18,
+                sellingPrice: 23
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 1,
+                sellingPrice: 2
+            }]
+        }]);
         expect(committed.inventoryRecords).toEqual([{
             ...record,
             stockQuantities: [{ packagingLevelId: "box", quantity: 5 }]
         }]);
         expect(committed.activityEvents).toHaveLength(1);
+    });
+
+    it("sets empty prices to null for only the received packaging level", () => {
+        const draft = withItems(makeDraft("delivery-clear-price"), [
+            makeItem("item-box", {
+                costPrice: null,
+                sellingPrice: null
+            })
+        ]);
+        const batch = {
+            batchId: "batch-priced",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box",
+                costPrice: 40,
+                sellingPrice: 48
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 12,
+                sellingPrice: 15
+            }]
+        };
+        const state = {
+            ...initialState([draft]),
+            inventoryBatches: [batch],
+            inventoryRecords: [{
+                id: "inventory-priced",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchId: batch.batchId,
+                stockQuantities: [{ packagingLevelId: "box", quantity: 2 }]
+            }]
+        };
+
+        const plan = makePlan(draft, state);
+
+        expect(plan.inventoryBatches).toEqual([{
+            ...batch,
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box",
+                costPrice: null,
+                sellingPrice: null
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 12,
+                sellingPrice: 15
+            }]
+        }]);
+
+        const committed = applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event: makeApprovalEvent(plan)
+        });
+        const committedBatch = committed.inventoryBatches[0];
+        if (!committedBatch) {
+            throw new Error("Expected the received batch to remain in inventory.");
+        }
+        expect(resolveDefaultSellingPrice(
+            product,
+            product.variant[0].id,
+            "box",
+            committedBatch
+        )).toBe(10);
+    });
+
+    it("updates multiple packaging levels in one matching batch independently", () => {
+        const draft = withItems(makeDraft("delivery-two-levels"), [
+            makeItem("item-box", {
+                costPrice: 41,
+                sellingPrice: 49
+            }),
+            makeItem("item-unit", {
+                packagingLevelId: "unit",
+                costPrice: 13,
+                sellingPrice: 16
+            })
+        ]);
+        const batch = {
+            batchId: "batch-multi-level",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box",
+                costPrice: 40,
+                sellingPrice: 48
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 12,
+                sellingPrice: 15
+            }]
+        };
+        const state = {
+            ...initialState([draft]),
+            inventoryBatches: [batch]
+        };
+        const plan = makePlan(draft, state);
+
+        expect(plan.inventoryBatches).toHaveLength(1);
+        expect(plan.inventoryBatches[0].pricingByPackagingLevel).toEqual([
+            { packagingLevelId: "box", costPrice: 41, sellingPrice: 49 },
+            { packagingLevelId: "unit", costPrice: 13, sellingPrice: 16 }
+        ]);
+        if (plan.activity.type !== "delivery.received") {
+            throw new Error("Expected a delivery receipt Activity.");
+        }
+        expect(plan.activity.items.map((item) =>
+            item.batch?.pricingByPackagingLevel
+        )).toEqual([
+            [{
+                packagingLevelId: "box",
+                costPrice: 41,
+                sellingPrice: 49,
+                packagingLevelName: "Box"
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 13,
+                sellingPrice: 16,
+                packagingLevelName: "Unit"
+            }],
+            [{
+                packagingLevelId: "box",
+                costPrice: 41,
+                sellingPrice: 49,
+                packagingLevelName: "Box"
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 13,
+                sellingPrice: 16,
+                packagingLevelName: "Unit"
+            }]
+        ]);
+        expect(plan.activity.items.map((item) => item.pricingAtReceipt))
+            .toEqual([
+                { packagingLevelId: "box", costPrice: 41, sellingPrice: 49 },
+                { packagingLevelId: "unit", costPrice: 13, sellingPrice: 16 }
+            ]);
+    });
+
+    it("keeps historical receipt prices after a later delivery changes the batch", () => {
+        const firstDraft = withItems(makeDraft("first-price-receipt"), [
+            makeItem("first-item", { costPrice: 5, sellingPrice: 8 })
+        ]);
+        const firstState = initialState([firstDraft]);
+        const firstPlan = makePlan(firstDraft, firstState);
+        const firstEvent = makeApprovalEvent(firstPlan);
+        const afterFirst = applicationReducer(firstState, {
+            type: "delivery.approved",
+            plan: firstPlan,
+            event: firstEvent
+        });
+        const secondDraft = withItems(makeDraft("second-price-receipt"), [
+            makeItem("second-item", { costPrice: 7, sellingPrice: 12 })
+        ]);
+        const beforeSecondApproval = {
+            ...afterFirst,
+            deliveryDrafts: [...afterFirst.deliveryDrafts, secondDraft]
+        };
+        const secondPlan = makePlan(secondDraft, beforeSecondApproval);
+        const secondEvent = makeApprovalEvent(secondPlan);
+        const afterSecond = applicationReducer(beforeSecondApproval, {
+            type: "delivery.approved",
+            plan: secondPlan,
+            event: secondEvent
+        });
+
+        expect(afterSecond.inventoryBatches[0].pricingByPackagingLevel).toEqual([{
+            packagingLevelId: "box",
+            costPrice: 7,
+            sellingPrice: 12
+        }]);
+        expect(resolveDefaultSellingPrice(
+            product,
+            product.variant[0].id,
+            "box",
+            afterSecond.inventoryBatches[0]
+        )).toBe(12);
+        expect(afterSecond.deliveryDrafts[0].items[0]).toMatchObject({
+            costPrice: 5,
+            sellingPrice: 8
+        });
+        const firstHistoricalEvent = afterSecond.activityEvents[0];
+        expect(firstHistoricalEvent.type).toBe("delivery.received");
+        if (firstHistoricalEvent.type === "delivery.received") {
+            expect(firstHistoricalEvent.items[0].pricingAtReceipt).toEqual({
+                packagingLevelId: "box",
+                costPrice: 5,
+                sellingPrice: 8
+            });
+            expect(firstHistoricalEvent.items[0].batch?.pricingByPackagingLevel)
+                .toEqual([{
+                    packagingLevelId: "box",
+                    costPrice: 5,
+                    sellingPrice: 8,
+                    packagingLevelName: "Box"
+                }]);
+        }
+    });
+
+    it("keeps existing batch prices when a receipt has a different batch identity", () => {
+        const existingBatch = {
+            batchId: "batch-existing-price",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box",
+                costPrice: null,
+                sellingPrice: 15
+            }]
+        };
+        const existingRecord = {
+            id: "inventory-existing-price",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: existingBatch.batchId,
+            stockQuantities: [{ packagingLevelId: "box", quantity: 2 }]
+        };
+        const draft = withItems(makeDraft("different-batch-receipt"), [
+            makeItem("new-batch-item", {
+                batchNumber: "LOT-2",
+                sellingPrice: 25
+            })
+        ]);
+        const state = {
+            ...initialState([draft]),
+            inventoryBatches: [existingBatch],
+            inventoryRecords: [existingRecord]
+        };
+        const plan = makePlan(draft, state);
+        const committed = applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event: makeApprovalEvent(plan)
+        });
+        const committedExistingBatch = committed.inventoryBatches.find(
+            (batch) => batch.batchId === existingBatch.batchId
+        );
+        const committedNewBatch = committed.inventoryBatches.find(
+            (batch) => batch.batchNumber === "LOT-2"
+        );
+
+        expect(committed.inventoryBatches).toHaveLength(2);
+        expect(committedExistingBatch).toEqual(existingBatch);
+        if (!committedExistingBatch || !committedNewBatch) {
+            throw new Error("Expected both distinct inventory batches to remain.");
+        }
+        expect(resolveDefaultSellingPrice(
+            product,
+            product.variant[0].id,
+            "box",
+            committedExistingBatch
+        )).toBe(15);
+        expect(resolveDefaultSellingPrice(
+            product,
+            product.variant[0].id,
+            "box",
+            committedNewBatch
+        )).toBe(25);
     });
 
     it("does not commit any state if the atomic approval action is invalid", () => {
@@ -518,6 +972,35 @@ describe("Delivery approval and stock-in", () => {
                         ...stock,
                         quantity: stock.quantity + 1
                     }))
+                }))
+            },
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: {
+                ...plan,
+                draft: {
+                    ...plan.draft,
+                    items: plan.draft.items.map((item) => ({
+                        ...item,
+                        costPrice: 999
+                    }))
+                }
+            },
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: {
+                ...plan,
+                inventoryBatches: plan.inventoryBatches.map((batch) => ({
+                    ...batch,
+                    pricingByPackagingLevel: [{
+                        packagingLevelId: "unknown-level",
+                        costPrice: 1,
+                        sellingPrice: 2
+                    }]
                 }))
             },
             event
@@ -565,6 +1048,10 @@ describe("Delivery approval and stock-in", () => {
                 ...event,
                 items: event.items.map((item) => ({
                     ...item,
+                    pricingAtReceipt: {
+                        ...item.pricingAtReceipt,
+                        sellingPrice: 999
+                    },
                     stock: item.stock.map((stock) => ({
                         ...stock,
                         quantity: stock.quantity + 1
@@ -597,6 +1084,143 @@ describe("Delivery approval and stock-in", () => {
         expect(cancelledState).toEqual(cancelledBefore);
     });
 
+    it("rejects tampered batch pricing in the Activity event without changing state", () => {
+        const previousDraft = withItems(makeDraft("previous-delivery"), [
+            makeItem("previous-item", {
+                costPrice: 4,
+                sellingPrice: 8
+            })
+        ]);
+        const previousPlan = makePlan(previousDraft, initialState([previousDraft]));
+        const previousEvent = makeApprovalEvent(previousPlan);
+        const stateWithHistory = applicationReducer(
+            initialState([previousDraft]),
+            {
+                type: "delivery.approved",
+                plan: previousPlan,
+                event: previousEvent
+            }
+        );
+        const activeDraft = withItems(makeDraft("tampered-pricing-delivery"), [
+            makeItem("tampered-pricing-item", {
+                costPrice: 6,
+                sellingPrice: 9
+            })
+        ]);
+        const state = {
+            ...stateWithHistory,
+            deliveryDrafts: [...stateWithHistory.deliveryDrafts, activeDraft]
+        };
+        const plan = makePlan(activeDraft, state);
+        const event = makeApprovalEvent(plan);
+        if (event.type !== "delivery.received") {
+            throw new Error("Expected a delivery completion event.");
+        }
+        const before = structuredClone(state);
+        const tamperedEvent = {
+            ...event,
+            items: event.items.map((item) => item.batch
+                ? {
+                    ...item,
+                    batch: {
+                        ...item.batch,
+                        pricingByPackagingLevel:
+                            item.batch.pricingByPackagingLevel.map((pricing) => ({
+                                ...pricing,
+                                costPrice: (pricing.costPrice ?? 0) + 1
+                            }))
+                    }
+                }
+                : item)
+        };
+
+        expect(state.inventoryRecords).not.toHaveLength(0);
+        expect(state.inventoryBatches).not.toHaveLength(0);
+        expect(state.deliveryDrafts.some((draft) => draft.status === "received"))
+            .toBe(true);
+        expect(state.activityEvents).toHaveLength(1);
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event: tamperedEvent
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(state).toEqual(before);
+    });
+
+    it("rejects approval if an affected current batch price changes after planning", () => {
+        const draft = withItems(makeDraft("stale-batch-price"), [
+            makeItem("item-box", { costPrice: 6, sellingPrice: 9 })
+        ]);
+        const batch = {
+            batchId: "batch-stale-price",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: [{
+                packagingLevelId: "box",
+                costPrice: 4,
+                sellingPrice: 8
+            }, {
+                packagingLevelId: "unit",
+                costPrice: 1,
+                sellingPrice: 2
+            }]
+        };
+        const state = {
+            ...initialState([draft]),
+            inventoryBatches: [batch],
+            inventoryRecords: [{
+                id: "inventory-stale-price",
+                productId: product.id,
+                variantId: product.variant[0].id,
+                batchId: batch.batchId,
+                stockQuantities: [{ packagingLevelId: "box", quantity: 1 }]
+            }]
+        };
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const staleState = {
+            ...state,
+            inventoryBatches: [{
+                ...batch,
+                pricingByPackagingLevel: [
+                    ...batch.pricingByPackagingLevel.slice(0, 1),
+                    {
+                        packagingLevelId: "unit",
+                        costPrice: 1,
+                        sellingPrice: 3
+                    }
+                ]
+            }]
+        };
+        const before = structuredClone(staleState);
+
+        expect(() => applicationReducer(staleState, {
+            type: "delivery.approved",
+            plan,
+            event
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(staleState).toEqual(before);
+    });
+
+    it("rejects delivery items that reference a packaging level outside the variant", () => {
+        const state = initialState([]);
+        const invalidDraft = withItems(makeDraft("invalid-packaging-price"), [
+            makeItem("invalid-item", {
+                packagingLevelId: "unknown-level",
+                costPrice: 1
+            })
+        ]);
+
+        expect(() => makePlan(invalidDraft, state)).toThrow(
+            "Item 1: Packaging level does not belong to the selected variant."
+        );
+        expect(state.inventoryRecords).toEqual([]);
+        expect(state.inventoryBatches).toEqual([]);
+        expect(state.activityEvents).toEqual([]);
+    });
+
     it("rejects an unrelated batch added to the submitted approval plan atomically", () => {
         const draft = withItems(makeDraft("delivery-extra-batch"), [
             makeItem("item-1")
@@ -616,7 +1240,8 @@ describe("Delivery approval and stock-in", () => {
                         productId: product.id,
                         variantId: product.variant[0].id,
                         batchNumber: "UNRELATED-LOT",
-                        expiryDate: null
+                        expiryDate: null,
+                        pricingByPackagingLevel: []
                     }
                 ]
             },

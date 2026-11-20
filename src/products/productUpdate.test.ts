@@ -21,6 +21,10 @@ function createProduct(): productStructure {
                 id: "variant-1",
                 variantName: "Tablets",
                 nafdacRegistrationNumber: "REG-T",
+                lowStockThreshold: {
+                    quantity: 5,
+                    packagingLevelId: "pack"
+                },
                 packagingHierarchy: [
                     {
                         id: "box",
@@ -43,6 +47,10 @@ function createProduct(): productStructure {
             {
                 id: "variant-2",
                 variantName: "Syrup",
+                lowStockThreshold: {
+                    quantity: 0,
+                    packagingLevelId: "bottle"
+                },
                 packagingHierarchy: [{
                     id: "bottle",
                     name: "Bottle",
@@ -76,6 +84,153 @@ describe("product update draft", () => {
             sellingPrice: "45"
         });
         expect(draft.variants[1].packaging[0].costPrice).toBe("");
+        expect(draft.variants.map((item) => [
+            item.lowStockThresholdQuantity,
+            item.lowStockThresholdPackagingLevelId
+        ])).toEqual([
+            ["5", "pack"],
+            ["0", "bottle"]
+        ]);
+    });
+
+    it("preserves each variant's threshold and selected packaging level on unrelated edits", () => {
+        const product = createProduct();
+        const draft = createProductUpdateDraft(product);
+        draft.name = "Updated medicine";
+        draft.reason = "Correct product details";
+
+        const updated = buildUpdatedProduct(product, draft);
+
+        expect(updated.variant.map((item) => item.lowStockThreshold)).toEqual([
+            { quantity: 5, packagingLevelId: "pack" },
+            { quantity: 0, packagingLevelId: "bottle" }
+        ]);
+    });
+
+    it("preserves a default threshold without assigning a packaging level", () => {
+        const product = createProduct();
+        product.variant[0].lowStockThreshold = { quantity: 5 };
+        const draft = createProductUpdateDraft(product);
+        draft.reason = "Update product details";
+
+        expect(buildUpdatedProduct(product, draft).variant[0].lowStockThreshold)
+            .toEqual({ quantity: 5 });
+    });
+
+    it("rejects clearing the threshold of an existing packaged variant", () => {
+        const product = createProduct();
+        const draft = createProductUpdateDraft(product);
+        draft.reason = "Update product details";
+        draft.variants[0].lowStockThresholdQuantity = "";
+
+        expect(validateProductUpdateDraft(draft, product)[
+            "variants.0.lowStockThresholdQuantity"
+        ]).toBe(
+            "A low-stock threshold is required for variants with packaging."
+        );
+        expect(() => buildUpdatedProduct(product, draft)).toThrow(
+            "A low-stock threshold is required for variants with packaging."
+        );
+    });
+
+    it("requires a threshold for a newly added packaged variant", () => {
+        const product = createProduct();
+        const draft = addVariantToUpdateDraft(
+            createProductUpdateDraft(product),
+            () => "variant-new"
+        );
+        const addedVariant = draft.variants.at(-1)!;
+        addedVariant.name = "Capsules";
+        addedVariant.packaging.push({
+            id: "capsule-box",
+            name: "Box",
+            nextLevelId: "",
+            quantityofNextLevel: "",
+            costPrice: "",
+            sellingPrice: ""
+        });
+        draft.reason = "Add capsule variant";
+
+        expect(validateProductUpdateDraft(draft, product)[
+            "variants.2.lowStockThresholdQuantity"
+        ]).toBe(
+            "A low-stock threshold is required for variants with packaging."
+        );
+        expect(() => buildUpdatedProduct(product, draft)).toThrow(
+            "A low-stock threshold is required for variants with packaging."
+        );
+    });
+
+    it("allows an empty placeholder to remain threshold-free and requires a threshold when packaged", () => {
+        const product: productStructure = {
+            id: "placeholder-product",
+            name: "Placeholder product",
+            variant: [{
+                id: "placeholder-variant",
+                variantName: "Internal placeholder",
+                packagingHierarchy: []
+            }]
+        };
+        const draft = createProductUpdateDraft(product);
+        draft.reason = "Update placeholder product";
+
+        expect(validateProductUpdateDraft(draft, product)).toEqual({});
+        expect(buildUpdatedProduct(product, draft).variant[0].lowStockThreshold)
+            .toBeUndefined();
+
+        const packaged = addPackagingLevelToUpdateDraft(
+            draft,
+            0,
+            () => "placeholder-level"
+        );
+        packaged.variants[0].packaging[0].name = "Card";
+        packaged.reason = "Add placeholder packaging";
+        expect(validateProductUpdateDraft(packaged, product)[
+            "variants.0.lowStockThresholdQuantity"
+        ]).toBe(
+            "A low-stock threshold is required for variants with packaging."
+        );
+
+        packaged.variants[0].lowStockThresholdQuantity = "0";
+        packaged.variants[0].lowStockThresholdPackagingLevelId =
+            "placeholder-level";
+        expect(validateProductUpdateDraft(packaged, product)).toEqual({});
+        expect(buildUpdatedProduct(product, packaged).variant[0].lowStockThreshold)
+            .toEqual({
+                quantity: 0,
+                packagingLevelId: "placeholder-level"
+            });
+    });
+
+    it.each(["-1", "1.5", "invalid", "1e2", "0x10", "9007199254740992"])(
+        "rejects invalid low-stock threshold quantity %s",
+        (quantity) => {
+            const product = createProduct();
+            const draft = createProductUpdateDraft(product);
+            draft.reason = "Update low-stock threshold";
+            draft.variants[0].lowStockThresholdQuantity = quantity;
+
+            expect(validateProductUpdateDraft(draft, product)[
+                "variants.0.lowStockThresholdQuantity"
+            ]).toBe("Enter a non-negative whole-number low-stock threshold.");
+            expect(() => buildUpdatedProduct(product, draft)).toThrow(
+                "Enter a non-negative whole-number low-stock threshold."
+            );
+        }
+    );
+
+    it("rejects a threshold packaging level outside the final variant hierarchy", () => {
+        const product = createProduct();
+        const draft = createProductUpdateDraft(product);
+        draft.reason = "Update low-stock threshold";
+        draft.variants[0].lowStockThresholdPackagingLevelId = "missing-level";
+
+        expect(validateProductUpdateDraft(draft, product)[
+            "variants.0.lowStockThresholdPackagingLevelId"
+        ]).toBe("Select a valid threshold packaging level.");
+        expect(() => buildUpdatedProduct(product, draft)).toThrow(
+            "Select a valid threshold packaging level."
+        );
     });
 
     it("builds trimmed product and variant values while preserving IDs and optional prices", () => {
@@ -114,6 +269,36 @@ describe("product update draft", () => {
             nextLevelId: "pack"
         });
         expect(updated.variant[1].id).toBe("variant-2");
+    });
+
+    it.each(["costPrice", "sellingPrice"] as const)(
+        "rejects an updated packaging %s with more than two decimal places",
+        (priceField) => {
+            const product = createProduct();
+            const draft = createProductUpdateDraft(product);
+            draft.reason = "Update packaging price";
+            draft.variants[0].packaging[0][priceField] = "12.345";
+
+            expect(
+                validateProductUpdateDraft(draft, product)[
+                    `variants.0.packaging.0.${priceField}`
+                ]
+            ).toContain("at most two decimal places");
+            expect(() => buildUpdatedProduct(product, draft)).toThrow(
+                "at most two decimal places"
+            );
+        }
+    );
+
+    it("accepts valid two-decimal packaging prices during Product updates", () => {
+        const product = createProduct();
+        const draft = createProductUpdateDraft(product);
+        draft.reason = "Update packaging prices";
+        draft.variants[0].packaging[0].costPrice = "40.12";
+        draft.variants[0].packaging[0].sellingPrice = "45.67";
+
+        expect(buildUpdatedProduct(product, draft).variant[0].packagingHierarchy[0])
+            .toMatchObject({ costPrice: 40.12, sellingPrice: 45.67 });
     });
 
     it("rejects empty names, missing reason, invalid prices and invalid conversions", () => {
@@ -216,6 +401,7 @@ describe("product update draft", () => {
         const addedVariant = extended.variants.at(-1)!;
         addedVariant.name = "Capsules";
         addedVariant.nafdacRegistrationNumber = "REG-C";
+        addedVariant.lowStockThresholdQuantity = "5";
         addedVariant.packaging.push({
             id: "capsule-box",
             name: "Box",
@@ -237,6 +423,7 @@ describe("product update draft", () => {
             id: "variant-new",
             variantName: "Capsules",
             nafdacRegistrationNumber: "REG-C",
+            lowStockThreshold: { quantity: 5 },
             packagingHierarchy: [{ id: "capsule-box", name: "Box" }]
         });
         expect(updated).not.toHaveProperty("inventoryRecords");
@@ -253,7 +440,14 @@ describe("product update draft", () => {
             batchId: null,
             stockQuantities: [{ packagingLevelId: "box", quantity: 10 }]
         }];
-        const inventoryBatches: Array<{ batchId: string; productId: string; variantId: string; batchNumber: string | null; expiryDate: Date | null }> = [];
+        const inventoryBatches: Array<{
+            batchId: string;
+            productId: string;
+            variantId: string;
+            batchNumber: string | null;
+            expiryDate: Date | null;
+            pricingByPackagingLevel: [];
+        }> = [];
 
         const updated = applyPackagingLevelInitialStock(
             product,

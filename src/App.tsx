@@ -409,6 +409,14 @@ function App() {
         }
 
         if (stagedDeletions.length > 0) {
+            if (
+                JSON.stringify(product.variant) !==
+                JSON.stringify(previousProduct.variant)
+            ) {
+                throw new Error(
+                    "Save product structure changes separately from staged deletions."
+                );
+            }
             const requests = stagedDeletions.map((deletion) => ({
                 ...deletion,
                 operationId: crypto.randomUUID()

@@ -167,7 +167,9 @@ function makeDeliveryDraft(
             packagingLevelId: "box",
             quantity: 1,
             batchNumber: null,
-            expiryDate: null
+            expiryDate: null,
+            costPrice: null,
+            sellingPrice: null
         }]
     };
 }
@@ -328,28 +330,32 @@ describe("Product View", () => {
                 productId: product.id,
                 variantId: tablets.id,
                 batchNumber: "LOT-1",
-                expiryDate: new Date("2027-01-31")
+                expiryDate: new Date("2027-01-31"),
+                pricingByPackagingLevel: []
             },
             {
                 batchId: "batch-2",
                 productId: product.id,
                 variantId: tablets.id,
                 batchNumber: "LOT-2",
-                expiryDate: null
+                expiryDate: null,
+                pricingByPackagingLevel: []
             },
             {
                 batchId: "other-variant-batch",
                 productId: product.id,
                 variantId: syrup.id,
                 batchNumber: "SYRUP-LOT",
-                expiryDate: null
+                expiryDate: null,
+                pricingByPackagingLevel: []
             },
             {
                 batchId: "other-product-batch",
                 productId: "other-product",
                 variantId: tablets.id,
                 batchNumber: "OTHER-LOT",
-                expiryDate: null
+                expiryDate: null,
+                pricingByPackagingLevel: []
             }
         ];
         const records: inventory[] = [
@@ -695,12 +701,25 @@ describe("ProductsPage deletion", () => {
 
     it("confirms and stages deletions in the Product Edit session with separate reasons", () => {
         const productWithVariants = createProduct([
-            createVariant("variant-1", "Tablets", undefined, [
-                createLevel("box", "Box")
-            ]),
-            createVariant("variant-2", "Syrup", undefined, [
-                createLevel("bottle", "Bottle")
-            ])
+            {
+                ...createVariant("variant-1", "Tablets", undefined, [
+                    createLevel("box", "Box")
+                ]),
+                lowStockThreshold: {
+                    quantity: 5,
+                    packagingLevelId: "box"
+                }
+            },
+            {
+                ...createVariant("variant-2", "Syrup", undefined, [
+                    createLevel("bottle", "Bottle", "syrup-unit", 12),
+                    createLevel("syrup-unit", "Unit")
+                ]),
+                lowStockThreshold: {
+                    quantity: 10,
+                    packagingLevelId: "syrup-unit"
+                }
+            }
         ]);
         const onUpdateProduct = vi.fn();
         renderInteractiveProductsPage(productWithVariants, { onUpdateProduct });

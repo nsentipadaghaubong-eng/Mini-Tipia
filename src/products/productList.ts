@@ -9,6 +9,10 @@ export const products: productStructure = {
         {
             id: "variant-panadol-500mg-tablets",
             variantName: "Panadol 500mg Tablets",
+            lowStockThreshold: {
+                quantity: 6,
+                packagingLevelId: "box"
+            },
             packagingHierarchy: [
                 {
                     id: "box",
@@ -39,6 +43,10 @@ export const products: productStructure = {
         {
             id: "variant-panadol-extra-tablets",
             variantName: "Panadol Extra Tablets",
+            lowStockThreshold: {
+                quantity: 26,
+                packagingLevelId: "extra-pack"
+            },
             packagingHierarchy: [
                 {
                     id: "extra-box",
@@ -69,6 +77,10 @@ export const products: productStructure = {
         {
             id: "variant-panadol-syrup",
             variantName: "Panadol Syrup",
+            lowStockThreshold: {
+                quantity: 16,
+                packagingLevelId: "bottle"
+            },
             packagingHierarchy: [
                 {
                     id: "bottle",
@@ -90,6 +102,10 @@ const amoxicillin: productStructure = {
         {
             id: "variant-amoxicillin-500mg-capsules",
             variantName: "Amoxicillin 500mg Capsules",
+            lowStockThreshold: {
+                quantity: 3,
+                packagingLevelId: "am-carton"
+            },
             packagingHierarchy: [
                 {
                     id: "am-carton",
@@ -120,6 +136,10 @@ const amoxicillin: productStructure = {
         {
             id: "variant-amoxicillin-suspension",
             variantName: "Amoxicillin Suspension",
+            lowStockThreshold: {
+                quantity: 7,
+                packagingLevelId: "am-suspension-bottle"
+            },
             packagingHierarchy: [
                 {
                     id: "am-suspension-bottle",
@@ -141,6 +161,10 @@ const vitaminC: productStructure = {
         {
             id: "variant-vitamin-c-100mg-tablets",
             variantName: "Vitamin C 100mg Tablets",
+            lowStockThreshold: {
+                quantity: 5,
+                packagingLevelId: "vc-tube"
+            },
             packagingHierarchy: [
                 {
                     id: "vc-tube",
@@ -170,6 +194,10 @@ const paracetamol: productStructure = {
         {
             id: "variant-paracetamol-500mg-tablets",
             variantName: "Paracetamol 500mg Tablets",
+            lowStockThreshold: {
+                quantity: 280,
+                packagingLevelId: "par-card"
+            },
             packagingHierarchy: [
                 {
                     id: "par-carton",
@@ -207,6 +235,10 @@ const ibuprofen: productStructure = {
         {
             id: "variant-ibuprofen-200mg-tablets",
             variantName: "Ibuprofen 200mg Tablets",
+            lowStockThreshold: {
+                quantity: 77,
+                packagingLevelId: "ib-pack"
+            },
             packagingHierarchy: [
                 {
                     id: "ib-carton",
@@ -237,6 +269,10 @@ const ibuprofen: productStructure = {
         {
             id: "variant-ibuprofen-400mg-tablets",
             variantName: "Ibuprofen 400mg Tablets",
+            lowStockThreshold: {
+                quantity: 750,
+                packagingLevelId: "ib400-tablet"
+            },
             packagingHierarchy: [
                 {
                     id: "ib400-carton",
@@ -274,6 +310,10 @@ const cetirizine: productStructure = {
         {
             id: "variant-cetirizine-10mg-tablets",
             variantName: "Cetirizine 10mg Tablets",
+            lowStockThreshold: {
+                quantity: 19,
+                packagingLevelId: "cet-box"
+            },
             packagingHierarchy: [
                 {
                     id: "cet-box",
@@ -296,6 +336,10 @@ const cetirizine: productStructure = {
         {
             id: "variant-cetirizine-5mg-5ml-solution",
             variantName: "Cetirizine 5mg/5mL Oral Solution",
+            lowStockThreshold: {
+                quantity: 20,
+                packagingLevelId: "cet-s-bottle"
+            },
             packagingHierarchy: [
                 {
                     id: "cet-s-bottle",
@@ -317,6 +361,10 @@ const omeprazole: productStructure = {
         {
             id: "variant-omeprazole-20mg-capsules",
             variantName: "Omeprazole 20mg Capsules",
+            lowStockThreshold: {
+                quantity: 13,
+                packagingLevelId: "ome-box"
+            },
             packagingHierarchy: [
                 {
                     id: "ome-box",
@@ -339,6 +387,10 @@ const omeprazole: productStructure = {
         {
             id: "variant-omeprazole-40mg-capsules",
             variantName: "Omeprazole 40mg Capsules",
+            lowStockThreshold: {
+                quantity: 110,
+                packagingLevelId: "ome40-capsule"
+            },
             packagingHierarchy: [
                 {
                     id: "ome40-box",
@@ -368,6 +420,10 @@ const metformin: productStructure = {
         {
             id: "variant-metformin-500mg-tablets",
             variantName: "Metformin 500mg Tablets",
+            lowStockThreshold: {
+                quantity: 170,
+                packagingLevelId: "met-tablet"
+            },
             packagingHierarchy: [
                 {
                     id: "met-box",
@@ -390,6 +446,10 @@ const metformin: productStructure = {
         {
             id: "variant-metformin-850mg-tablets",
             variantName: "Metformin 850mg Tablets",
+            lowStockThreshold: {
+                quantity: 150,
+                packagingLevelId: "met850-tablet"
+            },
             packagingHierarchy: [
                 {
                     id: "met850-box",
@@ -419,6 +479,10 @@ const oralRehydrationSalts: productStructure = {
         {
             id: "variant-ors-original-sachets",
             variantName: "Oral Rehydration Salts Sachets",
+            lowStockThreshold: {
+                quantity: 55,
+                packagingLevelId: "ors-sachet"
+            },
             packagingHierarchy: [
                 {
                     id: "ors-sachet",
@@ -433,6 +497,10 @@ const oralRehydrationSalts: productStructure = {
         {
             id: "variant-ors-orange-sachets",
             variantName: "Orange Oral Rehydration Salts Sachets",
+            lowStockThreshold: {
+                quantity: 58,
+                packagingLevelId: "ors-orange-sachet"
+            },
             packagingHierarchy: [
                 {
                     id: "ors-orange-sachet",
@@ -454,6 +522,10 @@ const amlodipine: productStructure = {
         {
             id: "variant-amlodipine-5mg-tablets",
             variantName: "Amlodipine 5mg Tablets",
+            lowStockThreshold: {
+                quantity: 120,
+                packagingLevelId: "aml-tablet"
+            },
             packagingHierarchy: [
                 {
                     id: "aml-box",
@@ -476,6 +548,10 @@ const amlodipine: productStructure = {
         {
             id: "variant-amlodipine-10mg-tablets",
             variantName: "Amlodipine 10mg Tablets",
+            lowStockThreshold: {
+                quantity: 12,
+                packagingLevelId: "aml10-box"
+            },
             packagingHierarchy: [
                 {
                     id: "aml10-box",

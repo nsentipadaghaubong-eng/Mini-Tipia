@@ -4,6 +4,7 @@ import type { productStructure } from "../products/productStructure.ts";
 import type { inventory } from "./inventoryStock.ts";
 import type { inventoryBatch } from "./inventoryBatch.ts";
 
+import { validateBatchPricingCollection } from "./inventoryBatch.ts";
 import { validateInventoryRelationships } from "./inventoryValidation.ts";
 
 // 1. Create test product data
@@ -68,14 +69,16 @@ const batches: inventoryBatch[] = [
         productId: "PROD001",
         variantId: "VAR001",
         batchNumber: "B1-1001",
-        expiryDate: new Date("2027-12-31")
+        expiryDate: new Date("2027-12-31"),
+        pricingByPackagingLevel: []
     },
     {
         batchId: "BATCH002",
         productId: "PROD001",
         variantId: "VAR002",
         batchNumber: "S1-1001",
-        expiryDate: new Date("2027-10-31")
+        expiryDate: new Date("2027-10-31"),
+        pricingByPackagingLevel: []
     }
 ];
 
@@ -250,6 +253,75 @@ describe("validateInventoryRelationships", () => {
                 }]
             }, batches)
         ).toThrow("non-negative safe integers");
+    });
+
+    it("validates batch prices as nullable finite non-negative values", () => {
+        expect(() => validateBatchPricingCollection([{
+            packagingLevelId: "BOX001",
+            costPrice: null,
+            sellingPrice: 0
+        }], ["BOX001"])).not.toThrow();
+
+        for (const price of [-1, Number.POSITIVE_INFINITY, Number.NaN, "10", undefined]) {
+            expect(() => validateBatchPricingCollection([{
+                packagingLevelId: "BOX001",
+                costPrice: price,
+                sellingPrice: null
+            }], ["BOX001"])).toThrow("Cost price");
+        }
+    });
+
+    it.each(["costPrice", "sellingPrice"] as const)(
+        "rejects batch %s with more than two decimal places",
+        (priceField) => {
+            expect(() => validateBatchPricingCollection([{
+                packagingLevelId: "BOX001",
+                costPrice: null,
+                sellingPrice: null,
+                [priceField]: 12.345
+            }], ["BOX001"])).toThrow("at most two decimal places");
+        }
+    );
+
+    it("rejects malformed, duplicate, and unknown batch pricing entries", () => {
+        expect(() => validateBatchPricingCollection(null, ["BOX001"]))
+            .toThrow("Batch pricing must be an array.");
+        expect(() => validateBatchPricingCollection([null], ["BOX001"]))
+            .toThrow("Batch pricing entries must be objects.");
+        expect(() => validateBatchPricingCollection([{
+            packagingLevelId: "BOX001",
+            costPrice: null,
+            sellingPrice: null,
+            unexpected: true
+        }], ["BOX001"])).toThrow("invalid packaging level");
+        expect(() => validateBatchPricingCollection([
+            { packagingLevelId: "BOX001", costPrice: null, sellingPrice: 2 },
+            { packagingLevelId: "BOX001", costPrice: 1, sellingPrice: null }
+        ], ["BOX001"])).toThrow("Duplicate batch pricing");
+        expect(() => validateBatchPricingCollection([{
+            packagingLevelId: "UNKNOWN001",
+            costPrice: null,
+            sellingPrice: 2
+        }], ["BOX001"])).toThrow("invalid packaging level");
+    });
+
+    it("validates batch pricing against the inventory record's product variant", () => {
+        const batchWithUnknownPricing = {
+            ...batches[0],
+            pricingByPackagingLevel: [{
+                packagingLevelId: "BOTTLE001",
+                costPrice: null,
+                sellingPrice: 2
+            }]
+        };
+
+        expect(() =>
+            validateInventoryRelationships(
+                product,
+                validInventory,
+                [batchWithUnknownPricing]
+            )
+        ).toThrow("invalid packaging level");
     });
 
 });

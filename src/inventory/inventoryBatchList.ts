@@ -1,6 +1,6 @@
 import type { inventoryBatch } from "./inventoryBatch";
 
-export const demoInventoryBatches: inventoryBatch[] = [
+const demoBatchDefinitions: Omit<inventoryBatch, "pricingByPackagingLevel">[] = [
     { batchId: "batch-panadol-b1-1001", productId: "product-panadol", variantId: "variant-panadol-500mg-tablets", batchNumber: "B1-1001", expiryDate: new Date("2027-03-31") },
     { batchId: "batch-panadol-b1-1002", productId: "product-panadol", variantId: "variant-panadol-500mg-tablets", batchNumber: "B1-1002", expiryDate: new Date("2027-06-30") },
     { batchId: "batch-panadol-e1-1001", productId: "product-panadol", variantId: "variant-panadol-extra-tablets", batchNumber: "E1-1001", expiryDate: new Date("2027-08-31") },
@@ -35,3 +35,9 @@ export const demoInventoryBatches: inventoryBatch[] = [
     { batchId: "batch-amlodipine-aml10-1001", productId: "product-amlodipine", variantId: "variant-amlodipine-10mg-tablets", batchNumber: "AML10-1001", expiryDate: new Date("2029-03-31") },
     { batchId: "batch-amlodipine-aml10-1002", productId: "product-amlodipine", variantId: "variant-amlodipine-10mg-tablets", batchNumber: "AML10-1002", expiryDate: new Date("2029-09-30") }
 ];
+
+export const demoInventoryBatches: inventoryBatch[] =
+    demoBatchDefinitions.map((batch) => ({
+        ...batch,
+        pricingByPackagingLevel: []
+    }));

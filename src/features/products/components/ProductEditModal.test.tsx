@@ -20,6 +20,10 @@ import "@testing-library/jest-dom/vitest";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { productStructure } from "../../../products/productStructure";
+import {
+    prepareProductRecordDeletionPlan,
+    type ProductRecordDeletionDraft
+} from "../../../products/productDeletion";
 import ProductEditModal from "./ProductEditModal";
 
 afterEach(() => {
@@ -38,6 +42,10 @@ const product: productStructure = {
             id: "variant-1",
             variantName: "Tablets",
             nafdacRegistrationNumber: "REG-TAB",
+            lowStockThreshold: {
+                quantity: 5,
+                packagingLevelId: "pack"
+            },
             packagingHierarchy: [
                 {
                     id: "box",
@@ -66,6 +74,60 @@ const product: productStructure = {
 };
 
 describe("ProductEditModal", () => {
+    it("blocks clearing an existing packaged variant's threshold", () => {
+        const onSave = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        fireEvent.change(screen.getAllByLabelText(
+            /Low-stock threshold quantity/
+        )[0], { target: { value: "" } });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Update product details" }
+        });
+
+        expect(screen.getByText(
+            "A low-stock threshold is required for variants with packaging."
+        )).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+        expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("requires a threshold when an empty placeholder gains packaging", () => {
+        const onSave = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Add packaging level"
+        })[1]);
+        fireEvent.change(screen.getAllByRole("textbox", {
+            name: /^Packaging level name/
+        })[2], { target: { value: "Bottle" } });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Add placeholder packaging" }
+        });
+
+        expect(screen.getByText(
+            "A low-stock threshold is required for variants with packaging."
+        )).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+        expect(onSave).not.toHaveBeenCalled();
+    });
+
     it("prepopulates product, multiple variant, packaging, conversion and price fields", () => {
         const markup = renderToStaticMarkup(createElement(ProductEditModal, {
             product,
@@ -313,6 +375,10 @@ describe("ProductEditModal", () => {
                 product.variant[0],
                 {
                     ...product.variant[1],
+                    lowStockThreshold: {
+                        quantity: 4,
+                        packagingLevelId: "bottle"
+                    },
                     packagingHierarchy: [{
                         id: "bottle",
                         name: "Bottle",
@@ -330,14 +396,16 @@ describe("ProductEditModal", () => {
                 productId: product.id,
                 variantId: product.variant[0].id,
                 batchNumber: "B1",
-                expiryDate: null
+                expiryDate: null,
+                pricingByPackagingLevel: []
             },
             {
                 batchId: "batch-2",
                 productId: product.id,
                 variantId: product.variant[0].id,
                 batchNumber: "B2",
-                expiryDate: null
+                expiryDate: null,
+                pricingByPackagingLevel: []
             }
         ];
         const records: inventory[] = [
@@ -436,7 +504,8 @@ describe("ProductEditModal", () => {
             productId: product.id,
             variantId: product.variant[0].id,
             batchNumber: "B1",
-            expiryDate: null
+            expiryDate: null,
+            pricingByPackagingLevel: []
         }];
         const inventoryRecords: inventory[] = [{
             id: "inventory-1",
@@ -528,7 +597,8 @@ describe("ProductEditModal", () => {
             productId: product.id,
             variantId: product.variant[0].id,
             batchNumber: "B1-1001",
-            expiryDate: new Date("2027-01-01")
+            expiryDate: new Date("2027-01-01"),
+            pricingByPackagingLevel: []
         }];
         const records: inventory[] = [{
             id: "inventory-1",
@@ -643,6 +713,217 @@ describe("ProductEditModal", () => {
         expect(screen.getByLabelText("Reason for deleting Box packaging level"))
             .toBeInTheDocument();
         expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("blocks deletion of the packaging level currently used by the threshold", () => {
+        const onSave = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Delete Packaging Level"
+        })[1]);
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "This packaging level is currently used by the variant's low-stock threshold."
+        );
+        expect(screen.queryByRole("alertdialog", {
+            name: "Delete Pack packaging level?"
+        })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText(
+            "Reason for deleting Pack packaging level"
+        )).not.toBeInTheDocument();
+        expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it("saves a new threshold level before allowing deletion of the old one", () => {
+        const initialVariant = product.variant[0];
+        const [box, pack] = initialVariant.packagingHierarchy;
+        if (!box || !pack) {
+            throw new Error("Threshold edit fixture requires Box and Pack levels.");
+        }
+        const card = {
+            id: "card",
+            name: "Card",
+            costPrice: null,
+            sellingPrice: 1,
+            quantityofNextLevel: null,
+            nextLevelId: null
+        };
+        const threeLevelProduct: productStructure = {
+            ...product,
+            variant: [{
+                ...initialVariant,
+                lowStockThreshold: {
+                    quantity: 5,
+                    packagingLevelId: box.id
+                },
+                packagingHierarchy: [
+                    { ...box, quantityofNextLevel: 6, nextLevelId: pack.id },
+                    { ...pack, quantityofNextLevel: 10, nextLevelId: card.id },
+                    card
+                ]
+            }, ...product.variant.slice(1)]
+        };
+        const savedProducts: productStructure[] = [];
+        render(createElement(ProductEditModal, {
+            product: threeLevelProduct,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave: (updatedProduct) => savedProducts.push(updatedProduct)
+        }));
+
+        fireEvent.change(screen.getAllByLabelText(
+            "Threshold packaging level"
+        )[0], { target: { value: pack.id } });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Change threshold to Pack" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        const savedProduct = savedProducts[0];
+        if (!savedProduct) {
+            throw new Error("Saving the threshold change did not update the product.");
+        }
+        expect(savedProduct.variant[0].lowStockThreshold).toEqual({
+            quantity: 5,
+            packagingLevelId: pack.id
+        });
+
+        cleanup();
+        const stagedDeletions: ProductRecordDeletionDraft[][] = [];
+        const deletionProducts: productStructure[] = [];
+        render(createElement(ProductEditModal, {
+            product: savedProduct,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave: (updatedProduct, _reason, _records, _batches, deletions = []) => {
+                deletionProducts.push(updatedProduct);
+                stagedDeletions.push(deletions);
+            }
+        }));
+
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Delete Packaging Level"
+        })[0]);
+        const confirmation = screen.getByRole("alertdialog", {
+            name: "Delete Box packaging level?"
+        });
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Confirm Delete"
+        }));
+        fireEvent.change(screen.getByLabelText("Reason for deleting Box packaging level"), {
+            target: { value: "Remove Box after changing threshold" }
+        });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Remove unused Box level" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        const deletionProduct = deletionProducts[0];
+        const stagedDeletion = stagedDeletions[0]?.[0];
+        if (!deletionProduct || !stagedDeletion) {
+            throw new Error("The unreferenced Box level was not staged for deletion.");
+        }
+        const plan = prepareProductRecordDeletionPlan(
+            deletionProduct,
+            [],
+            [],
+            [{ ...stagedDeletion, operationId: "remove-saved-threshold-box" }]
+        );
+
+        expect(plan.product.variant[0].packagingHierarchy.map((level) => level.id))
+            .toEqual([pack.id, card.id]);
+        expect(plan.product.variant[0].lowStockThreshold).toEqual({
+            quantity: 5,
+            packagingLevelId: pack.id
+        });
+
+        cleanup();
+        render(createElement(ProductEditModal, {
+            product: plan.product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave: () => undefined
+        }));
+        expect(screen.getAllByLabelText("Threshold packaging level")[0])
+            .toHaveValue(pack.id);
+        expect(screen.getAllByLabelText(/Low-stock threshold quantity/)[0])
+            .toHaveValue(5);
+    });
+
+    it("rejects staging a packaging deletion while retained pricing edits are unsaved", () => {
+        const inventoryRecords: inventory[] = [{
+            id: "inventory-1",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: "batch-1",
+            stockQuantities: [
+                { packagingLevelId: "box", quantity: 4 },
+                { packagingLevelId: "pack", quantity: 6 }
+            ]
+        }];
+        const inventoryBatches: inventoryBatch[] = [{
+            batchId: "batch-1",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: null,
+            pricingByPackagingLevel: [
+                { packagingLevelId: "box", costPrice: null, sellingPrice: 44.75 },
+                { packagingLevelId: "pack", costPrice: 3.25, sellingPrice: null }
+            ]
+        }];
+        const state = {
+            products: [product],
+            inventoryRecords,
+            inventoryBatches,
+            activityEvents: []
+        };
+        const before = structuredClone(state);
+        const onSave = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords,
+            inventoryBatches,
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        fireEvent.change(screen.getAllByLabelText("Selling price")[0], {
+            target: { value: "46.25" }
+        });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Correct Box selling price" }
+        });
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Delete Packaging Level"
+        })[1]);
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "Product structure edits and deletions must be saved separately"
+        );
+        expect(screen.queryByRole("alertdialog", {
+            name: "Delete Pack packaging level?"
+        })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText(
+            "Reason for deleting Pack packaging level"
+        )).not.toBeInTheDocument();
+        expect(onSave).not.toHaveBeenCalled();
+        expect(state).toEqual(before);
     });
 
 });
