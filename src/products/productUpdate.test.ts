@@ -3,7 +3,6 @@ import type { productStructure } from "./productStructure";
 import {
     addVariantToUpdateDraft,
     addPackagingLevelToUpdateDraft,
-    applyPackagingLevelInitialStock,
     buildUpdatedProduct,
     createProductUpdateDraft,
     validateProductUpdateDraft
@@ -429,41 +428,6 @@ describe("product update draft", () => {
         expect(updated).not.toHaveProperty("inventoryRecords");
         expect(() => addVariantToUpdateDraft(draft, () => "variant-1"))
             .toThrow("unique and non-empty");
-    });
-
-    it("applies initial stock to a newly added packaging level in an existing variant", () => {
-        const product = createProduct();
-        const inventoryRecords = [{
-            id: "inventory-1",
-            productId: product.id,
-            variantId: "variant-1",
-            batchId: null,
-            stockQuantities: [{ packagingLevelId: "box", quantity: 10 }]
-        }];
-        const inventoryBatches: Array<{
-            batchId: string;
-            productId: string;
-            variantId: string;
-            batchNumber: string | null;
-            expiryDate: Date | null;
-            pricingByPackagingLevel: [];
-        }> = [];
-
-        const updated = applyPackagingLevelInitialStock(
-            product,
-            inventoryRecords,
-            inventoryBatches,
-            "variant-1",
-            "new-level",
-            "5",
-            null
-        );
-
-        expect(updated).toHaveLength(1);
-        expect(updated[0].stockQuantities).toEqual([
-            { packagingLevelId: "box", quantity: 10 },
-            { packagingLevelId: "new-level", quantity: 5 }
-        ]);
     });
 
     it("blocks removal of variants and packaging levels", () => {

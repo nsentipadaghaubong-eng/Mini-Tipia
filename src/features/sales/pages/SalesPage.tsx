@@ -1,4 +1,4 @@
-import { useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import type { productStructure, variant } from "../../../products/productStructure";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
@@ -18,6 +18,7 @@ import {
 import {
     prepareSaleDraft
 } from "../../../sales/salesEngine";
+import type { NavigationRequest } from "../../../navigation/navigationIntent";
 import SalesItemModal from "../components/SalesItemModal";
 import {
     initialSalesSelection,
@@ -31,6 +32,9 @@ interface SalesPageProps {
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
     saleDrafts: SaleDraft[];
+    navigationRequest: NavigationRequest | null;
+    onNavigationConsumed: (requestId: number, handled: boolean) => void;
+    onNavigationDismissed: (requestId: number) => void;
     onDraftCreated: (draft: SaleDraft) => void;
     onDraftDetailsUpdated: (
         draftId: string,
@@ -80,6 +84,15 @@ interface SaleInformation {
     receivedBy: string;
 }
 
+function saleInformationFromDraft(draft?: SaleDraft): SaleInformation {
+    return {
+        customerName: draft?.customerName ?? "",
+        customerAddress: draft?.customerAddress ?? "",
+        date: draft?.saleDate ?? localDateToday(),
+        receivedBy: draft?.staffMember?.displayName ?? ""
+    };
+}
+
 function localDateToday(): string {
     const now = new Date();
     const year = now.getFullYear();
@@ -122,6 +135,9 @@ export default function SalesPage({
     inventoryRecords,
     inventoryBatches,
     saleDrafts,
+    navigationRequest,
+    onNavigationConsumed,
+    onNavigationDismissed,
     onDraftCreated,
     onDraftDetailsUpdated,
     onDraftItemAdded,
@@ -129,17 +145,15 @@ export default function SalesPage({
     onDraftItemRemoved,
     onApproveSale
 }: SalesPageProps) {
-    const currentDraft = saleDrafts.find((draft) => draft.status === "draft");
     const [selection, dispatchSelection] = useReducer(
         salesSelectionReducer,
         initialSalesSelection
     );
-    const [saleInformation, setSaleInformation] = useState<SaleInformation>(() => ({
-        customerName: currentDraft?.customerName ?? "",
-        customerAddress: currentDraft?.customerAddress ?? "",
-        date: currentDraft?.saleDate ?? localDateToday(),
-        receivedBy: currentDraft?.staffMember?.displayName ?? ""
-    }));
+    const [saleInformation, setSaleInformation] = useState<SaleInformation>(
+        () => saleInformationFromDraft(
+            saleDrafts.find((draft) => draft.status === "draft")
+        )
+    );
     const [productSearch, setProductSearch] = useState("");
     const [activeItemModal, setActiveItemModal] =
         useState<ActiveItemModal | null>(null);
@@ -148,6 +162,79 @@ export default function SalesPage({
     const [approvalInProgress, setApprovalInProgress] = useState(false);
     const approvalLock = useRef(false);
     const searchRef = useRef<HTMLInputElement>(null);
+    const handledNavigationRequestId = useRef<number | null>(null);
+    const lastDraftNavigationRequestId = useRef<number | null>(null);
+    const saleDraftNavigationIntent =
+        navigationRequest?.intent.type === "sale.draft.open"
+            ? navigationRequest.intent
+            : null;
+    const draftNavigationRequest = saleDraftNavigationIntent
+        ? navigationRequest
+        : null;
+    const requestedDraft = saleDraftNavigationIntent
+        ? saleDrafts.find((draft) =>
+            draft.draftId === saleDraftNavigationIntent.draftId &&
+            draft.status === "draft"
+        )
+        : undefined;
+    const currentDraft = draftNavigationRequest
+        ? requestedDraft
+        : saleDrafts.find((draft) => draft.status === "draft");
+    const visibleSaleInformation = requestedDraft
+        ? saleInformationFromDraft(requestedDraft)
+        : saleInformation;
+    const isStaleDraftNavigation =
+        draftNavigationRequest !== null && requestedDraft === undefined;
+
+    useEffect(() => {
+        if (!draftNavigationRequest) {
+            if (lastDraftNavigationRequestId.current !== null) {
+                lastDraftNavigationRequestId.current = null;
+                setSaleInformation(saleInformationFromDraft(
+                    saleDrafts.find((draft) => draft.status === "draft")
+                ));
+                setProductSearch("");
+                dispatchSelection({
+                    type: "product.selected",
+                    productId: ""
+                });
+                setActiveItemModal(null);
+                setErrorMessage("");
+                setConfirmExpiredBatch(false);
+            }
+            return;
+        }
+
+        lastDraftNavigationRequestId.current =
+            draftNavigationRequest.requestId;
+        if (
+            draftNavigationRequest.consumed ||
+            handledNavigationRequestId.current ===
+                draftNavigationRequest.requestId
+        ) {
+            return;
+        }
+
+        handledNavigationRequestId.current =
+            draftNavigationRequest.requestId;
+        if (requestedDraft) {
+            setSaleInformation(saleInformationFromDraft(requestedDraft));
+            setProductSearch("");
+            dispatchSelection({
+                type: "product.selected",
+                productId: ""
+            });
+            setActiveItemModal(null);
+            setErrorMessage("");
+            setConfirmExpiredBatch(false);
+        }
+        onNavigationConsumed(draftNavigationRequest.requestId, true);
+    }, [
+        draftNavigationRequest,
+        onNavigationConsumed,
+        requestedDraft,
+        saleDrafts
+    ]);
 
     const selectedProduct = products.find(
         (product) => product.id === selection.productId
@@ -348,6 +435,9 @@ export default function SalesPage({
             return;
         }
 
+        if (draftNavigationRequest) {
+            onNavigationDismissed(draftNavigationRequest.requestId);
+        }
         returnToSearch();
         setConfirmExpiredBatch(false);
     }
@@ -364,6 +454,23 @@ export default function SalesPage({
         },
         { subtotal: 0, discountAmount: 0, finalAmount: 0 }
     );
+
+    if (isStaleDraftNavigation) {
+        return (
+            <div className="sales-page">
+                <header className="page-heading">
+                    <div>
+                        <h2>Sales</h2>
+                        <p>Search for a medicine to add it to the current sale.</p>
+                    </div>
+                </header>
+                <p className="sales-error" role="alert">
+                    The requested pending sale is no longer available. Open Sales
+                    again to select an available draft.
+                </p>
+            </div>
+        );
+    }
 
     return (
         <div className="sales-page">
@@ -382,7 +489,7 @@ export default function SalesPage({
                             "customerName",
                             event.target.value
                         )}
-                        value={saleInformation.customerName}
+                        value={visibleSaleInformation.customerName}
                     />
                 </label>
                 <label className="sales-field">
@@ -392,7 +499,7 @@ export default function SalesPage({
                             "customerAddress",
                             event.target.value
                         )}
-                        value={saleInformation.customerAddress}
+                        value={visibleSaleInformation.customerAddress}
                     />
                 </label>
                 <label className="sales-field">
@@ -403,7 +510,7 @@ export default function SalesPage({
                             event.target.value
                         )}
                         type="date"
-                        value={saleInformation.date}
+                        value={visibleSaleInformation.date}
                     />
                 </label>
                 <label className="sales-field">
@@ -414,7 +521,7 @@ export default function SalesPage({
                             event.target.value
                         )}
                         required
-                        value={saleInformation.receivedBy}
+                        value={visibleSaleInformation.receivedBy}
                     />
                 </label>
             </section>

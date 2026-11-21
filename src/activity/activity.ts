@@ -129,6 +129,7 @@ export type ActivityEventInput = ActivityBaseInput & (
         readonly product: ActivityProductSnapshot;
         readonly inventory: readonly ActivityInventorySnapshot[];
         readonly batches: readonly ActivityBatchSnapshot[];
+        readonly reason: string;
     }
     | {
         readonly type: "product.variant_added";
@@ -488,7 +489,8 @@ export function buildProductDeletionActivityInput(
     product: productStructure,
     inventoryRecords: readonly inventory[],
     batches: readonly inventoryBatch[],
-    operationKey: string
+    operationKey: string,
+    reason: string
 ): ActivityEventInput {
     const productInventory = inventoryRecords.filter(
         (record) => record.productId === product.id
@@ -506,7 +508,8 @@ export function buildProductDeletionActivityInput(
         inventory: productInventory.map((record) =>
             snapshotInventory(record, product, batches)
         ),
-        batches: productBatches.map((batch) => snapshotBatch(batch, product))
+        batches: productBatches.map((batch) => snapshotBatch(batch, product)),
+        reason: reason.trim()
     };
 }
 

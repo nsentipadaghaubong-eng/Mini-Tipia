@@ -207,41 +207,65 @@ function renderDashboard(
 
 describe("Dashboard pending activities", () => {
     it("shows active Sales drafts and opens the Sales workflow", () => {
-        const internalSaleId = "sale-uuid-4a2b9c15";
-        const draft = makeSaleDraft(internalSaleId, "draft", [
+        const firstDraft = makeSaleDraft("sale-uuid-first", "draft", [
+            makeSaleItem("first-customer", "tablets", 1)
+        ]);
+        const secondDraft = makeSaleDraft("sale-uuid-4a2b9c15", "draft", [
             makeSaleItem("panadol", "tablets", 5)
         ]);
-        const onNavigate = renderDashboard({ saleDrafts: [draft] });
+        const firstDraftSnapshot = structuredClone(firstDraft);
+        const onNavigate = renderDashboard({
+            saleDrafts: [firstDraft, secondDraft]
+        });
 
         expect(screen.getByRole("heading", { name: "Pending Activities" }))
             .toBeInTheDocument();
-        expect(screen.getByRole("heading", { name: "Pending Sale" }))
-            .toBeInTheDocument();
-        expect(screen.queryByText(internalSaleId)).not.toBeInTheDocument();
-        expect(screen.getByText("1 product")).toBeInTheDocument();
+        const salesButtons = screen.getAllByRole("button", {
+            name: "Open Sales"
+        });
+        expect(salesButtons).toHaveLength(2);
+        expect(screen.queryByText("sale-uuid-first")).not.toBeInTheDocument();
+        expect(screen.queryByText("sale-uuid-4a2b9c15")).not.toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: "Open Sales" }));
-        expect(onNavigate).toHaveBeenCalledWith("sales");
+        fireEvent.click(salesButtons[1]);
+        expect(onNavigate).toHaveBeenCalledWith({
+            type: "sale.draft.open",
+            draftId: secondDraft.draftId
+        });
+        expect(firstDraft).toEqual(firstDraftSnapshot);
     });
 
     it("shows active delivery drafts, their invoice number, and opens Receive Delivery", () => {
-        const draft = makeDeliveryDraft(
+        const firstDraft = makeDeliveryDraft(
+            "delivery-draft-first",
+            "draft",
+            [makeDeliveryItem("first-product", "tablets", 2)],
+            "INV-203"
+        );
+        const secondDraft = makeDeliveryDraft(
             "delivery-draft-1",
             "draft",
             [makeDeliveryItem("vitamin-c", "tablets", 10)],
             "INV-204"
         );
-        const onNavigate = renderDashboard({ deliveryDrafts: [draft] });
+        const firstDraftSnapshot = structuredClone(firstDraft);
+        const onNavigate = renderDashboard({
+            deliveryDrafts: [firstDraft, secondDraft]
+        });
 
-        expect(screen.getByRole("heading", { name: "Pending Delivery" }))
-            .toBeInTheDocument();
+        expect(screen.getByText("Invoice: INV-203")).toBeInTheDocument();
         expect(screen.getByText("Invoice: INV-204")).toBeInTheDocument();
-        expect(screen.getByText("1 product")).toBeInTheDocument();
-
-        fireEvent.click(screen.getByRole("button", {
+        const deliveryButtons = screen.getAllByRole("button", {
             name: "Open Receive Delivery"
-        }));
-        expect(onNavigate).toHaveBeenCalledWith("delivery");
+        });
+        expect(deliveryButtons).toHaveLength(2);
+
+        fireEvent.click(deliveryButtons[1]);
+        expect(onNavigate).toHaveBeenCalledWith({
+            type: "delivery.draft.open",
+            deliveryId: secondDraft.deliveryId
+        });
+        expect(firstDraft).toEqual(firstDraftSnapshot);
     });
 
     it("does not display an internal delivery ID when no invoice number is available", () => {
@@ -403,6 +427,139 @@ describe("Dashboard inventory alerts", () => {
             .toBeInTheDocument();
         expect(within(dialog).getByText("Batch batch-second"))
             .toBeInTheDocument();
+    });
+
+    it("excludes an expired batch when its stock is zero", () => {
+        const product = makeProduct(
+            "product-zero-expired-stock",
+            "Expired medicine",
+            "variant-zero-expired-stock",
+            "Tablets"
+        );
+        renderDashboard({
+            products: [product],
+            inventoryRecords: [{
+                ...makeInventoryRecord(product, 0, "batch-zero-expired"),
+                id: "record-zero-expired"
+            }],
+            inventoryBatches: [
+                makeBatch(product, "batch-zero-expired", dateOffset(-1))
+            ]
+        });
+
+        const card = screen.getByRole("button", {
+            name: "Open Expired Products details, 0 affected products/variants"
+        });
+        fireEvent.click(card);
+
+        const dialog = screen.getByRole("dialog", { name: "Expired Products" });
+        expect(within(dialog).getByText("0 affected entries"))
+            .toBeInTheDocument();
+        expect(within(dialog).getByRole("status"))
+            .toHaveTextContent("There are no affected entries in this category.");
+        expect(within(dialog).queryByText("Batch batch-zero-expired"))
+            .not.toBeInTheDocument();
+    });
+
+    it("keeps positive-stock expired batches eligible alongside zero-stock batches", () => {
+        const product = makeProduct(
+            "product-mixed-expired-stock",
+            "Medicine",
+            "variant-mixed-expired-stock",
+            "Capsules"
+        );
+        renderDashboard({
+            products: [product],
+            inventoryRecords: [
+                {
+                    ...makeInventoryRecord(product, 0, "batch-zero-stock"),
+                    id: "record-zero-stock"
+                },
+                {
+                    ...makeInventoryRecord(product, 4, "batch-positive-stock"),
+                    id: "record-positive-stock"
+                }
+            ],
+            inventoryBatches: [
+                makeBatch(product, "batch-zero-stock", dateOffset(-2)),
+                makeBatch(product, "batch-positive-stock", dateOffset(-1))
+            ]
+        });
+
+        const card = screen.getByRole("button", {
+            name: "Open Expired Products details, 1 affected product/variant"
+        });
+        fireEvent.click(card);
+
+        const dialog = screen.getByRole("dialog", { name: "Expired Products" });
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(1);
+        expect(within(dialog).getByText("Batch batch-positive-stock"))
+            .toBeInTheDocument();
+        expect(within(dialog).queryByText("Batch batch-zero-stock"))
+            .not.toBeInTheDocument();
+    });
+
+    it("keeps distinct product/variant totals while search retains all matching batches", () => {
+        const panadol = makeProduct(
+            "product-expiry-search-panadol",
+            "Panadol",
+            "variant-expiry-search-panadol",
+            "Tablets"
+        );
+        const vaccine = makeProduct(
+            "product-expiry-search-vaccine",
+            "Vaccine",
+            "variant-expiry-search-vaccine",
+            "Vials"
+        );
+        renderDashboard({
+            products: [panadol, vaccine],
+            inventoryRecords: [
+                {
+                    ...makeInventoryRecord(panadol, 2, "batch-panadol-first"),
+                    id: "record-panadol-first"
+                },
+                {
+                    ...makeInventoryRecord(panadol, 3, "batch-panadol-second"),
+                    id: "record-panadol-second"
+                },
+                {
+                    ...makeInventoryRecord(vaccine, 1, "batch-vaccine"),
+                    id: "record-vaccine"
+                }
+            ],
+            inventoryBatches: [
+                makeBatch(panadol, "batch-panadol-first", dateOffset(20)),
+                makeBatch(panadol, "batch-panadol-second", dateOffset(45)),
+                makeBatch(vaccine, "batch-vaccine", dateOffset(30))
+            ]
+        });
+
+        const cardName =
+            "Open Expiring Soon details, 2 affected products/variants";
+        const card = screen.getByRole("button", { name: cardName });
+        expect(card).toHaveTextContent("2");
+        fireEvent.click(card);
+
+        const dialog = screen.getByRole("dialog", { name: "Expiring Soon" });
+        expect(within(dialog).getByText("3 affected entries"))
+            .toBeInTheDocument();
+        fireEvent.change(within(dialog).getByRole("searchbox", {
+            name: "Search Expiring Soon alerts"
+        }), { target: { value: "Panadol" } });
+
+        expect(screen.getByRole("button", { name: cardName }))
+            .toHaveTextContent("2");
+        expect(within(dialog).getByText(
+            "Showing 2 of 3 affected entries matching “Panadol”."
+        )).toBeInTheDocument();
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(2);
+        expect(within(dialog).getByText("Batch batch-panadol-first"))
+            .toBeInTheDocument();
+        expect(within(dialog).getByText("Batch batch-panadol-second"))
+            .toBeInTheDocument();
+        expect(within(dialog).queryByText("Batch batch-vaccine"))
+            .not.toBeInTheDocument();
     });
 
     it("omits the Expired Today section when no qualifying stock expires today", () => {
@@ -736,7 +893,7 @@ describe("Dashboard alert controls", () => {
         }
     });
 
-    it("searches alert entries by product name", () => {
+    it("searches the selected alert modal by product name", () => {
         const panadol = makeProduct(
             "product-panadol-search",
             "Panadol",
@@ -757,20 +914,16 @@ describe("Dashboard alert controls", () => {
             ]
         });
 
-        fireEvent.click(screen.getByRole("button", { name: "Search" }));
-        fireEvent.change(screen.getByRole("searchbox", {
-            name: "Search inventory alerts"
-        }), { target: { value: "panadol" } });
-
         const card = screen.getByRole("button", {
             name: "Open Low Stock details, 2 affected products/variants"
         });
-        expect(card).toHaveTextContent("2");
-        expect(screen.queryByText("Panadol · 500mg Tablets"))
-            .not.toBeInTheDocument();
-
         fireEvent.click(card);
         const dialog = screen.getByRole("dialog", { name: "Low Stock" });
+        fireEvent.change(within(dialog).getByRole("searchbox", {
+            name: "Search Low Stock alerts"
+        }), { target: { value: "panadol" } });
+
+        expect(card).toHaveTextContent("2");
         expect(within(dialog).getByText(
             "Showing 1 of 2 affected entries matching “panadol”."
         )).toBeInTheDocument();
@@ -782,7 +935,7 @@ describe("Dashboard alert controls", () => {
         )).not.toBeInTheDocument();
     });
 
-    it("searches alert entries by variant name", () => {
+    it("searches the selected alert modal by variant name", () => {
         const capsules = makeProduct(
             "product-capsules",
             "Medicine A",
@@ -803,16 +956,16 @@ describe("Dashboard alert controls", () => {
             ]
         });
 
-        fireEvent.click(screen.getByRole("button", { name: "Search" }));
-        fireEvent.change(screen.getByRole("searchbox", {
-            name: "Search inventory alerts"
-        }), { target: { value: "250mg capsules" } });
-
         const card = screen.getByRole("button", {
             name: "Open Low Stock details, 2 affected products/variants"
         });
         fireEvent.click(card);
         const dialog = screen.getByRole("dialog", { name: "Low Stock" });
+        fireEvent.change(within(dialog).getByRole("searchbox", {
+            name: "Search Low Stock alerts"
+        }), { target: { value: "250mg capsules" } });
+
+        expect(card).toHaveTextContent("2");
         expect(within(dialog).getByText(
             "Showing 1 of 2 affected entries matching “250mg capsules”."
         )).toBeInTheDocument();
@@ -824,7 +977,7 @@ describe("Dashboard alert controls", () => {
         )).not.toBeInTheDocument();
     });
 
-    it("clears and closes the alert search", () => {
+    it("clears modal search and restores all entries", () => {
         const panadol = makeProduct(
             "product-panadol-clear",
             "Panadol",
@@ -845,113 +998,183 @@ describe("Dashboard alert controls", () => {
             ]
         });
 
-        fireEvent.click(screen.getByRole("button", { name: "Search" }));
-        const searchInput = screen.getByRole("searchbox", {
-            name: "Search inventory alerts"
+        const card = screen.getByRole("button", {
+            name: "Open Low Stock details, 2 affected products/variants"
+        });
+        fireEvent.click(card);
+        const dialog = screen.getByRole("dialog", { name: "Low Stock" });
+        const searchInput = within(dialog).getByRole("searchbox", {
+            name: "Search Low Stock alerts"
         });
         fireEvent.change(searchInput, { target: { value: "Panadol" } });
-        fireEvent.click(screen.getByRole("button", {
-            name: "Open Low Stock details, 2 affected products/variants"
-        }));
-        expect(screen.getByRole("dialog", { name: "Low Stock" }))
-            .toHaveTextContent("Showing 1 of 2 affected entries");
-        fireEvent.click(screen.getByRole("button", {
-            name: "Close Low Stock details"
-        }));
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(1);
 
-        fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
-        fireEvent.click(screen.getByRole("button", {
-            name: "Open Low Stock details, 2 affected products/variants"
+        fireEvent.click(within(dialog).getByRole("button", {
+            name: "Clear Low Stock search"
         }));
-        expect(within(screen.getByRole("dialog", { name: "Low Stock" }))
-            .getAllByRole("listitem")).toHaveLength(2);
-        fireEvent.click(screen.getByRole("button", {
-            name: "Close Low Stock details"
-        }));
-
-        fireEvent.click(screen.getByRole("button", { name: "Close search" }));
-        expect(screen.queryByRole("searchbox", {
-            name: "Search inventory alerts"
-        })).not.toBeInTheDocument();
-        expect(screen.getByRole("button", {
-            name: "Open Low Stock details, 2 affected products/variants"
-        })).toBeInTheDocument();
+        expect(searchInput).toHaveValue("");
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(2);
     });
 
-    it("filters inventory alert cards by category", () => {
-        const expiringProduct = makeProduct(
-            "product-expiring-filter",
-            "Vaccine",
-            "variant-expiring-filter",
-            "Vials"
-        );
+    it("provides search in every alert detail modal without Dashboard-level controls", () => {
         const lowStockProduct = makeProduct(
-            "product-low-filter",
-            "Panadol",
-            "variant-low-filter",
+            "product-low-search-modal",
+            "Low stock medicine",
+            "variant-low-search-modal",
             "Tablets"
         );
+        const outOfStockProduct = makeProduct(
+            "product-out-search-modal",
+            "Out of stock medicine",
+            "variant-out-search-modal",
+            "Capsules"
+        );
+        const expiringProduct = makeProduct(
+            "product-expiring-search-modal",
+            "Vaccine",
+            "variant-expiring-search-modal",
+            "Vials"
+        );
+        const expiredProduct = makeProduct(
+            "product-expired-search-modal",
+            "Expired medicine",
+            "variant-expired-search-modal",
+            "Liquids"
+        );
+        const todayProduct = makeProduct(
+            "product-today-search-modal",
+            "Today medicine",
+            "variant-today-search-modal",
+            "Pens"
+        );
         renderDashboard({
-            products: [expiringProduct, lowStockProduct],
+            products: [
+                lowStockProduct,
+                outOfStockProduct,
+                expiringProduct,
+                expiredProduct,
+                todayProduct
+            ],
             inventoryRecords: [
-                makeInventoryRecord(expiringProduct, 2, "batch-filter"),
-                makeInventoryRecord(lowStockProduct, 1)
+                makeInventoryRecord(lowStockProduct, 1),
+                makeInventoryRecord(outOfStockProduct, 0),
+                makeInventoryRecord(expiringProduct, 2, "batch-search-soon"),
+                makeInventoryRecord(expiredProduct, 2, "batch-search-expired"),
+                makeInventoryRecord(todayProduct, 2, "batch-search-today")
             ],
             inventoryBatches: [
-                makeBatch(expiringProduct, "batch-filter", dateOffset(30))
+                makeBatch(expiringProduct, "batch-search-soon", dateOffset(30)),
+                makeBatch(expiredProduct, "batch-search-expired", dateOffset(-1)),
+                makeBatch(todayProduct, "batch-search-today", dateOffset(0))
             ]
         });
 
-        fireEvent.change(screen.getByRole("combobox", {
-            name: "Filter inventory alerts"
-        }), { target: { value: "expiring-soon" } });
-
-        const expiringCard = screen.getByRole("button", {
-            name: "Open Expiring Soon details, 1 affected product/variant"
-        });
-        expect(expiringCard).toBeInTheDocument();
-        expect(screen.queryByRole("button", {
-            name: /Open Low Stock details/
-        }))
+        expect(screen.queryByRole("button", { name: "Search" }))
             .not.toBeInTheDocument();
-        fireEvent.click(expiringCard);
-        const dialog = screen.getByRole("dialog", { name: "Expiring Soon" });
-        expect(within(dialog).getByText("Vaccine · Vials"))
-            .toBeInTheDocument();
-        expect(within(dialog).getByText("30 days remaining"))
-            .toBeInTheDocument();
+        expect(screen.queryByRole("combobox", {
+            name: "Filter inventory alerts"
+        })).not.toBeInTheDocument();
+
+        for (const [title, expectedCount] of [
+            ["Low Stock", 4],
+            ["Out of Stock", 1],
+            ["Expiring Soon", 1],
+            ["Expired Products", 1],
+            ["Expired Today", 1]
+        ] as const) {
+            const card = screen.getByRole("button", {
+                name: `Open ${title} details, ${expectedCount} affected ${
+                    expectedCount === 1
+                        ? "product/variant"
+                        : "products/variants"
+                }`
+            });
+            expect(card).toHaveTextContent(String(expectedCount));
+            fireEvent.click(card);
+            const dialog = screen.getByRole("dialog", { name: title });
+            expect(within(dialog).getByRole("searchbox", {
+                name: `Search ${title} alerts`
+            })).toHaveValue("");
+            fireEvent.click(within(dialog).getByRole("button", {
+                name: `Close ${title} details`
+            }));
+        }
     });
 
-    it("shows a clear empty-result message for unmatched searches and filters", () => {
-        const product = makeProduct(
-            "product-empty-search",
+    it("shows a no-match state and keeps each modal search independent", () => {
+        const panadol = makeProduct(
+            "product-independent-search-panadol",
             "Panadol",
-            "variant-empty-search",
+            "variant-independent-search-panadol",
             "Tablets"
         );
+        const vitaminC = makeProduct(
+            "product-independent-search-vitamin",
+            "Vitamin C",
+            "variant-independent-search-vitamin",
+            "Chewables"
+        );
+        const outOfStockProduct = makeProduct(
+            "product-independent-search-out",
+            "Amoxicillin",
+            "variant-independent-search-out",
+            "Capsules"
+        );
         renderDashboard({
-            products: [product],
-            inventoryRecords: [makeInventoryRecord(product, 1)]
+            products: [panadol, vitaminC, outOfStockProduct],
+            inventoryRecords: [
+                makeInventoryRecord(panadol, 1),
+                makeInventoryRecord(vitaminC, 1),
+                makeInventoryRecord(outOfStockProduct, 0)
+            ]
         });
 
-        fireEvent.click(screen.getByRole("button", { name: "Search" }));
-        fireEvent.change(screen.getByRole("searchbox", {
-            name: "Search inventory alerts"
-        }), { target: { value: "no matching product" } });
-        expect(screen.getByRole("status")).toHaveTextContent(
-            "No alert entries match “no matching product”."
+        const lowStockCard = screen.getByRole("button", {
+            name: "Open Low Stock details, 2 affected products/variants"
+        });
+        fireEvent.click(lowStockCard);
+        const lowStockDialog = screen.getByRole("dialog", { name: "Low Stock" });
+        const lowStockSearch = within(lowStockDialog).getByRole("searchbox", {
+            name: "Search Low Stock alerts"
+        });
+        fireEvent.change(lowStockSearch, { target: { value: "no match" } });
+        expect(within(lowStockDialog).getByRole("status")).toHaveTextContent(
+            "No products or variants match “no match” in Low Stock."
         );
+        expect(lowStockCard).toHaveTextContent("2");
+        expect(screen.getByRole("button", {
+            name: "Open Out of Stock details, 1 affected product/variant"
+        })).toBeInTheDocument();
+        fireEvent.click(within(lowStockDialog).getByRole("button", {
+            name: "Close Low Stock details"
+        }));
 
-        fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
-        fireEvent.change(screen.getByRole("combobox", {
-            name: "Filter inventory alerts"
-        }), { target: { value: "expired-today" } });
-        expect(screen.getByRole("status")).toHaveTextContent(
-            "No Expired Today alerts are currently recorded."
+        fireEvent.click(screen.getByRole("button", {
+            name: "Open Out of Stock details, 1 affected product/variant"
+        }));
+        const outOfStockDialog = screen.getByRole("dialog", {
+            name: "Out of Stock"
+        });
+        const outOfStockSearch = within(outOfStockDialog).getByRole(
+            "searchbox",
+            { name: "Search Out of Stock alerts" }
         );
-        expect(screen.queryByRole("button", {
-            name: /Open Expired Today details/
-        }))
-            .not.toBeInTheDocument();
+        expect(outOfStockSearch).toHaveValue("");
+        expect(within(outOfStockDialog).getByText(
+            "Amoxicillin · Capsules"
+        )).toBeInTheDocument();
+        fireEvent.click(within(outOfStockDialog).getByRole("button", {
+            name: "Close Out of Stock details"
+        }));
+
+        fireEvent.click(lowStockCard);
+        const reopenedLowStockDialog = screen.getByRole("dialog", {
+            name: "Low Stock"
+        });
+        expect(within(reopenedLowStockDialog).getByRole("searchbox", {
+            name: "Search Low Stock alerts"
+        })).toHaveValue("no match");
+        expect(within(reopenedLowStockDialog).getByRole("status"))
+            .toHaveTextContent("No products or variants match “no match”");
     });
 });

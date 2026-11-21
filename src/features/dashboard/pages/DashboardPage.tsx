@@ -21,18 +21,20 @@ import { getExpiryDisplay, type ExpiryDisplay } from "../../../expiry/expiryDisp
 import type { productStructure } from "../../../products/productStructure";
 import type { SaleDraft } from "../../../sales/salesDraft";
 import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
+import type { NavigationIntent } from "../../../navigation/navigationIntent";
 import "./DashboardPage.css";
 import "../../../expiry/expiryDisplay.css";
 
-type DashboardWorkflowPage = "sales" | "delivery";
-type DashboardAlertFilter =
-    | "all"
+type DashboardWorkflowIntent = Extract<
+    NavigationIntent,
+    { type: "sale.draft.open" | "delivery.draft.open" }
+>;
+type DashboardAlertCategory =
+    | "low-stock"
+    | "out-of-stock"
     | "expiring-soon"
     | "expired-products"
-    | "expired-today"
-    | "low-stock"
-    | "out-of-stock";
-type DashboardAlertCategory = Exclude<DashboardAlertFilter, "all">;
+    | "expired-today";
 
 const dashboardAlertIcons = {
     "low-stock": TriangleAlert,
@@ -42,22 +44,13 @@ const dashboardAlertIcons = {
     "expired-today": ClockAlert
 } satisfies Record<DashboardAlertCategory, typeof TriangleAlert>;
 
-function isDashboardAlertFilter(value: string): value is DashboardAlertFilter {
-    return value === "all" ||
-        value === "expiring-soon" ||
-        value === "expired-products" ||
-        value === "expired-today" ||
-        value === "low-stock" ||
-        value === "out-of-stock";
-}
-
 interface DashboardPageProps {
     products: readonly productStructure[];
     inventoryRecords: readonly inventory[];
     inventoryBatches: readonly inventoryBatch[];
     saleDrafts: readonly SaleDraft[];
     deliveryDrafts: readonly DeliveryDraft[];
-    onNavigate: (page: DashboardWorkflowPage) => void;
+    onNavigate: (intent: DashboardWorkflowIntent) => void;
 }
 
 interface ExpiryAlert {
@@ -237,10 +230,15 @@ export default function DashboardPage({
     deliveryDrafts,
     onNavigate
 }: DashboardPageProps) {
-    const [searchOpen, setSearchOpen] = useState(false);
-    const [searchTerm, setSearchTerm] = useState("");
-    const [alertFilter, setAlertFilter] =
-        useState<DashboardAlertFilter>("all");
+    const [modalSearchTerms, setModalSearchTerms] = useState<
+        Record<DashboardAlertCategory, string>
+    >({
+        "low-stock": "",
+        "out-of-stock": "",
+        "expiring-soon": "",
+        "expired-products": "",
+        "expired-today": ""
+    });
     const [selectedAlertCategory, setSelectedAlertCategory] =
         useState<DashboardAlertCategory | null>(null);
     const modalCloseButtonRef = useRef<HTMLButtonElement>(null);
@@ -270,6 +268,16 @@ export default function DashboardPage({
             previouslyFocusedElementRef.current = document.activeElement;
         }
         setSelectedAlertCategory(category);
+    }
+
+    function updateModalSearchTerm(
+        category: DashboardAlertCategory,
+        value: string
+    ) {
+        setModalSearchTerms((current) => ({
+            ...current,
+            [category]: value
+        }));
     }
 
     const pendingSales = saleDrafts.filter((draft) => draft.status === "draft");
@@ -345,54 +353,50 @@ export default function DashboardPage({
         }
     }
 
-    const filteredExpiringSoon = filterAlertItems(expiringSoon, searchTerm);
-    const filteredExpiredProducts = filterAlertItems(expiredProducts, searchTerm);
-    const filteredExpiredToday = filterAlertItems(expiredToday, searchTerm);
-    const filteredLowStock = filterAlertItems(lowStock, searchTerm);
-    const filteredOutOfStock = filterAlertItems(outOfStock, searchTerm);
     const alertCards = [
         {
             category: "expiring-soon",
             title: "Expiring Soon",
-            items: expiringSoon,
-            matchingItems: filteredExpiringSoon
+            items: expiringSoon
         },
         {
             category: "expired-products",
             title: "Expired Products",
-            items: expiredProducts,
-            matchingItems: filteredExpiredProducts
+            items: expiredProducts
         },
         {
             category: "expired-today",
             title: "Expired Today",
-            items: expiredToday,
-            matchingItems: filteredExpiredToday
+            items: expiredToday
         },
         {
             category: "low-stock",
             title: "Low Stock",
-            items: lowStock,
-            matchingItems: filteredLowStock
+            items: lowStock
         },
         {
             category: "out-of-stock",
             title: "Out of Stock",
-            items: outOfStock,
-            matchingItems: filteredOutOfStock
+            items: outOfStock
         }
     ] as const;
     const visibleAlertCards = alertCards.filter((card) =>
-        (alertFilter === "all" || card.category === alertFilter) &&
-        (card.category !== "expired-today" || expiredToday.length > 0) &&
-        (searchTerm.trim() === "" || card.matchingItems.length > 0)
+        card.category !== "expired-today" || expiredToday.length > 0
     );
     const selectedAlert = alertCards.find(
         (card) => card.category === selectedAlertCategory
     );
-    const noMatchingAlerts =
-        (searchTerm.trim() !== "" && visibleAlertCards.length === 0) ||
-        (alertFilter === "expired-today" && expiredToday.length === 0);
+    const modalSearchTerm = selectedAlert
+        ? modalSearchTerms[selectedAlert.category]
+        : "";
+    const normalizedModalSearchTerm = modalSearchTerm.trim().toLowerCase();
+    const matchingAlertCount = selectedAlert
+        ? selectedAlert.items.filter((item) =>
+            `${item.productName} ${item.variantName}`
+                .toLowerCase()
+                .includes(normalizedModalSearchTerm)
+        ).length
+        : 0;
 
     return (
         <div className="dashboard-page">
@@ -432,7 +436,10 @@ export default function DashboardPage({
                                     </div>
                                     <button
                                         className="dashboard-action"
-                                        onClick={() => onNavigate("sales")}
+                                        onClick={() => onNavigate({
+                                            type: "sale.draft.open",
+                                            draftId: draft.draftId
+                                        })}
                                         type="button"
                                     >
                                         Open Sales
@@ -460,7 +467,10 @@ export default function DashboardPage({
                                     </div>
                                     <button
                                         className="dashboard-action"
-                                        onClick={() => onNavigate("delivery")}
+                                        onClick={() => onNavigate({
+                                            type: "delivery.draft.open",
+                                            deliveryId: draft.deliveryId
+                                        })}
                                         type="button"
                                     >
                                         Open Receive Delivery
@@ -479,105 +489,17 @@ export default function DashboardPage({
                 <div className="dashboard-section-heading">
                     <h2 id="dashboard-inventory-title">Inventory Alerts</h2>
                 </div>
-                <div className="dashboard-alert-controls">
-                    <button
-                        aria-controls={searchOpen
-                            ? "dashboard-alert-search"
-                            : undefined}
-                        aria-expanded={searchOpen}
-                        className="dashboard-search-toggle"
-                        onClick={() => {
-                            if (searchOpen) {
-                                setSearchOpen(false);
-                                setSearchTerm("");
-                            } else {
-                                setSearchOpen(true);
-                            }
-                        }}
-                        type="button"
-                    >
-                        {searchOpen ? (
-                            <X aria-hidden="true" size={16} />
-                        ) : (
-                            <Search aria-hidden="true" size={16} />
-                        )}
-                        <span>{searchOpen ? "Close search" : "Search"}</span>
-                    </button>
-                    {searchOpen && (
-                        <label className="dashboard-search-field">
-                            <span className="dashboard-visually-hidden">
-                                Search inventory alerts
-                            </span>
-                            <Search aria-hidden="true" size={16} />
-                            <input
-                                aria-label="Search inventory alerts"
-                                id="dashboard-alert-search"
-                                onChange={(event) =>
-                                    setSearchTerm(event.target.value)
-                                }
-                                placeholder="Product or variant name"
-                                type="search"
-                                value={searchTerm}
-                            />
-                            {searchTerm !== "" && (
-                                <button
-                                    aria-label="Clear search"
-                                    className="dashboard-search-clear"
-                                    onClick={() => setSearchTerm("")}
-                                    type="button"
-                                >
-                                    <X aria-hidden="true" size={15} />
-                                </button>
-                            )}
-                        </label>
-                    )}
-                    <label className="dashboard-filter-field">
-                        <span>Filter alerts</span>
-                        <select
-                            aria-label="Filter inventory alerts"
-                            onChange={(event) => {
-                                if (isDashboardAlertFilter(event.target.value)) {
-                                    setAlertFilter(event.target.value);
-                                }
-                            }}
-                            value={alertFilter}
-                        >
-                            <option value="all">All categories</option>
-                            <option value="expiring-soon">Expiring Soon</option>
-                            <option value="expired-products">Expired Products</option>
-                            <option value="expired-today">Expired Today</option>
-                            <option value="low-stock">Low Stock</option>
-                            <option value="out-of-stock">Out of Stock</option>
-                        </select>
-                    </label>
+                <div className="dashboard-alert-grid">
+                    {visibleAlertCards.map((card) => (
+                        <DashboardAlertCard
+                            category={card.category}
+                            count={countAffectedProductVariants(card.items)}
+                            key={card.category}
+                            onClick={() => openAlertModal(card.category)}
+                            title={card.title}
+                        />
+                    ))}
                 </div>
-                <p className="dashboard-alert-filter-note">
-                    Search narrows matching categories and modal entries; card totals
-                    always show all affected products/variants.
-                </p>
-                {noMatchingAlerts ? (
-                    <p
-                        aria-live="polite"
-                        className="dashboard-alert-no-results"
-                        role="status"
-                    >
-                        {searchTerm.trim() !== ""
-                            ? `No alert entries match “${searchTerm.trim()}”.`
-                            : "No Expired Today alerts are currently recorded."}
-                    </p>
-                ) : (
-                    <div className="dashboard-alert-grid">
-                        {visibleAlertCards.map((card) => (
-                            <DashboardAlertCard
-                                category={card.category}
-                                count={countAffectedProductVariants(card.items)}
-                                key={card.category}
-                                onClick={() => openAlertModal(card.category)}
-                                title={card.title}
-                            />
-                        ))}
-                    </div>
-                )}
             </section>
             {selectedAlert && (
                 <div
@@ -601,8 +523,8 @@ export default function DashboardPage({
                                     {selectedAlert.title}
                                 </h2>
                                 <p className="dashboard-alert-modal-count">
-                                    {searchTerm.trim() !== ""
-                                        ? `Showing ${selectedAlert.matchingItems.length} of ${selectedAlert.items.length} affected entries matching “${searchTerm.trim()}”.`
+                                    {modalSearchTerm.trim() !== ""
+                                        ? `Showing ${matchingAlertCount} of ${selectedAlert.items.length} affected entries matching “${modalSearchTerm.trim()}”.`
                                         : `${selectedAlert.items.length} affected entries`}
                                 </p>
                             </div>
@@ -617,26 +539,84 @@ export default function DashboardPage({
                             </button>
                         </header>
                         <div className="dashboard-alert-modal-body">
-                            {selectedAlert.matchingItems.length === 0 ? (
+                            <div className="dashboard-alert-modal-search">
+                                <span className="dashboard-visually-hidden">
+                                    Search {selectedAlert.title} by product or variant
+                                </span>
+                                <Search aria-hidden="true" size={17} />
+                                <input
+                                    aria-label={`Search ${selectedAlert.title} alerts`}
+                                    onChange={(event) =>
+                                        updateModalSearchTerm(
+                                            selectedAlert.category,
+                                            event.target.value
+                                        )
+                                    }
+                                    placeholder="Product or variant name"
+                                    type="search"
+                                    value={modalSearchTerm}
+                                />
+                                {modalSearchTerm !== "" && (
+                                    <button
+                                        aria-label={`Clear ${selectedAlert.title} search`}
+                                        className="dashboard-alert-modal-search-clear"
+                                        onClick={() =>
+                                            updateModalSearchTerm(
+                                                selectedAlert.category,
+                                                ""
+                                            )
+                                        }
+                                        type="button"
+                                    >
+                                        <X aria-hidden="true" size={15} />
+                                    </button>
+                                )}
+                            </div>
+                            {matchingAlertCount === 0 ? (
                                 <p
                                     className="dashboard-alert-modal-empty"
                                     role="status"
                                 >
-                                    There are no affected entries in this category.
+                                    {modalSearchTerm.trim() !== ""
+                                        ? `No products or variants match “${modalSearchTerm.trim()}” in ${selectedAlert.title}.`
+                                        : "There are no affected entries in this category."}
                                 </p>
                             ) : selectedAlert.category === "low-stock" ? (
                                 <StockAlertList
                                     category="low-stock"
-                                    items={selectedAlert.matchingItems}
+                                    items={filterAlertItems(
+                                        lowStock,
+                                        modalSearchTerm
+                                    )}
                                 />
                             ) : selectedAlert.category === "out-of-stock" ? (
                                 <StockAlertList
                                     category="out-of-stock"
-                                    items={selectedAlert.matchingItems}
+                                    items={filterAlertItems(
+                                        outOfStock,
+                                        modalSearchTerm
+                                    )}
+                                />
+                            ) : selectedAlert.category === "expiring-soon" ? (
+                                <ExpiryAlertList
+                                    items={filterAlertItems(
+                                        expiringSoon,
+                                        modalSearchTerm
+                                    )}
+                                />
+                            ) : selectedAlert.category === "expired-products" ? (
+                                <ExpiryAlertList
+                                    items={filterAlertItems(
+                                        expiredProducts,
+                                        modalSearchTerm
+                                    )}
                                 />
                             ) : (
                                 <ExpiryAlertList
-                                    items={selectedAlert.matchingItems}
+                                    items={filterAlertItems(
+                                        expiredToday,
+                                        modalSearchTerm
+                                    )}
                                 />
                             )}
                         </div>

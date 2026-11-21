@@ -586,6 +586,7 @@ const presentations: {
                 : undefined
         ),
         details: sections(
+            section("Reason", textField("Reason", event.reason)),
             section(
                 "Product details",
                 textField("Description", event.product.description),

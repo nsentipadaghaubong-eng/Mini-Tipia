@@ -1,8 +1,5 @@
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import { validatePackagingHierarchy } from "../packaging/packagingValidation";
-import type { inventory, stockQuantity } from "../inventory/inventoryStock";
-import type { inventoryBatch } from "../inventory/inventoryBatch";
-import { createInventory } from "../inventory/inventoryStock";
 import type { productStructure, variant } from "./productStructure";
 import { hasAtMostTwoDecimalPlaces } from "../pricing/pricePrecision";
 
@@ -13,8 +10,6 @@ export interface PackagingUpdateDraft {
     quantityofNextLevel: string;
     costPrice: string;
     sellingPrice: string;
-    initialStock?: string;
-    initialStockBatchId?: string;
 }
 
 export interface VariantUpdateDraft {
@@ -74,9 +69,7 @@ export function createProductUpdateDraft(
                 sellingPrice:
                     level.sellingPrice === null
                         ? ""
-                        : String(level.sellingPrice),
-                initialStock: "0",
-                initialStockBatchId: ""
+                        : String(level.sellingPrice)
             }))
         }))
     };
@@ -155,9 +148,7 @@ export function addPackagingLevelToUpdateDraft(
                 nextLevelId: "",
                 quantityofNextLevel: "",
                 costPrice: "",
-                sellingPrice: "",
-                initialStock: "0",
-                initialStockBatchId: ""
+                sellingPrice: ""
             }
         ]
     };
@@ -183,18 +174,6 @@ function parseOptionalPrice(value: string): number | null | undefined {
         : undefined;
 }
 
-function parseOptionalSafeInteger(value: string | undefined): number | undefined {
-    const normalized = value ?? "";
-    if (normalized.trim() === "") {
-        return 0;
-    }
-
-    const quantity = Number(normalized);
-    return Number.isSafeInteger(quantity) && quantity >= 0
-        ? quantity
-        : undefined;
-}
-
 function parseLowStockThresholdQuantity(value: string): number | undefined {
     const normalized = value.trim();
     if (!/^\d+$/.test(normalized)) {
@@ -203,88 +182,6 @@ function parseLowStockThresholdQuantity(value: string): number | undefined {
 
     const quantity = Number(normalized);
     return Number.isSafeInteger(quantity) ? quantity : undefined;
-}
-
-export function applyPackagingLevelInitialStock(
-    product: productStructure,
-    inventoryRecords: inventory[],
-    inventoryBatches: inventoryBatch[],
-    variantId: string,
-    packagingLevelId: string,
-    initialStock: string,
-    batchId: string | null = null
-): inventory[] {
-    const quantity = parseOptionalSafeInteger(initialStock);
-    if (quantity === undefined) {
-        throw new Error("Initial stock quantity must be a non-negative safe integer.");
-    }
-    if (quantity === 0) {
-        return inventoryRecords;
-    }
-
-    const variant = product.variant.find((item) => item.id === variantId);
-    if (!variant) {
-        throw new Error("Variant does not belong to this product.");
-    }
-
-    const existingIds = new Set(variant.packagingHierarchy.map((level) => level.id));
-    if (existingIds.has(packagingLevelId)) {
-        return inventoryRecords;
-    }
-
-    const normalizedBatchId = batchId?.trim() ?? null;
-    const matchingBatch = normalizedBatchId === null
-        ? null
-        : inventoryBatches.find((candidate) =>
-            candidate.productId === product.id &&
-            candidate.variantId === variantId &&
-            candidate.batchId === normalizedBatchId
-        );
-
-    if (normalizedBatchId !== null && !matchingBatch) {
-        throw new Error("Batch does not belong to this variant.");
-    }
-
-    const existingRecord = inventoryRecords.find((record) =>
-        record.productId === product.id &&
-        record.variantId === variantId &&
-        record.batchId === normalizedBatchId
-    );
-
-    const nextStock: stockQuantity[] = existingRecord
-        ? [...existingRecord.stockQuantities]
-        : [];
-    const index = nextStock.findIndex(
-        (stock) => stock.packagingLevelId === packagingLevelId
-    );
-
-    if (index === -1) {
-        nextStock.push({ packagingLevelId: packagingLevelId, quantity });
-    } else {
-        nextStock[index] = {
-            ...nextStock[index],
-            quantity: nextStock[index].quantity + quantity
-        };
-    }
-
-    if (existingRecord) {
-        return inventoryRecords.map((record) =>
-            record.id === existingRecord.id
-                ? { ...record, stockQuantities: nextStock }
-                : record
-        );
-    }
-
-    return [
-        ...inventoryRecords,
-        createInventory(
-            product.id,
-            variantId,
-            normalizedBatchId,
-            nextStock,
-            crypto.randomUUID()
-        )
-    ];
 }
 
 function validateRetainedIds(
@@ -415,12 +312,6 @@ export function validateProductUpdateDraft(
                 if (sellingPrice === undefined) {
                     errors[`${prefix}.packaging.${levelIndex}.sellingPrice`] =
                         "Enter a non-negative price with at most two decimal places.";
-                }
-
-                const initialStock = parseOptionalSafeInteger(level.initialStock);
-                if (initialStock === undefined) {
-                    errors[`${prefix}.packaging.${levelIndex}.initialStock`] =
-                        "Initial stock must be a non-negative whole number.";
                 }
 
                 return {

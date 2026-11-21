@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     appendActivityEvents,
     buildBatchUpdatedActivityInput,
+    buildProductDeletionActivityInput,
     buildProductCreationActivityInputs,
     buildStockAdjustmentActivityInput,
     prepareActivityEvents,
@@ -141,6 +142,32 @@ describe("Activity event recording", () => {
             makeId: () => "event-1",
             now: () => new Date(Number.NaN)
         })).toThrow("Activity timestamp must be a valid date.");
+    });
+
+    it("records a required reason on product-deletion Activity", () => {
+        const input = buildProductDeletionActivityInput(
+            product,
+            [],
+            [],
+            `product.deleted:${product.id}:test`,
+            "  Discontinued product  "
+        );
+        const [event] = makeEvents([input]);
+
+        expect(event).toMatchObject({
+            type: "product.deleted",
+            reason: "Discontinued product"
+        });
+        const invalidInput = buildProductDeletionActivityInput(
+            product,
+            [],
+            [],
+            `product.deleted:${product.id}:test`,
+            " \t "
+        );
+        expect(() => makeEvents([invalidInput])).toThrow(
+            "Activity reason must not be empty."
+        );
     });
 
     it("keeps historical product and batch snapshots unchanged after source edits", () => {

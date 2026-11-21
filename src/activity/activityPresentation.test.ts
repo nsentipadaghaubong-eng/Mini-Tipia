@@ -92,7 +92,8 @@ const eventInputs: ActivityEventInput[] = [
         productName: product.productName,
         product,
         inventory: [inventory],
-        batches: [batch]
+        batches: [batch],
+        reason: "Discontinued product"
     },
     {
         type: "product.variant_added",
@@ -303,6 +304,7 @@ describe("Activity presentation", () => {
         );
         expect(presentationText(presentations[1])).toContain("Corrected name");
         expect(presentationText(presentations[2])).toContain("LOT-1");
+        expect(presentationText(presentations[2])).toContain("Discontinued product");
         expect(presentationText(presentations[3])).toContain("New strength");
         expect(presentationText(presentations[4])).toContain(
             "500 mg tablets → Updated tablets"

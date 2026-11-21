@@ -28,8 +28,6 @@ import {
     prepareProductRecordDeletionPlan,
     type ProductRecordDeletionDraft
 } from "./products/productDeletion";
-import type { inventory } from "./inventory/inventoryStock";
-import type { inventoryBatch } from "./inventory/inventoryBatch";
 import type {
     SaleDraft,
     SaleDraftDetailsChanges,
@@ -404,8 +402,6 @@ function App() {
     function handleUpdateProduct(
         product: productStructure,
         reason: string,
-        nextInventoryRecords?: inventory[],
-        nextInventoryBatches?: inventoryBatch[],
         stagedDeletions: ProductRecordDeletionDraft[] = []
     ) {
         const previousProduct = applicationState.products.find(
@@ -472,11 +468,7 @@ function App() {
             return;
         }
 
-        const resolvedInventoryRecords =
-            nextInventoryRecords ?? applicationState.inventoryRecords;
-        const resolvedInventoryBatches =
-            nextInventoryBatches ?? applicationState.inventoryBatches;
-        for (const record of resolvedInventoryRecords) {
+        for (const record of applicationState.inventoryRecords) {
             if (record.productId === product.id) {
                 validateInventoryPackagingRelationships(product, record);
             }
@@ -486,14 +478,12 @@ function App() {
         const action = {
             type: "product.updated",
             product,
-            inventoryRecords: resolvedInventoryRecords,
-            inventoryBatches: resolvedInventoryBatches,
             events: prepareActivityEvents(buildProductUpdateActivityInputs(
                 previousProduct,
                 product,
                 applicationState.inventoryRecords,
-                resolvedInventoryRecords,
-                resolvedInventoryBatches,
+                applicationState.inventoryRecords,
+                applicationState.inventoryBatches,
                 operationKey,
                 reason
             ))
@@ -503,8 +493,17 @@ function App() {
     }
 
     function handleDeleteProduct(
-        productId: string
+        productId: string,
+        reason: string
     ): { success: true } | { success: false; error: string } {
+        const normalizedReason = reason.trim();
+        if (normalizedReason === "") {
+            return {
+                success: false,
+                error: "A reason is required to delete a product."
+            };
+        }
+
         const blockers = getProductDeletionBlockMessages(
             productId,
             applicationState.saleDrafts,
@@ -532,7 +531,8 @@ function App() {
                     matchingProducts[0],
                     applicationState.inventoryRecords,
                     applicationState.inventoryBatches,
-                    operationKey
+                    operationKey,
+                    normalizedReason
                 )
             ]);
             const action = {
@@ -565,7 +565,7 @@ function App() {
                     inventoryBatches={applicationState.inventoryBatches}
                     saleDrafts={applicationState.saleDrafts}
                     deliveryDrafts={applicationState.deliveryDrafts}
-                    onNavigate={handlePageSelection}
+                    onNavigate={handleNavigation}
                 />
             </div>
             <div hidden={activePage !== "products"}>
@@ -609,6 +609,11 @@ function App() {
                     inventoryBatches={applicationState.inventoryBatches}
                     deliveryDrafts={applicationState.deliveryDrafts}
                     saleDrafts={applicationState.saleDrafts}
+                    navigationRequest={
+                        activePage === "delivery" ? navigationRequest : null
+                    }
+                    onNavigationConsumed={handleNavigationConsumed}
+                    onNavigationDismissed={handleNavigationDismissed}
                     onDraftCreated={handleDeliveryDraftCreated}
                     onDraftDetailsUpdated={handleDeliveryDraftDetailsUpdated}
                     onDraftItemAdded={handleDeliveryDraftItemAdded}
@@ -625,6 +630,11 @@ function App() {
                     inventoryRecords={applicationState.inventoryRecords}
                     inventoryBatches={applicationState.inventoryBatches}
                     saleDrafts={applicationState.saleDrafts}
+                    navigationRequest={
+                        activePage === "sales" ? navigationRequest : null
+                    }
+                    onNavigationConsumed={handleNavigationConsumed}
+                    onNavigationDismissed={handleNavigationDismissed}
                     onDraftCreated={handleSaleDraftCreated}
                     onDraftDetailsUpdated={handleSaleDraftDetailsUpdated}
                     onDraftItemAdded={handleSaleDraftItemAdded}

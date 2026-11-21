@@ -390,4 +390,4 @@ The repository already had many unrelated modified files and untracked files bef
 
 **Remaining issue:** the full test suite is not green because of those unrelated failures. The pricing-specific tests, build, and lint checks pass.
 
-//continuing from the issue of sales pricing
+//continuing from the issue of sales pricing 

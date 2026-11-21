@@ -19,6 +19,12 @@ import type { ApplicationState } from "../../../applicationState";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { productStructure, variant } from "../../../products/productStructure";
+import {
+    createSaleDraft,
+    updateSaleDraftDetails,
+    type SaleDraft
+} from "../../../sales/salesDraft";
+import type { NavigationRequest } from "../../../navigation/navigationIntent";
 import SalesItemModal from "../components/SalesItemModal";
 import SalesPage from "./SalesPage";
 import { completeSale, prepareSaleDraft } from "../../../sales/salesEngine";
@@ -113,9 +119,25 @@ function makeState(
     };
 }
 
-function renderSales(initialState = makeState()) {
+function makeSaleDraft(draftId: string, customerName: string): SaleDraft {
+    const draft = createSaleDraft({
+        makeId: () => draftId,
+        now: () => new Date("2026-11-07T12:00:00.000Z")
+    });
+    return updateSaleDraftDetails(draft, {
+        customerName,
+        saleDate: "2026-11-07",
+        staffMember: { displayName: `Staff for ${customerName}` }
+    }, "2026-11-07T12:01:00.000Z");
+}
+
+function renderSales(
+    initialState = makeState(),
+    navigationRequest: NavigationRequest | null = null
+) {
     let latestState = initialState;
     let updateInventoryRecords: (records: inventory[]) => void = () => undefined;
+    const onNavigationConsumed = vi.fn();
     function Harness() {
         const [reducerState, dispatch] = useReducer(
             applicationReducer,
@@ -134,6 +156,9 @@ function renderSales(initialState = makeState()) {
                 inventoryRecords={state.inventoryRecords}
                 inventoryBatches={state.inventoryBatches}
                 saleDrafts={state.saleDrafts}
+                navigationRequest={navigationRequest}
+                onNavigationConsumed={onNavigationConsumed}
+                onNavigationDismissed={() => undefined}
                 onDraftCreated={(draft) => dispatch({
                     type: "sale.draft_created",
                     draft
@@ -223,6 +248,7 @@ function renderSales(initialState = makeState()) {
         get state() {
             return latestState;
         },
+        onNavigationConsumed,
         updateInventoryRecords(records: inventory[]) {
             updateInventoryRecords(records);
         }
@@ -264,6 +290,82 @@ function enterReceivedBy(name = "Staff One") {
         target: { value: name }
     });
 }
+
+describe("Sales draft navigation", () => {
+    it("opens the requested pending draft and leaves the other draft unchanged", () => {
+        const firstDraft = makeSaleDraft("sale-first", "First customer");
+        const secondDraft = makeSaleDraft("sale-second", "Second customer");
+        const firstDraftSnapshot = structuredClone(firstDraft);
+        const page = renderSales(makeState({
+            saleDrafts: [firstDraft, secondDraft]
+        }), {
+            requestId: 1,
+            intent: { type: "sale.draft.open", draftId: secondDraft.draftId },
+            consumed: false
+        });
+
+        expect(screen.getByLabelText("Customer Name"))
+            .toHaveValue("Second customer");
+        expect(screen.getByLabelText("Received By *"))
+            .toHaveValue("Staff for Second customer");
+        expect(page.onNavigationConsumed).toHaveBeenCalledWith(1, true);
+        expect(page.state.saleDrafts[0]).toEqual(firstDraftSnapshot);
+    });
+
+    it("keeps the normal first-pending-draft behavior without a target", () => {
+        const firstDraft = makeSaleDraft("sale-first-normal", "First customer");
+        const secondDraft = makeSaleDraft("sale-second-normal", "Second customer");
+
+        renderSales(makeState({ saleDrafts: [firstDraft, secondDraft] }));
+
+        expect(screen.getByLabelText("Customer Name"))
+            .toHaveValue("First customer");
+    });
+
+    it("does not fall back when the requested draft is missing or no longer pending", () => {
+        const firstDraft = makeSaleDraft("sale-first-stale", "First customer");
+        const approvedDraft = {
+            ...makeSaleDraft("sale-approved-stale", "Approved customer"),
+            status: "approved" as const
+        };
+        const page = renderSales(makeState({
+            saleDrafts: [firstDraft, approvedDraft]
+        }), {
+            requestId: 2,
+            intent: {
+                type: "sale.draft.open",
+                draftId: approvedDraft.draftId
+            },
+            consumed: false
+        });
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "The requested pending sale is no longer available."
+        );
+        expect(screen.queryByLabelText("Customer Name")).not.toBeInTheDocument();
+        expect(page.onNavigationConsumed).toHaveBeenCalledWith(2, true);
+        expect(page.state.saleDrafts[0]).toEqual(firstDraft);
+    });
+
+    it("does not fall back when the requested sale draft ID does not exist", () => {
+        const firstDraft = makeSaleDraft("sale-first-missing", "First customer");
+        const page = renderSales(makeState({ saleDrafts: [firstDraft] }), {
+            requestId: 3,
+            intent: {
+                type: "sale.draft.open",
+                draftId: "sale-missing"
+            },
+            consumed: false
+        });
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "The requested pending sale is no longer available."
+        );
+        expect(screen.queryByLabelText("Customer Name")).not.toBeInTheDocument();
+        expect(page.onNavigationConsumed).toHaveBeenCalledWith(3, true);
+        expect(page.state.saleDrafts[0]).toEqual(firstDraft);
+    });
+});
 
 describe("Sales search-first product selection", () => {
     it("shows neither products nor an empty draft before the pharmacist searches", () => {

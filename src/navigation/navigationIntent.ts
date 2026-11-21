@@ -2,7 +2,7 @@ import type { productStructure } from "../products/productStructure";
 import type { inventory } from "../inventory/inventoryStock";
 import type { inventoryBatch } from "../inventory/inventoryBatch";
 
-export type ApplicationPage = "products" | "inventory";
+export type ApplicationPage = "products" | "inventory" | "sales" | "delivery";
 
 export type NavigationIntent =
     | {
@@ -24,6 +24,14 @@ export type NavigationIntent =
         variantId: string;
         inventoryId: string;
         batchId: string | null;
+    }
+    | {
+        type: "sale.draft.open";
+        draftId: string;
+    }
+    | {
+        type: "delivery.draft.open";
+        deliveryId: string;
     };
 
 export interface NavigationRequest {
@@ -42,6 +50,10 @@ export function getNavigationDestination(
             return intent.type === "page.navigate" ? intent.page : "products";
         case "inventory.manage":
             return "inventory";
+        case "sale.draft.open":
+            return "sales";
+        case "delivery.draft.open":
+            return "delivery";
     }
 }
 
@@ -49,6 +61,10 @@ export function resolveNavigationProduct(
     intent: NavigationRequest["intent"],
     products: productStructure[]
 ): productStructure | undefined {
+    if (intent.type !== "product.view" && intent.type !== "product.edit") {
+        return undefined;
+    }
+
     return products.find((product) => product.id === intent.productId);
 }
 

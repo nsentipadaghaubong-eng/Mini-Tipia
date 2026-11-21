@@ -21,6 +21,7 @@ import {
     snapshotVariant
 } from "../../../activity/activity";
 import type { ApplicationState } from "../../../applicationState";
+import type { NavigationRequest } from "../../../navigation/navigationIntent";
 import { createDeliveryDraft } from "../../../deliveries/deliveryDraft";
 import { prepareDeliveryApproval } from "../../../deliveries/deliveryApproval";
 import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
@@ -99,9 +100,11 @@ function makeState(deliveryDrafts: DeliveryDraft[] = []): ApplicationState {
 
 function renderPage(
     initialState = makeState(),
-    approveWithoutCommit = false
+    approveWithoutCommit = false,
+    navigationRequest: NavigationRequest | null = null
 ) {
     let latestState = initialState;
+    const onNavigationConsumed = vi.fn();
     function Harness() {
         const [state, dispatch] = useReducer(
             applicationReducer,
@@ -115,6 +118,9 @@ function renderPage(
                 inventoryBatches={state.inventoryBatches}
                 deliveryDrafts={state.deliveryDrafts}
                 saleDrafts={state.saleDrafts}
+                navigationRequest={navigationRequest}
+                onNavigationConsumed={onNavigationConsumed}
+                onNavigationDismissed={() => undefined}
                 onDraftDetailsUpdated={(deliveryId, changes, updatedAt) =>
                     dispatch({
                         type: "delivery.draft_details_updated",
@@ -231,7 +237,8 @@ function renderPage(
         ...result,
         get state() {
             return latestState;
-        }
+        },
+        onNavigationConsumed
     };
 }
 
@@ -246,6 +253,69 @@ function clickVariant(name: string) {
 }
 
 describe("Receive Delivery page", () => {
+    it("opens the requested pending delivery and leaves the other draft unchanged", () => {
+        const firstDraft = draftWithItem("delivery-first-target", "Supplier One");
+        const secondDraft = draftWithItem("delivery-second-target", "Supplier Two");
+        const firstDraftSnapshot = structuredClone(firstDraft);
+        const page = renderPage(makeState([firstDraft, secondDraft]), false, {
+            requestId: 1,
+            intent: {
+                type: "delivery.draft.open",
+                deliveryId: secondDraft.deliveryId
+            },
+            consumed: false
+        });
+
+        expect(screen.getByLabelText("Supplier")).toHaveValue("Supplier Two");
+        expect(screen.getByLabelText("Invoice Number"))
+            .toHaveValue(secondDraft.invoiceNumber ?? "");
+        expect(page.onNavigationConsumed).toHaveBeenCalledWith(1, true);
+        expect(page.state.deliveryDrafts[0]).toEqual(firstDraftSnapshot);
+    });
+
+    it("does not fall back when the requested delivery is missing or no longer pending", () => {
+        const firstDraft = draftWithItem("delivery-first-stale", "Supplier One");
+        const receivedDraft = {
+            ...makeDraft("delivery-received-stale"),
+            status: "received" as const
+        };
+        const page = renderPage(makeState([firstDraft, receivedDraft]), false, {
+            requestId: 2,
+            intent: {
+                type: "delivery.draft.open",
+                deliveryId: receivedDraft.deliveryId
+            },
+            consumed: false
+        });
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "The requested pending delivery is no longer available."
+        );
+        expect(screen.getByLabelText("Supplier")).toBeDisabled();
+        expect(screen.getByLabelText("Supplier")).toHaveValue("");
+        expect(page.onNavigationConsumed).toHaveBeenCalledWith(2, true);
+        expect(page.state.deliveryDrafts[0].supplier).toBe("Supplier One");
+    });
+
+    it("does not fall back when the requested delivery ID does not exist", () => {
+        const firstDraft = draftWithItem("delivery-first-missing", "Supplier One");
+        const page = renderPage(makeState([firstDraft]), false, {
+            requestId: 3,
+            intent: {
+                type: "delivery.draft.open",
+                deliveryId: "delivery-missing"
+            },
+            consumed: false
+        });
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            "The requested pending delivery is no longer available."
+        );
+        expect(screen.getByLabelText("Supplier")).toBeDisabled();
+        expect(screen.getByLabelText("Supplier")).toHaveValue("");
+        expect(page.onNavigationConsumed).toHaveBeenCalledWith(3, true);
+        expect(page.state.deliveryDrafts[0].supplier).toBe("Supplier One");
+    });
     it("prefills packaging-level defaults and allows nullable prices", () => {
         const page = renderPage();
         fillRequiredHeader();
@@ -653,6 +723,35 @@ describe("Receive Delivery page", () => {
                 .not.toBeInTheDocument();
             expect(within(dialog).queryByText("2 days remaining"))
                 .not.toBeInTheDocument();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("shows the calendar date and expired days for a past expiry date", () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-20T12:00:00.000Z"));
+
+        try {
+            render(
+                <ReceiveDeliveryItemModal
+                    onClose={() => undefined}
+                    onSave={() => undefined}
+                    product={products[0]}
+                    productVariant={products[0].variant[0]}
+                />
+            );
+            const dialog = screen.getByRole("dialog", { name: "Receive Item" });
+            fireEvent.change(within(dialog).getByLabelText("Expiry date"), {
+                target: { value: "2026-11-17" }
+            });
+
+            expect(within(dialog).getByText("Expiry date: 17 Nov 2026"))
+                .toBeInTheDocument();
+            expect(within(dialog).getByText("Expired 3 days ago"))
+                .toBeInTheDocument();
+            expect(within(dialog).getByText("Expired 3 days ago").parentElement)
+                .toHaveClass("expiry-display--expired");
         } finally {
             vi.useRealTimers();
         }
@@ -1409,6 +1508,9 @@ describe("Receive Delivery page", () => {
                                 inventoryRecords={initial.inventoryRecords}
                                 inventoryBatches={initial.inventoryBatches}
                                 deliveryDrafts={initial.deliveryDrafts}
+                                navigationRequest={null}
+                                onNavigationConsumed={() => undefined}
+                                onNavigationDismissed={() => undefined}
                                 onDraftCreated={() => undefined}
                                 onDraftDetailsUpdated={() => undefined}
                                 onDraftItemAdded={() => undefined}

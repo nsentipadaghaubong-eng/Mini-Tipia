@@ -63,6 +63,14 @@ describe("navigation intents", () => {
             inventoryId: "inventory-2",
             batchId: "batch-2"
         })).toBe("inventory");
+        expect(getNavigationDestination({
+            type: "sale.draft.open",
+            draftId: "sale-draft-2"
+        })).toBe("sales");
+        expect(getNavigationDestination({
+            type: "delivery.draft.open",
+            deliveryId: "delivery-draft-2"
+        })).toBe("delivery");
     });
 
     it("resolves only the exact stable product ID and tolerates missing IDs", () => {

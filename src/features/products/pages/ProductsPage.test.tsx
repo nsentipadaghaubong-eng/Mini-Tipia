@@ -101,13 +101,12 @@ function renderProductsPage(
         saleDrafts?: SaleDraft[];
         deliveryDrafts?: DeliveryDraft[];
         onDeleteProduct?: (
-            productId: string
+            productId: string,
+            reason: string
         ) => { success: true } | { success: false; error: string };
         onUpdateProduct?: (
             product: productStructure,
             reason: string,
-            inventoryRecords?: inventory[],
-            inventoryBatches?: inventoryBatch[],
             deletions?: ProductRecordDeletionDraft[]
         ) => void;
     } = {}
@@ -180,13 +179,12 @@ function renderInteractiveProductsPage(
         saleDrafts?: SaleDraft[];
         deliveryDrafts?: DeliveryDraft[];
         onDeleteProduct?: (
-            productId: string
+            productId: string,
+            reason: string
         ) => { success: true } | { success: false; error: string };
         onUpdateProduct?: (
             product: productStructure,
             reason: string,
-            inventoryRecords?: inventory[],
-            inventoryBatches?: inventoryBatch[],
             deletions?: ProductRecordDeletionDraft[]
         ) => void;
     } = {}
@@ -617,12 +615,42 @@ describe("ProductsPage deletion", () => {
         expect(onDeleteProduct).not.toHaveBeenCalled();
 
         fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+        fireEvent.change(screen.getByLabelText("Reason for deletion"), {
+            target: { value: "  Discontinued product  " }
+        });
         fireEvent.click(screen.getByRole("button", {
             name: "Delete permanently"
         }));
         expect(onDeleteProduct).toHaveBeenCalledTimes(1);
-        expect(onDeleteProduct).toHaveBeenCalledWith(product.id);
+        expect(onDeleteProduct).toHaveBeenCalledWith(
+            product.id,
+            "Discontinued product"
+        );
     });
+
+    it.each(["", "   \t  "])(
+        "rejects a product deletion reason containing only %s",
+        (reason) => {
+            const onDeleteProduct = vi.fn(() => ({ success: true as const }));
+            renderInteractiveProductsPage(product, { onDeleteProduct });
+
+            fireEvent.click(screen.getByRole("button", {
+                name: "Delete Medicine"
+            }));
+            fireEvent.change(screen.getByLabelText("Reason for deletion"), {
+                target: { value: reason }
+            });
+            fireEvent.click(screen.getByRole("button", {
+                name: "Delete permanently"
+            }));
+
+            expect(onDeleteProduct).not.toHaveBeenCalled();
+            expect(screen.getByRole("alertdialog")).toBeVisible();
+            expect(screen.getByRole("alert")).toHaveTextContent(
+                "A reason is required to delete a product."
+            );
+        }
+    );
 
     it("blocks deletion for active Sales and Receive Delivery drafts", () => {
         const salesMessage =
@@ -695,11 +723,17 @@ describe("ProductsPage deletion", () => {
         renderInteractiveProductsPage(product, { onDeleteProduct });
 
         fireEvent.click(screen.getByRole("button", { name: "Delete Medicine" }));
+        fireEvent.change(screen.getByLabelText("Reason for deletion"), {
+            target: { value: "Remove duplicate record" }
+        });
         fireEvent.click(screen.getByRole("button", {
             name: "Delete permanently"
         }));
 
-        expect(onDeleteProduct).toHaveBeenCalledWith(product.id);
+        expect(onDeleteProduct).toHaveBeenCalledWith(
+            product.id,
+            "Remove duplicate record"
+        );
         expect(screen.getByRole("alertdialog")).toHaveTextContent(
             "The product could not be deleted."
         );
@@ -798,7 +832,7 @@ describe("ProductsPage deletion", () => {
         fireEvent.click(saveButton);
 
         expect(onUpdateProduct).toHaveBeenCalledOnce();
-        expect(onUpdateProduct.mock.calls[0][4]).toEqual([
+        expect(onUpdateProduct.mock.calls[0][2]).toEqual([
             {
                 type: "variant",
                 variantId: "variant-1",

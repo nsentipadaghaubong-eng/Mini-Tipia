@@ -1,6 +1,6 @@
 import type { SaleDraft } from "../../../sales/salesDraft";
 import { getProductDraftLockMessages } from "../../../products/productDraftLock";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { productStructure, variant } from "../../../products/productStructure";
@@ -20,6 +20,7 @@ import CreateProductModal from "../../products/components/CreateProductModal";
 import AddDeliveryVariantModal from "../components/AddDeliveryVariantModal";
 import ReceiveDeliveryItemModal from "../components/ReceiveDeliveryItemModal";
 import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
+import type { NavigationRequest } from "../../../navigation/navigationIntent";
 import "./ReceiveDeliveryPage.css";
 import "../../../expiry/expiryDisplay.css";
 
@@ -28,7 +29,10 @@ interface ReceiveDeliveryPageProps {
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
     deliveryDrafts: DeliveryDraft[];
-        saleDrafts?: SaleDraft[];
+    saleDrafts?: SaleDraft[];
+    navigationRequest: NavigationRequest | null;
+    onNavigationConsumed: (requestId: number, handled: boolean) => void;
+    onNavigationDismissed: (requestId: number) => void;
     onCatalogueProductCreated: (product: productStructure) => void;
     onVariantCreated: (productId: string, productVariant: variant) => void;
     onDraftCreated: (draft: DeliveryDraft) => void;
@@ -135,7 +139,10 @@ export default function ReceiveDeliveryPage({
     inventoryRecords,
     inventoryBatches,
     deliveryDrafts,
-        saleDrafts = [],
+    saleDrafts = [],
+    navigationRequest,
+    onNavigationConsumed,
+    onNavigationDismissed,
     onCatalogueProductCreated,
     onVariantCreated,
     onDraftCreated,
@@ -167,10 +174,93 @@ export default function ReceiveDeliveryPage({
     const [isApproving, setIsApproving] = useState(false);
     const [approvalError, setApprovalError] = useState("");
     const [completionMessage, setCompletionMessage] = useState("");
+    const handledNavigationRequestId = useRef<number | null>(null);
+    const lastDraftNavigationRequestId = useRef<number | null>(null);
+    const deliveryNavigationIntent =
+        navigationRequest?.intent.type === "delivery.draft.open"
+            ? navigationRequest.intent
+            : null;
+    const deliveryNavigationRequest = deliveryNavigationIntent
+        ? navigationRequest
+        : null;
+    const requestedDeliveryDraft = deliveryNavigationIntent
+        ? deliveryDrafts.find((draft) =>
+            draft.deliveryId === deliveryNavigationIntent.deliveryId &&
+            draft.status === "draft"
+        )
+        : undefined;
+    const isStaleDraftNavigation =
+        deliveryNavigationRequest !== null &&
+        requestedDeliveryDraft === undefined;
 
-    const selectedDraft = deliveryDrafts.find(
-        (draft) => draft.deliveryId === selectedDeliveryId
-    );
+    useEffect(() => {
+        if (!deliveryNavigationRequest) {
+            if (lastDraftNavigationRequestId.current !== null) {
+                lastDraftNavigationRequestId.current = null;
+                const nextDraft = deliveryDrafts.find(
+                    (draft) => draft.status === "draft"
+                );
+                setSelectedDeliveryId(nextDraft?.deliveryId ?? "");
+                setIsNewDeliveryEntry(!nextDraft);
+                setForm(formFromDraft(nextDraft));
+                setErrors({});
+                setFormMessage("");
+                setProductSearch("");
+                setShowProductResults(false);
+                setSelectedProductId("");
+                setSelectedVariantId("");
+                setEditingItem(undefined);
+                setApprovalError("");
+            }
+            return;
+        }
+
+        lastDraftNavigationRequestId.current =
+            deliveryNavigationRequest.requestId;
+        if (
+            deliveryNavigationRequest.consumed ||
+            handledNavigationRequestId.current ===
+                deliveryNavigationRequest.requestId
+        ) {
+            return;
+        }
+
+        handledNavigationRequestId.current =
+            deliveryNavigationRequest.requestId;
+        if (requestedDeliveryDraft) {
+            setSelectedDeliveryId(requestedDeliveryDraft.deliveryId);
+            setIsNewDeliveryEntry(false);
+            setForm(formFromDraft(requestedDeliveryDraft));
+            setErrors({});
+            setFormMessage("");
+            setProductSearch("");
+            setShowProductResults(false);
+            setSelectedProductId("");
+            setSelectedVariantId("");
+            setEditingItem(undefined);
+            setApprovalError("");
+            setCompletionMessage("");
+        } else {
+            setSelectedDeliveryId("");
+            setIsNewDeliveryEntry(false);
+            setForm(formFromDraft(undefined));
+        }
+        onNavigationConsumed(deliveryNavigationRequest.requestId, true);
+    }, [
+        deliveryDrafts,
+        deliveryNavigationRequest,
+        onNavigationConsumed,
+        requestedDeliveryDraft
+    ]);
+
+    const selectedDraft = deliveryNavigationRequest
+        ? requestedDeliveryDraft
+        : deliveryDrafts.find(
+            (draft) => draft.deliveryId === selectedDeliveryId
+        );
+    const visibleForm = deliveryNavigationRequest
+        ? formFromDraft(requestedDeliveryDraft)
+        : form;
     const selectedProduct = products.find(
         (product) => product.id === selectedProductId
     );
@@ -192,10 +282,15 @@ export default function ReceiveDeliveryPage({
                 productSearch.trim().toLocaleLowerCase()
             )
         );
-    const canEditHeader = isNewDeliveryEntry || selectedDraft?.status === "draft";
-    const canAddItems = isNewDeliveryEntry || selectedDraft?.status === "draft";
+    const canEditHeader = (!deliveryNavigationRequest && isNewDeliveryEntry) ||
+        selectedDraft?.status === "draft";
+    const canAddItems = (!deliveryNavigationRequest && isNewDeliveryEntry) ||
+        selectedDraft?.status === "draft";
 
     function startNextDeliveryEntry() {
+        if (deliveryNavigationRequest) {
+            onNavigationDismissed(deliveryNavigationRequest.requestId);
+        }
         setSelectedDeliveryId("");
         setIsNewDeliveryEntry(true);
         setForm(formFromDraft(undefined));
@@ -460,6 +555,12 @@ export default function ReceiveDeliveryPage({
                     <p>Prepare delivery details and review draft items.</p>
                 </div>
             </header>
+            {isStaleDraftNavigation && (
+                <p className="delivery-approval-error" role="alert">
+                    The requested pending delivery is no longer available. Open
+                    Receive Delivery again to select an available draft.
+                </p>
+            )}
 
             <section aria-label="Delivery entry" className="delivery-entry">
                 {selectedDraft && (
@@ -491,7 +592,7 @@ export default function ReceiveDeliveryPage({
                                 aria-describedby={errors.supplier ? "delivery-supplier-error" : undefined}
                                 disabled={headerIsReadOnly}
                                 onChange={(event) => updateField("supplier", event.target.value)}
-                                value={form.supplier}
+                                value={visibleForm.supplier}
                             />
                             {errors.supplier && (
                                 <span className="delivery-field-error" id="delivery-supplier-error">
@@ -506,7 +607,7 @@ export default function ReceiveDeliveryPage({
                                 aria-describedby={errors.invoiceNumber ? "delivery-invoice-error" : undefined}
                                 disabled={headerIsReadOnly}
                                 onChange={(event) => updateField("invoiceNumber", event.target.value)}
-                                value={form.invoiceNumber}
+                                value={visibleForm.invoiceNumber}
                             />
                             {errors.invoiceNumber && (
                                 <span className="delivery-field-error" id="delivery-invoice-error">
@@ -523,7 +624,7 @@ export default function ReceiveDeliveryPage({
                                 disabled={headerIsReadOnly}
                                 onChange={(event) => updateField("deliveryDate", event.target.value)}
                                 type="date"
-                                value={form.deliveryDate}
+                                value={visibleForm.deliveryDate}
                             />
                             {errors.deliveryDate && (
                                 <span className="delivery-field-error" id="delivery-date-error">
@@ -539,7 +640,7 @@ export default function ReceiveDeliveryPage({
                                 aria-describedby={errors.receivedBy ? "delivery-received-by-error" : undefined}
                                 disabled={headerIsReadOnly}
                                 onChange={(event) => updateField("receivedBy", event.target.value)}
-                                value={form.receivedBy}
+                                value={visibleForm.receivedBy}
                             />
                             {errors.receivedBy && (
                                 <span className="delivery-field-error" id="delivery-received-by-error">

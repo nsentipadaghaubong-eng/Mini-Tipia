@@ -77,6 +77,7 @@ import {
     getProductRecordDeletionBlockMessages,
     getProductPackagingThresholdRemovalBlockMessage,
     prepareProductRecordDeletionPlan,
+    minimumProductVariantMessage,
     type ProductRecordDeletionRequest
 } from "./products/productDeletion";
 import {
@@ -1318,9 +1319,7 @@ function createProductUpdateDraftFromProduct(
                     : String(level.costPrice),
                 sellingPrice: level.sellingPrice === null
                     ? ""
-                    : String(level.sellingPrice),
-                initialStock: "0",
-                initialStockBatchId: ""
+                    : String(level.sellingPrice)
             }))
         }))
     };
@@ -1328,145 +1327,27 @@ function createProductUpdateDraftFromProduct(
 
 function validateProductUpdateInventory(
     state: ApplicationState,
-    previousProduct: productStructure,
     product: productStructure,
     nextInventoryRecords: readonly inventory[],
     nextInventoryBatches: readonly inventoryBatch[]
 ): void {
     if (
+        JSON.stringify(nextInventoryRecords) !==
+            JSON.stringify(state.inventoryRecords) ||
         JSON.stringify(nextInventoryBatches) !==
-        JSON.stringify(state.inventoryBatches)
+            JSON.stringify(state.inventoryBatches)
     ) {
-        throw new Error("Product update cannot modify or omit inventory batches.");
-    }
-    if (nextInventoryRecords.length < state.inventoryRecords.length) {
-        throw new Error("Product update cannot remove inventory records.");
+        throw new Error("Product update cannot modify inventory records or batches.");
     }
 
-    const previousPackagingIds = new Set(
-        previousProduct.variant.flatMap((productVariant) =>
-            productVariant.packagingHierarchy.map((level) => level.id)
-        )
-    );
-    const newPackagingIds = new Set(
-        product.variant.flatMap((productVariant) =>
-            productVariant.packagingHierarchy
-                .filter((level) => !previousPackagingIds.has(level.id))
-                .map((level) => level.id)
-        )
-    );
-    const existingIds = getApplicationEntityIds(state);
-    const inventoryIds = new Set<string>();
-    const inventoryLocations = new Set<string>();
-
-    for (let index = 0; index < state.inventoryRecords.length; index += 1) {
-        const previousRecord = state.inventoryRecords[index];
-        const nextRecord = nextInventoryRecords[index];
-        if (!nextRecord || nextRecord.id !== previousRecord.id) {
-            throw new Error("Product update cannot reorder or omit inventory records.");
-        }
-        if (inventoryIds.has(nextRecord.id)) {
-            throw new Error("Product update contains duplicate inventory IDs.");
-        }
-        inventoryIds.add(nextRecord.id);
-
-        if (previousRecord.productId !== product.id) {
-            if (JSON.stringify(nextRecord) !== JSON.stringify(previousRecord)) {
-                throw new Error("Product update cannot alter unrelated inventory records.");
-            }
-            continue;
-        }
-
-        if (
-            previousRecord.productId !== nextRecord.productId ||
-            previousRecord.variantId !== nextRecord.variantId ||
-            previousRecord.batchId !== nextRecord.batchId
-        ) {
-            throw new Error("Product update cannot change inventory ownership.");
-        }
-        validateInventoryRelationships(
-            previousProduct,
-            previousRecord,
-            state.inventoryBatches
-        );
-        const addedStock = nextRecord.stockQuantities.slice(
-            previousRecord.stockQuantities.length
-        );
-        if (
-            JSON.stringify(nextRecord.stockQuantities.slice(
-                0,
-                previousRecord.stockQuantities.length
-            )) !== JSON.stringify(previousRecord.stockQuantities) ||
-            addedStock.some((stock) =>
-                !newPackagingIds.has(stock.packagingLevelId) ||
-                !Number.isSafeInteger(stock.quantity) ||
-                stock.quantity <= 0 ||
-                previousRecord.stockQuantities.some(
-                    (existing) =>
-                        existing.packagingLevelId === stock.packagingLevelId
-                )
-            ) ||
-            JSON.stringify(nextRecord) !== JSON.stringify({
-                ...previousRecord,
-                stockQuantities: [
-                    ...previousRecord.stockQuantities,
-                    ...addedStock
-                ]
-            })
-        ) {
-            throw new Error(
-                "Product update may only add initial stock for new packaging levels."
+    for (const record of state.inventoryRecords) {
+        if (record.productId === product.id) {
+            validateInventoryRelationships(
+                product,
+                record,
+                state.inventoryBatches
             );
         }
-        validateInventoryRelationships(product, nextRecord, state.inventoryBatches);
-        const location = JSON.stringify([
-            nextRecord.variantId,
-            nextRecord.batchId
-        ]);
-        if (inventoryLocations.has(location)) {
-            throw new Error("Product update contains duplicate inventory locations.");
-        }
-        inventoryLocations.add(location);
-    }
-
-    for (
-        let index = state.inventoryRecords.length;
-        index < nextInventoryRecords.length;
-        index += 1
-    ) {
-        const record = nextInventoryRecords[index];
-        if (
-            record.productId !== product.id ||
-            !record.id.trim() ||
-            record.id !== record.id.trim() ||
-            existingIds.has(record.id) ||
-            inventoryIds.has(record.id) ||
-            record.stockQuantities.length === 0 ||
-            record.stockQuantities.some((stock) =>
-                !newPackagingIds.has(stock.packagingLevelId) ||
-                !Number.isSafeInteger(stock.quantity) ||
-                stock.quantity <= 0
-            )
-        ) {
-            throw new Error("Product update contains an invalid new inventory record.");
-        }
-        inventoryIds.add(record.id);
-        const canonicalRecord: inventory = {
-            id: record.id,
-            productId: record.productId,
-            variantId: record.variantId,
-            batchId: record.batchId,
-            stockQuantities: record.stockQuantities.map((stock) => ({ ...stock }))
-        };
-        if (JSON.stringify(record) !== JSON.stringify(canonicalRecord)) {
-            throw new Error("Product update contains an invalid new inventory record.");
-        }
-        validateInventoryRelationships(product, record, state.inventoryBatches);
-        const location = JSON.stringify([record.variantId, record.batchId]);
-        if (inventoryLocations.has(location)) {
-            throw new Error("Product update contains duplicate inventory locations.");
-        }
-        inventoryLocations.add(location);
     }
 }
 
@@ -1861,6 +1742,12 @@ export function applicationReducer(
             }
 
             const [event] = action.events;
+            if (
+                event?.type === "product.deleted" &&
+                event.reason.trim() === ""
+            ) {
+                throw new Error("A reason is required to delete a product.");
+            }
             const operationKeyPrefix = `product.deleted:${product.id}:`;
             if (
                 action.events.length !== 1 ||
@@ -1879,10 +1766,12 @@ export function applicationReducer(
                 product,
                 state.inventoryRecords,
                 state.inventoryBatches,
-                event.operationKey
+                event.operationKey,
+                event.reason
             );
             if (
                 expectedEvent.type !== "product.deleted" ||
+                event.reason !== expectedEvent.reason ||
                 JSON.stringify(event.product) !==
                     JSON.stringify(expectedEvent.product) ||
                 JSON.stringify(event.inventory) !==
@@ -1923,6 +1812,10 @@ export function applicationReducer(
             };
         }
         case "product.updated": {
+            const nextInventoryRecords =
+                action.inventoryRecords ?? state.inventoryRecords;
+            const nextInventoryBatches =
+                action.inventoryBatches ?? state.inventoryBatches;
             const updateEvents = action.events.filter(
                 (event) => event.type === "product.updated"
             );
@@ -2012,10 +1905,6 @@ export function applicationReducer(
                 throw new Error("Product update contains a duplicate identifier.");
             }
 
-            const nextInventoryRecords =
-                action.inventoryRecords ?? state.inventoryRecords;
-            const nextInventoryBatches =
-                action.inventoryBatches ?? state.inventoryBatches;
             const changedInventoryProductIds = getChangedInventoryProductIds(
                 state.inventoryRecords,
                 state.inventoryBatches,
@@ -2039,7 +1928,6 @@ export function applicationReducer(
             }
             validateProductUpdateInventory(
                 state,
-                previousProduct,
                 action.product,
                 nextInventoryRecords,
                 nextInventoryBatches
@@ -2128,6 +2016,9 @@ export function applicationReducer(
             }
 
             const currentProduct = state.products[productIndex];
+            if (currentProduct.variant.length <= 1) {
+                throw new Error(minimumProductVariantMessage);
+            }
             const currentVariant = currentProduct.variant.find(
                 (productVariant) => productVariant.id === action.variantId
             );

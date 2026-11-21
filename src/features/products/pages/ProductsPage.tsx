@@ -42,13 +42,12 @@ interface ProductsPageProps {
     inventoryBatches: inventoryBatch[];
     onCreateProduct: (result: ProductCreationResult) => void;
     onDeleteProduct: (
-        productId: string
+        productId: string,
+        reason: string
     ) => { success: true } | { success: false; error: string };
     onUpdateProduct: (
         product: productStructure,
         reason: string,
-        inventoryRecords?: inventory[],
-        inventoryBatches?: inventoryBatch[],
         deletions?: ProductRecordDeletionDraft[]
     ) => void;
     saleDrafts: SaleDraft[];
@@ -404,6 +403,9 @@ export default function ProductsPage({
     );
     const [pendingDeletionProductId, setPendingDeletionProductId] =
         useState<string | null>(null);
+    const [deletionReason, setDeletionReason] = useState("");
+    const [deletionReasonError, setDeletionReasonError] =
+        useState<string | null>(null);
     const [deletionErrors, setDeletionErrors] = useState<string[]>([]);
     const [isDeletingProduct, setIsDeletingProduct] = useState(false);
     const handledNavigationRequestId = useRef<number | null>(null);
@@ -483,6 +485,8 @@ export default function ProductsPage({
                     setDeletionErrors([]);
                 } else if (pendingDeletionProductId) {
                     setPendingDeletionProductId(null);
+                    setDeletionReason("");
+                    setDeletionReasonError(null);
                 } else if (selectedProduct) {
                     if (navigationRequest?.intent.type === "product.view") {
                         onNavigationDismissed(navigationRequest.requestId);
@@ -511,6 +515,8 @@ export default function ProductsPage({
 
     function requestProductDeletion(productId: string) {
         setDeletionErrors([]);
+        setDeletionReason("");
+        setDeletionReasonError(null);
         const blockers = getProductDeletionBlockMessages(
             productId,
             saleDrafts,
@@ -528,6 +534,12 @@ export default function ProductsPage({
             return;
         }
 
+        const reason = deletionReason.trim();
+        if (reason === "") {
+            setDeletionReasonError("A reason is required to delete a product.");
+            return;
+        }
+
         const blockers = getProductDeletionBlockMessages(
             pendingDeletionProductId,
             saleDrafts,
@@ -535,14 +547,18 @@ export default function ProductsPage({
         );
         if (blockers.length > 0) {
             setPendingDeletionProductId(null);
+            setDeletionReason("");
+            setDeletionReasonError(null);
             setDeletionErrors(blockers);
             return;
         }
 
         setIsDeletingProduct(true);
-        const result = onDeleteProduct(pendingDeletionProductId);
+        const result = onDeleteProduct(pendingDeletionProductId, reason);
         setIsDeletingProduct(false);
         setPendingDeletionProductId(null);
+        setDeletionReason("");
+        setDeletionReasonError(null);
         if (!result.success) {
             setDeletionErrors([result.error]);
         }
@@ -773,12 +789,32 @@ export default function ProductsPage({
                                 Deleting this product is permanent and cannot be undone.
                                 Its associated inventory and batches will also be deleted.
                             </p>
+                            <label className="product-edit-field">
+                                Reason for deletion
+                                <textarea
+                                    aria-invalid={deletionReasonError !== null}
+                                    disabled={isDeletingProduct}
+                                    onChange={(event) => {
+                                        setDeletionReason(event.target.value);
+                                        setDeletionReasonError(null);
+                                    }}
+                                    required
+                                    value={deletionReason}
+                                />
+                            </label>
+                            {deletionReasonError && (
+                                <p role="alert">{deletionReasonError}</p>
+                            )}
                             <div className="product-deletion-actions">
                                 <button
                                     autoFocus
                                     className="secondary-button"
                                     disabled={isDeletingProduct}
-                                    onClick={() => setPendingDeletionProductId(null)}
+                                    onClick={() => {
+                                        setPendingDeletionProductId(null);
+                                        setDeletionReason("");
+                                        setDeletionReasonError(null);
+                                    }}
                                     type="button"
                                 >
                                     Cancel

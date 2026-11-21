@@ -5,7 +5,6 @@ import type { inventory } from "../../../inventory/inventoryStock";
 import {
     addVariantToUpdateDraft,
     addPackagingLevelToUpdateDraft,
-    applyPackagingLevelInitialStock,
     buildUpdatedProduct,
     createProductUpdateDraft,
     validateProductUpdateDraft,
@@ -42,8 +41,6 @@ interface ProductEditModalProps {
     onSave: (
         product: productStructure,
         reason: string,
-        inventoryRecords?: inventory[],
-        inventoryBatches?: inventoryBatch[],
         deletions?: ProductRecordDeletionDraft[]
     ) => void;
     draftLockMessages?: string[];
@@ -124,33 +121,9 @@ export default function ProductEditModal({
     onSave,
     draftLockMessages = []
 }: ProductEditModalProps) {
-    const [draft, setDraft] = useState<ProductUpdateDraft>(() => {
-        const initialDraft = createProductUpdateDraft(product);
-        return {
-            ...initialDraft,
-            variants: initialDraft.variants.map((productVariant) => ({
-                ...productVariant,
-                packaging: productVariant.packaging.map((level) => ({
-                    ...level,
-                    initialStock: String(
-                        inventoryRecords
-                            .filter((record) =>
-                                record.productId === product.id &&
-                                record.variantId === productVariant.id
-                            )
-                            .reduce((total, record) =>
-                                total + (
-                                    record.stockQuantities.find(
-                                        (stock) =>
-                                            stock.packagingLevelId === level.id
-                                    )?.quantity ?? 0
-                                ),
-                            0)
-                    )
-                }))
-            }))
-        };
-    });
+    const [draft, setDraft] = useState<ProductUpdateDraft>(() =>
+        createProductUpdateDraft(product)
+    );
     const [saveError, setSaveError] = useState<string | null>(null);
     const [pendingDeletion, setPendingDeletion] =
         useState<ProductRecordDeletionDraft | null>(null);
@@ -193,6 +166,18 @@ export default function ProductEditModal({
             (record) =>
                 record.productId === product.id &&
                 record.variantId === variantId
+        );
+    }
+
+    function currentStock(variantId: string, packagingLevelId: string) {
+        return variantInventoryRecords(variantId).reduce(
+            (total, record) =>
+                total + (
+                    record.stockQuantities.find(
+                        (stock) => stock.packagingLevelId === packagingLevelId
+                    )?.quantity ?? 0
+                ),
+            0
         );
     }
 
@@ -353,43 +338,7 @@ export default function ProductEditModal({
         }
         try {
             const updatedProduct = buildUpdatedProduct(product, draft);
-            let nextInventoryRecords = [...inventoryRecords];
-            const nextInventoryBatches = [...inventoryBatches];
-
-            for (const productVariant of draft.variants) {
-                const originalVariant = product.variant.find(
-                    (item) => item.id === productVariant.id
-                );
-                if (!originalVariant) {
-                    continue;
-                }
-                const existingIds = new Set(
-                    originalVariant.packagingHierarchy.map((level) => level.id)
-                );
-
-                for (const level of productVariant.packaging) {
-                    if (existingIds.has(level.id)) {
-                        continue;
-                    }
-
-                    nextInventoryRecords = applyPackagingLevelInitialStock(
-                        product,
-                        nextInventoryRecords,
-                        nextInventoryBatches,
-                        productVariant.id,
-                        level.id,
-                        level.initialStock ?? "0",
-                        level.initialStockBatchId?.trim() ||
-                            inventoryBatches.find((batch) =>
-                                batch.productId === product.id &&
-                                batch.variantId === productVariant.id
-                            )?.batchId ||
-                            null
-                    );
-                }
-            }
-
-            for (const record of nextInventoryRecords) {
+            for (const record of inventoryRecords) {
                 if (record.productId === product.id) {
                     validateInventoryPackagingRelationships(
                         updatedProduct,
@@ -400,8 +349,6 @@ export default function ProductEditModal({
             onSave(
                 updatedProduct,
                 draft.reason.trim(),
-                nextInventoryRecords,
-                nextInventoryBatches,
                 stagedDeletions.map(({ deletion }) => ({
                     ...deletion,
                     reason: draft.reason.trim()
@@ -1018,42 +965,22 @@ export default function ProductEditModal({
                                                                 `${levelPrefix}.sellingPrice`
                                                             )}
                                                         </label>
-                                                        <label className="product-edit-field">
-                                                            {isExistingPackagingLevel
-                                                                ? "Current total stock"
-                                                                : "Initial stock quantity"}
-                                                            <input
-                                                                disabled={isProductStructureReadOnly}
-                                                                readOnly={isExistingPackagingLevel}
-                                                                min="0"
-                                                                onChange={(event) => updateDraft((current) =>
-                                                                    updateVariant(
-                                                                        current,
-                                                                        variantIndex,
-                                                                        (item) => updatePackaging(
-                                                                            item,
-                                                                            levelIndex,
-                                                                            (packaging) => ({
-                                                                                ...packaging,
-                                                                                initialStock: event.target.value
-                                                                            })
-                                                                        )
-                                                                    )
-                                                                )}
-                                                                step="1"
-                                                                type="number"
-                                                                value={level.initialStock}
-                                                            />
-                                                            {isExistingPackagingLevel && (
+                                                        {isExistingPackagingLevel && (
+                                                            <label className="product-edit-field">
+                                                                Current total stock
+                                                                <input
+                                                                    readOnly
+                                                                    type="number"
+                                                                    value={currentStock(
+                                                                        productVariant.id,
+                                                                        level.id
+                                                                    )}
+                                                                />
                                                                 <span className="product-edit-help">
                                                                     Across matching batches and unbatched stock.
                                                                 </span>
-                                                            )}
-                                                            {fieldError(
-                                                                errors,
-                                                                `${levelPrefix}.initialStock`
-                                                            )}
-                                                        </label>
+                                                            </label>
+                                                        )}
                                                     </div>
                                                 </article>
                                             );

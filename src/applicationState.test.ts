@@ -53,7 +53,6 @@ import { createProductFromDraft } from "./products/productCreation";
 import {
     addPackagingLevelToUpdateDraft,
     addVariantToUpdateDraft,
-    applyPackagingLevelInitialStock,
     buildUpdatedProduct,
     createProductUpdateDraft
 } from "./products/productUpdate";
@@ -196,17 +195,18 @@ function makeCommittedProductUpdate() {
     };
 }
 
-function makeCommittedPackagingStockUpdate() {
-    const product = createProductResult().product;
+function makeCommittedPackagingStructureUpdate() {
+    const result = createProductResult();
+    const product = result.product;
     const productVariant = product.variant[0];
     if (!productVariant) {
-        throw new Error("Packaging stock fixture requires a variant.");
+        throw new Error("Packaging structure fixture requires a variant.");
     }
     const state = {
         ...createInitialApplicationState(),
         products: [product],
-        inventoryRecords: [],
-        inventoryBatches: [],
+        inventoryRecords: result.inventoryRecords,
+        inventoryBatches: result.inventoryBatches,
         activityEvents: []
     };
     const draft = addPackagingLevelToUpdateDraft(
@@ -214,39 +214,31 @@ function makeCommittedPackagingStockUpdate() {
         0,
         () => "replay-packaging-level"
     );
-    draft.reason = "Add packaging with initial stock";
+    draft.reason = "Add a packaging level";
     draft.variants[0]!.packaging.at(-2)!.quantityofNextLevel = "2";
     draft.variants[0]!.packaging.at(-1)!.name = "Unit";
     const updatedProduct = buildUpdatedProduct(product, draft);
-    const inventoryRecords = applyPackagingLevelInitialStock(
-        product,
-        [],
-        [],
-        productVariant.id,
-        "replay-packaging-level",
-        "3"
-    );
-    const operationKey = "product.updated:packaging-stock-replay";
+    const operationKey = "product.updated:packaging-structure-replay";
     const reason = draft.reason;
     const activityInputs = buildProductUpdateActivityInputs(
         product,
         updatedProduct,
-        [],
-        inventoryRecords,
-        [],
+        state.inventoryRecords,
+        state.inventoryRecords,
+        state.inventoryBatches,
         operationKey,
         reason
     );
     let eventId = 0;
     const events = prepareActivityEvents(activityInputs, {
-        makeId: () => `packaging-stock-original-${eventId++}`,
+        makeId: () => `packaging-structure-original-${eventId++}`,
         now: () => new Date("2026-03-04T05:06:07.000Z")
     });
     const action = {
         type: "product.updated" as const,
         product: updatedProduct,
-        inventoryRecords,
-        inventoryBatches: [],
+        inventoryRecords: state.inventoryRecords,
+        inventoryBatches: state.inventoryBatches,
         events
     };
     const committed = applicationReducer(state, action);
@@ -254,8 +246,10 @@ function makeCommittedPackagingStockUpdate() {
     return {
         state,
         product,
+        productVariant,
         updatedProduct,
-        inventoryRecords,
+        inventoryRecords: state.inventoryRecords,
+        inventoryBatches: state.inventoryBatches,
         operationKey,
         reason,
         activityInputs,
@@ -481,7 +475,10 @@ function makeProductUpdateAction(
     };
 }
 
-function makeProductDeletionAction(state: ApplicationState) {
+function makeProductDeletionAction(
+    state: ApplicationState,
+    reason = "Discontinue product"
+) {
     const product = state.products[0];
     if (!product) {
         throw new Error("Deletion fixture requires a product.");
@@ -495,7 +492,8 @@ function makeProductDeletionAction(state: ApplicationState) {
                 product,
                 state.inventoryRecords,
                 state.inventoryBatches,
-                `product.deleted:${product.id}:test`
+                `product.deleted:${product.id}:test`,
+                reason
             )
         ], {
             makeId: () => "product-deleted-event",
@@ -5126,123 +5124,36 @@ describe("application-level Activity state", () => {
         expect(applicationReducer(committed, action)).toBe(committed);
     });
 
-    it("records actual initial stock for a new packaging level, but not zero stock", () => {
-        const product = createProductResult().product;
-        const productVariant = product.variant[0];
-        const inventoryBatches = [{
-            batchId: "initial-packaging-batch",
-            productId: product.id,
-            variantId: productVariant.id,
-            batchNumber: "INIT-1",
-            expiryDate: new Date("2027-01-31"),
-            pricingByPackagingLevel: []
-        }];
-        const draft = addPackagingLevelToUpdateDraft(
-            createProductUpdateDraft(product),
-            0,
-            () => "initial-packaging-level"
-        );
-        draft.reason = "Add a packaging level";
-        const previousTerminal = draft.variants[0].packaging.at(-2)!;
-        previousTerminal.quantityofNextLevel = "2";
-        const newLevel = draft.variants[0].packaging.at(-1)!;
-        newLevel.name = "Unit";
-        const updatedProduct = buildUpdatedProduct(product, draft);
-        const inventoryRecords = applyPackagingLevelInitialStock(
-            product,
-            [],
-            inventoryBatches,
-            productVariant.id,
-            newLevel.id,
-            "7",
-            inventoryBatches[0].batchId
-        );
-        const record = inventoryRecords[0];
-        const operationId = "product.updated:packaging-stock";
-        const state = {
-            ...createInitialApplicationState(),
-            products: [product],
-            inventoryRecords: [],
-            inventoryBatches,
-            activityEvents: []
-        };
-        const action = {
-            type: "product.updated" as const,
-            product: updatedProduct,
-            inventoryRecords,
-            inventoryBatches,
-            events: prepareActivityEvents(buildProductUpdateActivityInputs(
-                product,
-                updatedProduct,
-                [],
-                inventoryRecords,
-                inventoryBatches,
-                operationId,
-                draft.reason
-            ))
-        };
+    it("saves packaging structure without changing stock or batch expiry", () => {
+        const fixture = makeCommittedPackagingStructureUpdate();
 
-        const committed = applicationReducer(state, action);
-
-        expect(committed.inventoryRecords[0].stockQuantities).toContainEqual({
-            packagingLevelId: newLevel.id,
-            quantity: 7
-        });
-        expect(committed.activityEvents.filter(
-            (event) => event.type === "inventory.stock_adjusted"
-        )).toMatchObject([{
-            inventoryId: record.id,
-            productId: product.id,
-            variantId: productVariant.id,
-            batch: {
-                batchId: inventoryBatches[0].batchId,
-                batchNumber: "INIT-1"
-            },
-            packagingLevel: {
-                packagingLevelId: newLevel.id,
-                name: "Unit"
-            },
-            previousQuantity: 0,
-            newQuantity: 7,
-            quantityDifference: 7,
-            reason: "Initial stock added for packaging level Unit"
-        }]);
-
-        const zeroStockRecords = applyPackagingLevelInitialStock(
-            product,
-            [],
-            inventoryBatches,
-            productVariant.id,
-            newLevel.id,
-            "0"
-        );
-        const zeroStockAction = {
-            ...action,
-            inventoryRecords: zeroStockRecords,
-            events: prepareActivityEvents(buildProductUpdateActivityInputs(
-                product,
-                updatedProduct,
-                [],
-                zeroStockRecords,
-                inventoryBatches,
-                "product.updated:zero-packaging-stock",
-                draft.reason
-            ))
-        };
-        const zeroStockCommitted = applicationReducer(state, zeroStockAction);
-
-        expect(zeroStockCommitted.inventoryRecords).toEqual([]);
-        expect(zeroStockCommitted.activityEvents.map((event) => event.type))
+        expect(fixture.committed.products[0]?.variant[0]?.packagingHierarchy.map(
+            (level) => level.id
+        )).toContain("replay-packaging-level");
+        expect(fixture.committed.inventoryRecords).toEqual(fixture.inventoryRecords);
+        expect(fixture.committed.inventoryBatches).toEqual(fixture.inventoryBatches);
+        expect(fixture.committed.inventoryBatches[0]?.expiryDate)
+            .toEqual(new Date("2027-01-31"));
+        expect(fixture.committed.activityEvents.map((event) => event.type))
             .toEqual(["product.updated"]);
-        const zeroStockEvent = zeroStockCommitted.activityEvents[0];
-        expect(zeroStockEvent?.type).toBe("product.updated");
-        if (zeroStockEvent?.type !== "product.updated") {
-            throw new Error("Zero-stock update event was not committed.");
+
+        const changedStock = structuredClone(fixture.inventoryRecords);
+        const record = changedStock.find(
+            (candidate) => candidate.variantId === fixture.productVariant.id
+        );
+        if (!record) {
+            throw new Error("Packaging structure fixture requires an inventory record.");
         }
-        expect(zeroStockEvent.after.variants[0]?.packaging.map(
-            (level) => level.packagingLevelId
-        )).toContain(newLevel.id);
-        expect(zeroStockEvent.inventoryStateAfter?.inventoryRecords).toEqual([]);
+        record.stockQuantities[0]!.quantity += 1;
+        const before = structuredClone(fixture.committed);
+
+        expect(() => applicationReducer(fixture.committed, {
+            ...fixture.action,
+            inventoryRecords: changedStock
+        })).toThrow(
+            "Product update replay does not match the previously committed operation."
+        );
+        expect(fixture.committed).toEqual(before);
     });
 
     it("does not append Activity when catalogue, variant, or stock commits fail", () => {
@@ -5291,19 +5202,11 @@ describe("application-level Activity state", () => {
         draft.variants[0].packaging.at(-2)!.quantityofNextLevel = "2";
         draft.variants[0].packaging.at(-1)!.name = "Unit";
         const updatedProduct = buildUpdatedProduct(product, draft);
-        const inventoryRecords = applyPackagingLevelInitialStock(
-            product,
-            [],
-            [],
-            productVariant.id,
-            "failed-packaging-level",
-            "3"
-        );
         const stockInputs = buildProductUpdateActivityInputs(
             product,
             updatedProduct,
             [],
-            inventoryRecords,
+            [],
             [],
             "product.updated:failed-stock",
             "Test failed operation"
@@ -5318,17 +5221,20 @@ describe("application-level Activity state", () => {
         const invalidStockAction = {
             type: "product.updated" as const,
             product: updatedProduct,
-            inventoryRecords: inventoryRecords.map((record) => ({
-                ...record,
-                stockQuantities: record.stockQuantities.map((stock) => ({
-                    ...stock,
+            inventoryRecords: [{
+                id: "forged-inventory",
+                productId: product.id,
+                variantId: productVariant.id,
+                batchId: null,
+                stockQuantities: [{
+                    packagingLevelId: "failed-packaging-level",
                     quantity: 4
-                }))
-            })),
+                }]
+            }],
             events: prepareActivityEvents(stockInputs)
         };
         expect(() => applicationReducer(stockState, invalidStockAction))
-            .toThrow("Product update Activity does not match the committed changes.");
+            .toThrow("Product update cannot modify inventory records or batches.");
         expect(stockState.activityEvents).toEqual([]);
         expect(stockState.products[0]).toBe(product);
     });
@@ -5855,21 +5761,19 @@ describe("application-level Activity state", () => {
             inventoryRecords: state.inventoryRecords.filter(
                 (record) => record.id !== firstProductRecord.id
             )
-        })).toThrow("Product update cannot remove inventory records.");
+        })).toThrow("Product update cannot modify inventory records or batches.");
         expect(() => applicationReducer(state, {
             ...action,
             inventoryRecords: changedExistingStock
-        })).toThrow(
-            "Product update may only add initial stock for new packaging levels."
-        );
+        })).toThrow("Product update cannot modify inventory records or batches.");
         expect(() => applicationReducer(state, {
             ...action,
             inventoryRecords: changedUnrelatedStock
-        })).toThrow("Product update cannot alter unrelated inventory records.");
+        })).toThrow("Product update cannot modify inventory records or batches.");
         expect(() => applicationReducer(state, {
             ...action,
             inventoryBatches: state.inventoryBatches.slice(1)
-        })).toThrow("Product update cannot modify or omit inventory batches.");
+        })).toThrow("Product update cannot modify inventory records or batches.");
         expect(state).toEqual(before);
     });
 
@@ -6196,31 +6100,17 @@ describe("application-level Activity state", () => {
         }
     });
 
-    it("validates the complete stock-adjustment event set for new packaging stock", () => {
-        const fixture = makeCommittedPackagingStockUpdate();
-        const primaryEvent = fixture.action.events.find(
-            (event) => event.type === "product.updated"
-        );
-        const stockEvent = fixture.action.events.find(
-            (event) => event.type === "inventory.stock_adjusted"
-        );
-        if (
-            primaryEvent?.type !== "product.updated" ||
-            stockEvent?.type !== "inventory.stock_adjusted"
-        ) {
-            throw new Error("Packaging stock update fixture requires both event types.");
+    it("replays Product Edit structure updates without inventory changes", () => {
+        const fixture = makeCommittedPackagingStructureUpdate();
+        const primaryEvent = fixture.action.events[0];
+        if (primaryEvent?.type !== "product.updated") {
+            throw new Error("Packaging structure update fixture requires update Activity.");
         }
-        expect(fixture.action.events).toHaveLength(2);
-        expect(primaryEvent.inventoryStateAfter?.inventoryRecords)
-            .toEqual(snapshotProductInventoryState(
-                fixture.product.id,
-                fixture.inventoryRecords,
-                []
-            ).inventoryRecords);
+        expect(fixture.action.events).toHaveLength(1);
 
         let replayId = 0;
         const validReplayEvents = prepareActivityEvents(fixture.activityInputs, {
-            makeId: () => `packaging-stock-replay-${replayId++}`,
+            makeId: () => `packaging-structure-replay-${replayId++}`,
             now: () => new Date("2027-04-05T06:07:08.000Z")
         });
         expect(applicationReducer(fixture.committed, {
@@ -6228,79 +6118,28 @@ describe("application-level Activity state", () => {
             events: validReplayEvents
         })).toBe(fixture.committed);
 
-        const forgedAdjustment = {
-            ...stockEvent,
-            newQuantity: stockEvent.newQuantity + 1,
-            quantityDifference: stockEvent.quantityDifference + 1
-        };
-        const forgedReference = {
-            ...stockEvent,
-            inventoryId: `${stockEvent.inventoryId}-forged`
-        };
-        const forgedPackaging = {
-            ...stockEvent,
-            packagingLevel: {
-                ...stockEvent.packagingLevel,
-                packagingLevelId: "forged-packaging"
-            }
-        };
-        const forgedBeforeAfter = {
-            ...stockEvent,
-            previousQuantity: stockEvent.previousQuantity + 1
-        };
-        const extraAdjustment = {
-            ...stockEvent,
-            eventId: "packaging-stock-extra-event",
-            operationKey: `${stockEvent.operationKey}:extra`
-        };
-        const wrongTypeAdjustment = {
-            ...primaryEvent,
-            eventId: "packaging-stock-wrong-type",
-            operationKey: stockEvent.operationKey
-        };
         const candidates = [
-            { ...fixture.action, events: [primaryEvent] },
-            { ...fixture.action, events: [...fixture.action.events, extraAdjustment] },
-            { ...fixture.action, events: [...fixture.action.events, stockEvent] },
+            { ...fixture.action, events: [] },
             {
                 ...fixture.action,
-                events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
-                        ? forgedAdjustment
-                        : event
-                )
+                events: [
+                    primaryEvent,
+                    { ...primaryEvent, eventId: "duplicate-update-event" }
+                ]
             },
             {
                 ...fixture.action,
-                events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
-                        ? forgedReference
-                        : event
-                )
+                events: [{ ...primaryEvent, inventoryStateAfter: undefined }]
             },
             {
                 ...fixture.action,
-                events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
-                        ? forgedPackaging
-                        : event
-                )
-            },
-            {
-                ...fixture.action,
-                events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
-                        ? forgedBeforeAfter
-                        : event
-                )
-            },
-            {
-                ...fixture.action,
-                events: [primaryEvent, wrongTypeAdjustment]
+                events: [{
+                    ...primaryEvent,
+                    after: { ...primaryEvent.after, productName: "Forged" }
+                }]
             }
         ];
         const before = structuredClone(fixture.committed);
-
         for (const candidate of candidates) {
             expect(() => applicationReducer(fixture.committed, candidate))
                 .toThrow();
@@ -6308,132 +6147,19 @@ describe("application-level Activity state", () => {
         }
     });
 
-    it("fails closed for missing, duplicate, wrong-type, or legacy update evidence", () => {
-        const fixture = makeCommittedPackagingStockUpdate();
-        const primaryEvent = fixture.action.events.find(
-            (event) => event.type === "product.updated"
-        );
-        const stockEvent = fixture.action.events.find(
-            (event) => event.type === "inventory.stock_adjusted"
-        );
-        if (
-            primaryEvent?.type !== "product.updated" ||
-            stockEvent?.type !== "inventory.stock_adjusted"
-        ) {
-            throw new Error("Packaging stock update fixture requires both event types.");
-        }
-        const duplicatePrimary = {
-            ...primaryEvent,
-            eventId: "duplicate-original-primary"
-        };
-        const duplicateEvidenceState = {
-            ...fixture.committed,
-            activityEvents: [...fixture.committed.activityEvents, duplicatePrimary]
-        };
-        const missingPrimaryState = {
-            ...fixture.committed,
-            activityEvents: fixture.committed.activityEvents.filter(
-                (event) => event.operationKey !== fixture.operationKey
-            )
-        };
-        const wrongTypePrimary = {
-            ...stockEvent,
-            eventId: "wrong-type-original-primary",
-            operationKey: fixture.operationKey
-        };
-        const wrongTypeState = {
-            ...fixture.committed,
-            activityEvents: fixture.committed.activityEvents.map((event) =>
-                event.operationKey === fixture.operationKey
-                    ? wrongTypePrimary
-                    : event
-            )
-        };
-        const legacyPrimary = {
-            ...primaryEvent,
-            inventoryStateAfter: undefined
-        };
-        const legacyState = {
-            ...fixture.committed,
-            activityEvents: fixture.committed.activityEvents.map((event) =>
-                event.operationKey === fixture.operationKey
-                    ? legacyPrimary
-                    : event
-            )
-        };
-        const missingStockState = {
-            ...fixture.committed,
-            activityEvents: fixture.committed.activityEvents.filter(
-                (event) => event.operationKey !== stockEvent.operationKey
-            )
-        };
-        const duplicateStockState = {
-            ...fixture.committed,
-            activityEvents: [
-                ...fixture.committed.activityEvents,
-                { ...stockEvent, eventId: "duplicate-original-adjustment" }
-            ]
-        };
-        const extraStockState = {
-            ...fixture.committed,
-            activityEvents: [
-                ...fixture.committed.activityEvents,
-                {
-                    ...stockEvent,
-                    eventId: "extra-original-adjustment",
-                    operationKey: `${stockEvent.operationKey}:extra`
-                }
-            ]
-        };
-        const wrongTypeStockState = {
-            ...fixture.committed,
-            activityEvents: fixture.committed.activityEvents.map((event) =>
-                event.operationKey === stockEvent.operationKey
-                    ? {
-                        ...primaryEvent,
-                        eventId: "wrong-type-original-adjustment",
-                        operationKey: stockEvent.operationKey
-                    }
-                    : event
-            )
-        };
-        const states = [
-            duplicateEvidenceState,
-            missingPrimaryState,
-            wrongTypeState,
-            legacyState,
-            missingStockState,
-            duplicateStockState,
-            extraStockState,
-            wrongTypeStockState
-        ];
-
-        for (const state of states) {
-            const before = structuredClone(state);
-            expect(() => applicationReducer(state, fixture.action)).toThrow();
-            expect(state).toEqual(before);
-        }
-    });
-
     it("rejects invalid and duplicate metadata in product update replay events", () => {
-        const fixture = makeCommittedPackagingStockUpdate();
+        const fixture = makeCommittedPackagingStructureUpdate();
         const primaryEvent = fixture.action.events.find(
             (event) => event.type === "product.updated"
         );
-        const stockEvent = fixture.action.events.find(
-            (event) => event.type === "inventory.stock_adjusted"
-        );
-        if (
-            primaryEvent?.type !== "product.updated" ||
-            stockEvent?.type !== "inventory.stock_adjusted"
-        ) {
-            throw new Error("Packaging stock update fixture requires both event types.");
+        if (primaryEvent?.type !== "product.updated") {
+            throw new Error("Packaging structure update fixture requires update Activity.");
         }
         const candidates = [
             {
                 ...fixture.action,
                 events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
+                    event.type === "product.updated"
                         ? { ...event, eventId: " " }
                         : event
                 )
@@ -6441,7 +6167,7 @@ describe("application-level Activity state", () => {
             {
                 ...fixture.action,
                 events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
+                    event.type === "product.updated"
                         ? { ...event, operationKey: " " }
                         : event
                 )
@@ -6449,23 +6175,7 @@ describe("application-level Activity state", () => {
             {
                 ...fixture.action,
                 events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
-                        ? { ...event, eventId: primaryEvent.eventId }
-                        : event
-                )
-            },
-            {
-                ...fixture.action,
-                events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
-                        ? { ...event, operationKey: primaryEvent.operationKey }
-                        : event
-                )
-            },
-            {
-                ...fixture.action,
-                events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
+                    event.type === "product.updated"
                         ? { ...event, occurredAt: "not-a-date" }
                         : event
                 )
@@ -6473,7 +6183,7 @@ describe("application-level Activity state", () => {
             {
                 ...fixture.action,
                 events: fixture.action.events.map((event) =>
-                    event.type === "inventory.stock_adjusted"
+                    event.type === "product.updated"
                         ? { ...event, occurredAt: "2027-04-05T06:07:08Z" }
                         : event
                 )
@@ -6707,6 +6417,7 @@ describe("application-level Activity state", () => {
         }
         expect(event.productId).toBe(product.id);
         expect(event.productName).toBe(product.name);
+        expect(event.reason).toBe("Discontinue product");
         expect(event.product).toEqual(snapshotProduct(product));
         expect(event.occurredAt).toBe("2026-02-03T04:05:06.000Z");
         expect(event.product.variants[0].packaging[0]).toMatchObject({
@@ -6729,6 +6440,28 @@ describe("application-level Activity state", () => {
             expiryDate: "2027-01-31T00:00:00.000Z"
         });
     });
+
+    it.each(["", "  \t "])(
+        "rejects whole-product deletion with a blank reason %s",
+        (reason) => {
+            const state = makeProductDeletionState();
+            const action = makeProductDeletionAction(state);
+            const [event] = action.events;
+            if (event?.type !== "product.deleted") {
+                throw new Error("Expected product deletion Activity.");
+            }
+            const invalidAction = {
+                ...action,
+                events: [{ ...event, reason }]
+            };
+            const before = structuredClone(state);
+
+            expect(() => applicationReducer(state, invalidAction)).toThrow(
+                "A reason is required to delete a product."
+            );
+            expect(state).toEqual(before);
+        }
+    );
 
     it.each([
         ["active Sales draft", (productId: string) => ({
@@ -6833,5 +6566,36 @@ describe("application-level Activity state", () => {
         expect(state.inventoryRecords).toHaveLength(1);
         expect(state.inventoryBatches).toHaveLength(1);
         expect(state.activityEvents).toEqual([]);
+    });
+
+    it("rejects legacy removal of the final variant without changing application state", () => {
+        const state = makeProductDeletionState();
+        const product = state.products[0];
+        const productVariant = product.variant[0];
+        const action = {
+            type: "product.variant_removed" as const,
+            product,
+            variantId: productVariant.id,
+            inventoryRecords: state.inventoryRecords.filter(
+                (record) => record.variantId !== productVariant.id
+            ),
+            inventoryBatches: state.inventoryBatches.filter(
+                (batch) => batch.variantId !== productVariant.id
+            ),
+            events: prepareActivityEvents([buildVariantRemovalActivityInput(
+                "remove-final-variant-through-legacy-action",
+                product,
+                productVariant,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                "Discontinue final variant"
+            )])
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "At least one variant must remain. Add another variant before deleting this one."
+        );
+        expect(state).toEqual(before);
     });
 });
