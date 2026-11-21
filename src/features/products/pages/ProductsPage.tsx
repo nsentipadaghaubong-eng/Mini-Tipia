@@ -105,6 +105,7 @@ function formatExpiryDate(date: Date): string {
     }
 
     return new Intl.DateTimeFormat("en-NG", {
+        timeZone: "UTC",
         day: "numeric",
         month: "short",
         year: "numeric"

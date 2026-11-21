@@ -9,7 +9,13 @@ import {
     Truck,
 } from "lucide-react";
 
-type AppPage = "products" | "inventory" | "delivery" | "sales" | "activity";
+type AppPage =
+    | "dashboard"
+    | "products"
+    | "inventory"
+    | "delivery"
+    | "sales"
+    | "activity";
 
 interface AppLayoutProps {
     children: ReactNode;
@@ -28,7 +34,11 @@ export default function AppLayout({
                 <h2>Tipia</h2>
 
                 <nav>
-                    <a href="#">
+                    <a
+                        href="#dashboard"
+                        aria-current={activePage === "dashboard" ? "page" : undefined}
+                        onClick={() => onSelectPage("dashboard")}
+                    >
                         <LayoutDashboard aria-hidden="true" />
                         <span>Dashboard</span>
                     </a>

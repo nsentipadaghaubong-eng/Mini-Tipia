@@ -23,6 +23,7 @@ import {
 } from "../../../navigation/navigationIntent";
 import {
     getPackagingLevelThresholdDeletionBlockMessage,
+    minimumProductVariantMessage,
     type ProductRecordDeletionDraft
 } from "../../../products/productDeletion";
 import "./ProductEditModal.css";
@@ -100,6 +101,19 @@ function getProductStructureDraft(variants: VariantUpdateDraft[]) {
     }));
 }
 
+function formatExpiryDateForDisplay(date: Date): string {
+    if (!Number.isFinite(date.getTime())) {
+        return "Expiry date unavailable";
+    }
+
+    return new Intl.DateTimeFormat("en-NG", {
+        timeZone: "UTC",
+        day: "numeric",
+        month: "short",
+        year: "numeric"
+    }).format(date);
+}
+
 export default function ProductEditModal({
     product,
     inventoryRecords,
@@ -149,6 +163,12 @@ export default function ProductEditModal({
     const isDraftLocked = draftLockMessages.length > 0;
     const isProductStructureReadOnly =
         isDraftLocked || stagedDeletions.length > 0;
+    const remainingVariantCount = product.variant.filter(
+        (productVariant) => !stagedDeletions.some(({ deletion }) =>
+            deletion.type === "variant" &&
+            deletion.variantId === productVariant.id
+        )
+    ).length;
     const originalVariantDraft = createProductUpdateDraft(product).variants;
     const hasStructuralChanges =
         JSON.stringify(getProductStructureDraft(draft.variants)) !==
@@ -251,6 +271,13 @@ export default function ProductEditModal({
             setSaveError(draftLockMessages.join(" "));
             return;
         }
+        if (
+            deletion.type === "variant" &&
+            remainingVariantCount <= 1
+        ) {
+            setSaveError(minimumProductVariantMessage);
+            return;
+        }
         if (hasStructuralChanges) {
             setSaveError(
                 "Product structure edits and deletions must be saved separately. Save or cancel product structure changes before staging a deletion."
@@ -292,6 +319,14 @@ export default function ProductEditModal({
         if (isDraftLocked) {
             setPendingDeletion(null);
             setSaveError(draftLockMessages.join(" "));
+            return;
+        }
+        if (
+            pendingDeletion.type === "variant" &&
+            remainingVariantCount <= 1
+        ) {
+            setPendingDeletion(null);
+            setSaveError(minimumProductVariantMessage);
             return;
         }
         setStagedDeletions((current) => [
@@ -541,6 +576,7 @@ export default function ProductEditModal({
                                                     className="product-delete-button"
                                                     disabled={
                                                         isDraftLocked ||
+                                                        remainingVariantCount <= 1 ||
                                                         stagedDeletions.some(
                                                             ({ deletion }) =>
                                                                 deletion.variantId === productVariant.id
@@ -557,6 +593,14 @@ export default function ProductEditModal({
                                                 </button>
                                             )}
                                         </div>
+                                        {remainingVariantCount <= 1 &&
+                                            product.variant.some(
+                                                (item) => item.id === productVariant.id
+                                            ) && (
+                                                <p className="product-edit-help" role="status">
+                                                    {minimumProductVariantMessage}
+                                                </p>
+                                            )}
                                         <label className="product-edit-field">
                                             Variant name
                                             <input
@@ -708,10 +752,12 @@ export default function ProductEditModal({
                                                             record.batchId
                                                         )?.expiryDate && (
                                                             <span>
-                                                                Expires {getBatch(
-                                                                    productVariant.id,
-                                                                    record.batchId
-                                                                )?.expiryDate?.toLocaleDateString()}
+                                                                Expires {formatExpiryDateForDisplay(
+                                                                    getBatch(
+                                                                        productVariant.id,
+                                                                        record.batchId
+                                                                    )!.expiryDate!
+                                                                )}
                                                             </span>
                                                         )}
                                                         <span>

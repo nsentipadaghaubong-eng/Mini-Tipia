@@ -18,6 +18,7 @@ import {
     removeStock
 } from "../inventory/inventoryStock";
 import { validateInventoryRelationships } from "../inventory/inventoryValidation";
+import { isExpiryDateExpired } from "../expiry/expiryDisplay";
 import {
     getPackagingConversionQuantity,
     validatePackagingHierarchy
@@ -205,22 +206,9 @@ function isExpired(expiryDate: Date | null, now: Date): boolean {
         return false;
     }
 
-    const expiryTimestamp = isValidDate(expiryDate, "Batch expiry date");
-    const currentTimestamp = isValidDate(now, "Current date");
-    const expiryDay = Date.UTC(
-        expiryDate.getUTCFullYear(),
-        expiryDate.getUTCMonth(),
-        expiryDate.getUTCDate()
-    );
-    const currentDay = Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate()
-    );
-    if (!Number.isFinite(expiryTimestamp) || !Number.isFinite(currentTimestamp)) {
-        throw new Error("Expiry comparison requires valid dates.");
-    }
-    return expiryDay < currentDay;
+    isValidDate(expiryDate, "Batch expiry date");
+    isValidDate(now, "Current date");
+    return isExpiryDateExpired(expiryDate, now);
 }
 
 function hasAvailableStock(record: inventory): boolean {

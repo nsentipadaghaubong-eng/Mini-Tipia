@@ -14,6 +14,7 @@ import "@testing-library/jest-dom/vitest";
 import type { inventoryDisplay } from "../../../inventory/inventoryLookup";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import type { productStructure } from "../../../products/productStructure";
+import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
 import EditProductModal from "./EditProductModal";
 
 const packagingLevel = {
@@ -78,6 +79,93 @@ function renderModal(inventoryRecords: inventoryDisplay[]) {
 }
 
 describe("EditProductModal unbatched inventory display", () => {
+    it("preserves a selected expiry date through save and reopening", () => {
+        const onSave = vi.fn();
+        const record = inventoryRecord("batch-record", "batch-1", 4);
+        const view = render(createElement(EditProductModal, {
+            product,
+            batches,
+            inventoryRecords: [record],
+            onEditProductDetails: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        fireEvent.change(screen.getByLabelText("Expiry date"), {
+            target: { value: "2026-11-20" }
+        });
+        fireEvent.change(screen.getByLabelText("Why are you making these changes?"), {
+            target: { value: "Correct expiry date" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(onSave).toHaveBeenCalledOnce();
+        const savedChanges = onSave.mock.calls[0][0];
+        const savedExpiryDate = savedChanges.batches[0].expiryDate;
+        expect(savedExpiryDate).toBeInstanceOf(Date);
+        expect(savedExpiryDate.toISOString()).toBe("2026-11-20T00:00:00.000Z");
+        expect(getExpiryDisplay(
+            savedExpiryDate,
+            new Date("2026-11-20T12:00:00.000Z")
+        ).classification).toBe("expires-today");
+
+        view.unmount();
+        render(createElement(EditProductModal, {
+            product,
+            batches: [{
+                ...batches[0],
+                expiryDate: savedExpiryDate
+            }],
+            inventoryRecords: [{
+                ...record,
+                expiryDate: savedExpiryDate
+            }],
+            onEditProductDetails: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        expect(screen.getByLabelText("Expiry date"))
+            .toHaveValue("2026-11-20");
+    });
+
+    it("does not shift an existing expiry date when stock is edited", () => {
+        const onSave = vi.fn();
+        const existingExpiryDate = new Date("2026-11-20T00:00:00.000Z");
+        const existingBatch: inventoryBatch = {
+            ...batches[0],
+            expiryDate: existingExpiryDate
+        };
+        const record = {
+            ...inventoryRecord("batch-record", "batch-1", 4),
+            expiryDate: existingExpiryDate
+        };
+        render(createElement(EditProductModal, {
+            product,
+            batches: [existingBatch],
+            inventoryRecords: [record],
+            onEditProductDetails: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        expect(screen.getByLabelText("Expiry date"))
+            .toHaveValue("2026-11-20");
+        fireEvent.change(screen.getByLabelText("Box"), {
+            target: { value: "5" }
+        });
+        fireEvent.change(screen.getByLabelText("Why are you making these changes?"), {
+            target: { value: "Correct stock quantity" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(onSave).toHaveBeenCalledOnce();
+        const savedExpiryDate =
+            onSave.mock.calls[0][0].batches[0].expiryDate;
+        expect(savedExpiryDate.toISOString())
+            .toBe("2026-11-20T00:00:00.000Z");
+    });
+
     it("keeps the reason section outside the independently scrollable editor", () => {
         render(createElement(EditProductModal, {
             product,
@@ -213,6 +301,11 @@ describe("EditProductModal unbatched inventory display", () => {
         expect(batches).toHaveLength(1);
 
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
+        expect(saveButton).toBeDisabled();
+        fireEvent.click(saveButton);
+        expect(onSave).not.toHaveBeenCalled();
+        const reasonInput = screen.getByLabelText("Why are you making these changes?");
+        fireEvent.change(reasonInput, { target: { value: " \t " } });
         expect(saveButton).toBeDisabled();
         fireEvent.click(saveButton);
         expect(onSave).not.toHaveBeenCalled();

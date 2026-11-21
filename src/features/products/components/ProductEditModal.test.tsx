@@ -679,6 +679,13 @@ describe("ProductEditModal", () => {
         expect(saveButton).toBeDisabled();
         fireEvent.click(saveButton);
         expect(onSave).not.toHaveBeenCalled();
+        const reasonInput = screen.getByRole("textbox", {
+            name: /Reason for update/
+        });
+        fireEvent.change(reasonInput, { target: { value: " \t " } });
+        expect(saveButton).toBeDisabled();
+        fireEvent.click(saveButton);
+        expect(onSave).not.toHaveBeenCalled();
         fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
             target: { value: "Discontinue tablet variant" }
         });
@@ -692,6 +699,37 @@ describe("ProductEditModal", () => {
             reason: "Discontinue tablet variant"
         }]);
         expect(product.variant).toHaveLength(2);
+    });
+
+    it("allows deleting a variant only while another variant will remain", () => {
+        const onSave = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave
+        }));
+
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Delete Variant"
+        })[0]);
+        const confirmation = screen.getByRole("alertdialog", {
+            name: "Delete Tablets?"
+        });
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Confirm Delete"
+        }));
+
+        expect(screen.queryByRole("heading", { name: "Tablets" }))
+            .not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Delete Variant" }))
+            .toBeDisabled();
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "At least one variant must remain."
+        );
+        expect(onSave).not.toHaveBeenCalled();
     });
 
     it("hides staged packaging without changing persisted inventory", () => {
@@ -966,6 +1004,37 @@ describe("ProductEditModal", () => {
         )).not.toBeInTheDocument();
         expect(onSave).not.toHaveBeenCalled();
         expect(state).toEqual(before);
+    });
+
+    it("displays expiry read-only and does not expose an expiry date input", () => {
+        const batch: inventoryBatch = {
+            batchId: "batch-nov-20",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-NOV-20",
+            expiryDate: new Date("2026-11-20T00:00:00.000Z"),
+            pricingByPackagingLevel: []
+        };
+        const record: inventory = {
+            id: "inventory-nov-20",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: batch.batchId,
+            stockQuantities: [{ packagingLevelId: "box", quantity: 4 }]
+        };
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [record],
+            inventoryBatches: [batch],
+            onManageStock: () => undefined,
+            onClose: () => undefined,
+            onSave: () => undefined
+        }));
+
+        expect(screen.getByText("Expires 20 Nov 2026")).toBeInTheDocument();
+        expect(screen.queryByLabelText(/Expiry date/)).not.toBeInTheDocument();
+        expect(document.querySelector('input[type="date"]'))
+            .not.toBeInTheDocument();
     });
 
 });

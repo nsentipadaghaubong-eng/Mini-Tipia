@@ -3644,6 +3644,153 @@ describe("application-level Activity state", () => {
         expect(blockedState).toEqual(before);
     });
 
+    it("rejects deletion of the final variant without changing application state", () => {
+        const state = makeProductDeletionState();
+        const product = state.products[0];
+        const productVariant = product?.variant[0];
+        if (!product || !productVariant) {
+            throw new Error("Final variant deletion fixture requires a variant.");
+        }
+
+        const deletion: ProductRecordDeletionRequest = {
+            type: "variant",
+            variantId: productVariant.id,
+            operationId: "remove-final-variant",
+            reason: "Discontinue final variant"
+        };
+        const action = {
+            type: "product.records_deleted" as const,
+            productId: product.id,
+            deletions: [deletion],
+            product: { ...product, variant: [] },
+            inventoryRecords: [],
+            inventoryBatches: [],
+            events: prepareActivityEvents([buildVariantRemovalActivityInput(
+                deletion.operationId,
+                product,
+                productVariant,
+                state.inventoryRecords,
+                state.inventoryBatches,
+                deletion.reason
+            )])
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            "At least one variant must remain. Add another variant before deleting this one."
+        );
+        expect(state).toEqual(before);
+    });
+
+    it("rejects a multi-deletion save atomically when a later deletion is invalid", () => {
+        const baseState = makeProductDeletionState();
+        const baseProduct = baseState.products[0];
+        const existingVariant = baseProduct?.variant[0];
+        if (!baseProduct || !existingVariant) {
+            throw new Error("Staged deletion fixture requires an existing variant.");
+        }
+
+        const nextVariant = {
+            id: "variant-next",
+            variantName: "Syrup",
+            lowStockThreshold: {
+                quantity: 5,
+                packagingLevelId: "bottle-next"
+            },
+            packagingHierarchy: [{
+                id: "case-next",
+                name: "Case",
+                costPrice: null,
+                sellingPrice: null,
+                quantityofNextLevel: 8,
+                nextLevelId: "bottle-next"
+            }, {
+                id: "bottle-next",
+                name: "Bottle",
+                costPrice: null,
+                sellingPrice: null,
+                quantityofNextLevel: null,
+                nextLevelId: null
+            }]
+        };
+        const product = {
+            ...baseProduct,
+            variant: [...baseProduct.variant, nextVariant]
+        };
+        const nextRecord = {
+            id: "inventory-next",
+            productId: product.id,
+            variantId: nextVariant.id,
+            batchId: null,
+            stockQuantities: [
+                { packagingLevelId: "case-next", quantity: 2 },
+                { packagingLevelId: "bottle-next", quantity: 5 }
+            ]
+        };
+        const state = {
+            ...baseState,
+            products: [product],
+            inventoryRecords: [...baseState.inventoryRecords, nextRecord]
+        };
+        const validDeletion: ProductRecordDeletionRequest = {
+            type: "variant",
+            variantId: existingVariant.id,
+            operationId: "remove-tablets-before-invalid",
+            reason: "Remove tablets"
+        };
+        const invalidDeletion: ProductRecordDeletionRequest = {
+            type: "packaging",
+            variantId: nextVariant.id,
+            packagingLevelId: "bottle-next",
+            operationId: "remove-threshold-level",
+            reason: "Remove threshold packaging"
+        };
+        const afterHierarchy = removePackagingLevelFromHierarchy(
+            nextVariant.packagingHierarchy,
+            invalidDeletion.packagingLevelId
+        );
+        const thresholdLevel = nextVariant.packagingHierarchy.find(
+            (level) => level.id === invalidDeletion.packagingLevelId
+        );
+        if (!thresholdLevel) {
+            throw new Error("Atomic deletion fixture requires its threshold level.");
+        }
+        const action = {
+            type: "product.records_deleted" as const,
+            productId: product.id,
+            deletions: [validDeletion, invalidDeletion],
+            product,
+            inventoryRecords: state.inventoryRecords,
+            inventoryBatches: state.inventoryBatches,
+            events: prepareActivityEvents([
+                buildVariantRemovalActivityInput(
+                    validDeletion.operationId,
+                    product,
+                    existingVariant,
+                    state.inventoryRecords,
+                    state.inventoryBatches,
+                    validDeletion.reason
+                ),
+                buildPackagingRemovalActivityInput(
+                    invalidDeletion.operationId,
+                    product,
+                    nextVariant,
+                    thresholdLevel,
+                    afterHierarchy,
+                    state.inventoryRecords,
+                    state.inventoryBatches,
+                    invalidDeletion.reason
+                )
+            ])
+        };
+        const before = structuredClone(state);
+
+        expect(() => applicationReducer(state, action)).toThrow(
+            /currently used by the variant's low-stock threshold/
+        );
+        expect(state).toEqual(before);
+    });
+
     it("commits staged variant and packaging deletions with distinct reasons atomically", () => {
         const baseState = makeProductDeletionState();
         const baseProduct = baseState.products[0];

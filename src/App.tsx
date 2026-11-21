@@ -7,6 +7,7 @@ import ReceiveDeliveryPage from "./features/delivery/pages/ReceiveDeliveryPage";
 import ProductsPage from "./features/products/pages/ProductsPage";
 import SalesPage from "./features/sales/pages/SalesPage";
 import ActivityPage from "./features/activity/pages/ActivityPage";
+import DashboardPage from "./features/dashboard/pages/DashboardPage";
 import {
     buildProductDeletionActivityInput,
     buildProductCreationActivityInputs,
@@ -52,11 +53,17 @@ import {
     type NavigationRequest
 } from "./navigation/navigationIntent";
 
-type AppPage = "products" | "inventory" | "delivery" | "sales" | "activity";
+type AppPage =
+    | "dashboard"
+    | "products"
+    | "inventory"
+    | "delivery"
+    | "sales"
+    | "activity";
 
 function App() {
     const [activePage, setActivePage] =
-        useState<AppPage>("inventory");
+        useState<AppPage>("dashboard");
     const [navigationRequest, setNavigationRequest] =
         useState<NavigationRequest | null>(null);
     const nextNavigationRequestId = useRef(0);
@@ -551,6 +558,16 @@ function App() {
             activePage={activePage}
             onSelectPage={handlePageSelection}
         >
+            <div hidden={activePage !== "dashboard"}>
+                <DashboardPage
+                    products={applicationState.products}
+                    inventoryRecords={applicationState.inventoryRecords}
+                    inventoryBatches={applicationState.inventoryBatches}
+                    saleDrafts={applicationState.saleDrafts}
+                    deliveryDrafts={applicationState.deliveryDrafts}
+                    onNavigate={handlePageSelection}
+                />
+            </div>
             <div hidden={activePage !== "products"}>
                 <ProductsPage
                     navigationRequest={

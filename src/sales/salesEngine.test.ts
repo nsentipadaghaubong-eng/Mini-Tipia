@@ -16,6 +16,7 @@ import {
     type SaleRequest
 } from "./salesEngine";
 import type { SaleDraft } from "./salesDraft";
+import { isExpiryDateExpired } from "../expiry/expiryDisplay";
 
 const product: productStructure = {
     id: "medicine-1",
@@ -490,6 +491,45 @@ describe("Sales price resolution", () => {
 });
 
 describe("FEFO and inventory selection", () => {
+    it("uses the Africa/Lagos calendar day for batch expiry at midnight boundaries", () => {
+        const record = makeRecord("lagos-midnight-stock", "lagos-midnight", [
+            { packagingLevelId: "card", quantity: 2 }
+        ]);
+        const batch = makeBatch(
+            "lagos-midnight",
+            new Date("2026-11-20T00:00:00.000Z")
+        );
+
+        for (const now of [
+            new Date("2026-11-19T23:30:00.000Z"),
+            new Date("2026-11-20T22:30:00.000Z")
+        ]) {
+            const result = recommendInventoryByFefo(
+                product,
+                "tablet-500",
+                [record],
+                [batch],
+                now
+            );
+            expect(result.batches[0].expired).toBe(false);
+            expect(isExpiryDateExpired(batch.expiryDate!, now)).toBe(false);
+        }
+
+        const expiredAtLagosMidnight = new Date("2026-11-20T23:30:00.000Z");
+        const expiredResult = recommendInventoryByFefo(
+            product,
+            "tablet-500",
+            [record],
+            [batch],
+            expiredAtLagosMidnight
+        );
+        expect(expiredResult.batches[0].expired).toBe(true);
+        expect(isExpiryDateExpired(
+            batch.expiryDate!,
+            expiredAtLagosMidnight
+        )).toBe(true);
+    });
+
     it("orders known expiry dates first, keeps expired batches visible, and puts unknown expiry last", () => {
         const records = [
             makeRecord("unknown-stock", "unknown", [

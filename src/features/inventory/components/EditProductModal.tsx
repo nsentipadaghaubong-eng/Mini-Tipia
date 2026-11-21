@@ -74,9 +74,9 @@ function formatDateForInput(date: Date | null): string {
         return "";
     }
 
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
 
     return `${year}-${month}-${day}`;
 }
@@ -290,11 +290,19 @@ export default function EditProductModal({
             return true;
         }
 
-        const parsedDate = new Date(`${batch.expiryDate}T00:00:00`);
-        return (
-            !Number.isNaN(parsedDate.getTime()) &&
-            formatDateForInput(parsedDate) === batch.expiryDate
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(batch.expiryDate);
+        if (!match) {
+            return false;
+        }
+
+        const [, yearText, monthText, dayText] = match;
+        const parsedDate = new Date(
+            `${batch.expiryDate}T00:00:00.000Z`
         );
+        return !Number.isNaN(parsedDate.getTime()) &&
+            parsedDate.getUTCFullYear() === Number(yearText) &&
+            parsedDate.getUTCMonth() + 1 === Number(monthText) &&
+            parsedDate.getUTCDate() === Number(dayText);
     });
 
     const canSave =
@@ -345,7 +353,7 @@ export default function EditProductModal({
                 batchId: batch.batchId,
                 batchNumber: batch.batchNumber.trim() || null,
                 expiryDate: batch.expiryDate
-                    ? new Date(`${batch.expiryDate}T00:00:00`)
+                    ? new Date(`${batch.expiryDate}T00:00:00.000Z`)
                     : null,
                 inventoryId: batch.inventoryId,
                 stockQuantities: batch.stockQuantities.map((stock) => ({
@@ -365,7 +373,7 @@ export default function EditProductModal({
                     batchId: batch.batchId,
                     batchNumber: batch.batchNumber.trim() || null,
                     expiryDate: batch.expiryDate
-                        ? new Date(`${batch.expiryDate}T00:00:00`)
+                        ? new Date(`${batch.expiryDate}T00:00:00.000Z`)
                         : null,
                     stockQuantities: batch.stockQuantities.map((stock) => ({
                         packagingLevelId: stock.packagingLevelId,

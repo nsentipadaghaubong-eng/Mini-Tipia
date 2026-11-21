@@ -1394,7 +1394,7 @@ describe("Receive Delivery page", () => {
         let currentPage = "delivery";
         function NavigationHarness() {
             const [activePage, setActivePage] = useState<
-                "products" | "inventory" | "delivery" | "sales" | "activity"
+                "dashboard" | "products" | "inventory" | "delivery" | "sales" | "activity"
             >("delivery");
             currentPage = activePage;
             return (

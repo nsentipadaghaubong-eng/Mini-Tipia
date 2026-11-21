@@ -2,7 +2,10 @@ import { useState } from "react";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import { getInventoryDisplay } from "../../../inventory/inventoryLookup";
-import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
+import {
+    getExpiryDisplay,
+    isExpiryDateExpired
+} from "../../../expiry/expiryDisplay";
 import type { productStructure, variant } from "../../../products/productStructure";
 import { getInventoryBatchById } from "../../../inventory/inventoryBatch";
 import { prepareSaleDraft } from "../../../sales/salesEngine";
@@ -109,15 +112,7 @@ export default function SalesItemModal({
             inventoryRecord,
             batch,
             expired: batch?.expiryDate
-                ? Date.UTC(
-                    batch.expiryDate.getUTCFullYear(),
-                    batch.expiryDate.getUTCMonth(),
-                    batch.expiryDate.getUTCDate()
-                ) < Date.UTC(
-                    new Date().getUTCFullYear(),
-                    new Date().getUTCMonth(),
-                    new Date().getUTCDate()
-                )
+                ? isExpiryDateExpired(batch.expiryDate)
                 : false,
             recommended: false
         });

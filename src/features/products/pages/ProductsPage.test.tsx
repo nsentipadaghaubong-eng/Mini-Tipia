@@ -317,6 +317,39 @@ describe("Product View", () => {
         expect(markup).toContain("REG-SYR");
     });
 
+    it("displays a UTC-midnight expiry date as the same calendar date", () => {
+        const box = createLevel("box", "Box");
+        const tablets = createVariant("variant-1", "Tablets", undefined, [box]);
+        const product = createProduct([tablets]);
+        const batch: inventoryBatch = {
+            batchId: "batch-nov-20",
+            productId: product.id,
+            variantId: tablets.id,
+            batchNumber: "LOT-NOV-20",
+            expiryDate: new Date("2026-11-20T00:00:00.000Z"),
+            pricingByPackagingLevel: []
+        };
+        const record: inventory = {
+            id: "inventory-nov-20",
+            productId: product.id,
+            variantId: tablets.id,
+            batchId: batch.batchId,
+            stockQuantities: [{
+                packagingLevelId: box.id,
+                quantity: 4
+            }]
+        };
+
+        const markup = renderVariant(
+            product,
+            tablets,
+            [record],
+            [batch]
+        );
+        expect(markup).toContain("20 Nov 2026");
+        expect(markup).not.toContain("19 Nov 2026");
+    });
+
     it("joins batches to the correct variant and displays each batch's stock", () => {
         const box = createLevel("box", "Box");
         const tablets = createVariant("variant-1", "Tablets", undefined, [box]);
@@ -782,10 +815,16 @@ describe("ProductsPage deletion", () => {
 
     it("discards staged product deletions and restores items when Product Edit reopens", () => {
         const onUpdateProduct = vi.fn();
-        renderInteractiveProductsPage(product, { onUpdateProduct });
+        const productWithAnotherVariant = {
+            ...product,
+            variant: [...product.variant, createVariant("variant-2", "Syrup")]
+        };
+        renderInteractiveProductsPage(productWithAnotherVariant, { onUpdateProduct });
 
         fireEvent.click(screen.getByRole("button", { name: "Edit Medicine" }));
-        fireEvent.click(screen.getByRole("button", { name: "Delete Variant" }));
+        fireEvent.click(screen.getAllByRole("button", {
+            name: "Delete Variant"
+        })[0]);
         const confirmation = screen.getByRole("alertdialog", { name: "Delete Tablets?" });
         fireEvent.click(within(confirmation).getByRole("button", {
             name: "Confirm Delete"
@@ -799,8 +838,8 @@ describe("ProductsPage deletion", () => {
         fireEvent.click(screen.getByRole("button", { name: "Edit Medicine" }));
         expect(screen.getByRole("heading", { name: "Tablets" }))
             .toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Delete Variant" }))
-            .toBeInTheDocument();
+        expect(screen.getAllByRole("button", { name: "Delete Variant" }))
+            .toHaveLength(2);
     });
 
     it("disables all product deletion controls when any variant is in an active draft", () => {

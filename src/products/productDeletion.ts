@@ -62,6 +62,9 @@ export interface ProductRecordDeletionPlan {
     events: ActivityEventInput[];
 }
 
+export const minimumProductVariantMessage =
+    "At least one variant must remain. Add another variant before deleting this one.";
+
 export function getPackagingLevelThresholdDeletionBlockMessage(
     selectedVariant: variant,
     packagingLevelId: string
@@ -261,6 +264,10 @@ export function prepareProductRecordDeletionPlan(
                         )
                 }
         );
+    }
+
+    if (product.variant.length === 0) {
+        throw new Error(minimumProductVariantMessage);
     }
 
     for (const productVariant of product.variant) {

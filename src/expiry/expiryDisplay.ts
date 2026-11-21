@@ -69,6 +69,41 @@ function utcDayNumber(date: Date): number {
     ).getTime() / millisecondsPerDay);
 }
 
+function lagosDayNumber(date: Date): number {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: ACTIVITY_TIME_ZONE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+    }).formatToParts(date);
+    const year = Number(parts.find((part) => part.type === "year")?.value);
+    const month = Number(parts.find((part) => part.type === "month")?.value);
+    const day = Number(parts.find((part) => part.type === "day")?.value);
+
+    if (
+        !Number.isFinite(year) ||
+        !Number.isFinite(month) ||
+        !Number.isFinite(day)
+    ) {
+        throw new Error("Unable to determine the Africa/Lagos calendar date.");
+    }
+
+    return Math.floor(createUtcDate(year, month - 1, day).getTime() /
+        millisecondsPerDay);
+}
+
+export function isExpiryDateExpired(
+    value: Date | string,
+    today: Date = new Date()
+): boolean {
+    if (!Number.isFinite(today.getTime())) {
+        throw new Error("Current date must be valid.");
+    }
+
+    const expiryDate = parseExpiryDate(value);
+    return utcDayNumber(expiryDate) < lagosDayNumber(today);
+}
+
 export function getExpiryDisplay(
     value: Date | string,
     today: Date = new Date()
@@ -78,7 +113,8 @@ export function getExpiryDisplay(
     }
 
     const expiryDate = parseExpiryDate(value);
-    const daysRemaining = utcDayNumber(expiryDate) - utcDayNumber(today);
+    const daysRemaining =
+        utcDayNumber(expiryDate) - lagosDayNumber(today);
     const classification: ExpiryClassification = daysRemaining < 0
         ? "expired"
         : daysRemaining === 0
