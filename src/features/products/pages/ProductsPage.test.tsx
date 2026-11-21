@@ -699,7 +699,7 @@ describe("ProductsPage deletion", () => {
         })).toHaveLength(2);
     });
 
-    it("confirms and stages deletions in the Product Edit session with separate reasons", () => {
+    it("stages deletions in the Product Edit session with one shared reason", () => {
         const productWithVariants = createProduct([
             {
                 ...createVariant("variant-1", "Tablets", undefined, [
@@ -738,10 +738,15 @@ describe("ProductsPage deletion", () => {
             name: "Confirm Delete"
         }));
         expect(onUpdateProduct).not.toHaveBeenCalled();
+        expect(screen.queryByRole("heading", { name: "Tablets" }))
+            .not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Reason for deleting Tablets"))
+            .not.toBeInTheDocument();
+        expect(productWithVariants.variant).toHaveLength(2);
 
         fireEvent.click(screen.getAllByRole("button", {
             name: "Delete Packaging Level"
-        })[1]);
+        })[0]);
         confirmation = screen.getByRole("alertdialog", {
             name: "Delete Bottle packaging level?"
         });
@@ -751,18 +756,10 @@ describe("ProductsPage deletion", () => {
 
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
         expect(saveButton).toBeDisabled();
-        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets"), {
-            target: { value: "   " }
-        });
-        fireEvent.change(screen.getByLabelText("Reason for deleting Bottle packaging level"), {
-            target: { value: "Remove obsolete container" }
-        });
+        expect(screen.queryByLabelText("Reason for deleting Bottle packaging level"))
+            .not.toBeInTheDocument();
         fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
-            target: { value: "Update product details" }
-        });
-        expect(saveButton).toBeDisabled();
-        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets"), {
-            target: { value: "  Discontinue tablet variant  " }
+            target: { value: "Discontinue tablet variant and remove obsolete container" }
         });
         expect(saveButton).toBeEnabled();
         fireEvent.click(saveButton);
@@ -772,18 +769,18 @@ describe("ProductsPage deletion", () => {
             {
                 type: "variant",
                 variantId: "variant-1",
-                reason: "Discontinue tablet variant"
+                reason: "Discontinue tablet variant and remove obsolete container"
             },
             {
                 type: "packaging",
                 variantId: "variant-2",
                 packagingLevelId: "bottle",
-                reason: "Remove obsolete container"
+                reason: "Discontinue tablet variant and remove obsolete container"
             }
         ]);
     });
 
-    it("discards staged product deletions when Product Edit is cancelled", () => {
+    it("discards staged product deletions and restores items when Product Edit reopens", () => {
         const onUpdateProduct = vi.fn();
         renderInteractiveProductsPage(product, { onUpdateProduct });
 
@@ -793,11 +790,17 @@ describe("ProductsPage deletion", () => {
         fireEvent.click(within(confirmation).getByRole("button", {
             name: "Confirm Delete"
         }));
-        expect(screen.getByLabelText("Reason for deleting Tablets")).toBeInTheDocument();
+        expect(screen.queryByRole("heading", { name: "Tablets" }))
+            .not.toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
         expect(onUpdateProduct).not.toHaveBeenCalled();
         expect(screen.queryByRole("dialog", { name: "Edit Product" })).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Edit Medicine" }));
+        expect(screen.getByRole("heading", { name: "Tablets" }))
+            .toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Delete Variant" }))
+            .toBeInTheDocument();
     });
 
     it("disables all product deletion controls when any variant is in an active draft", () => {

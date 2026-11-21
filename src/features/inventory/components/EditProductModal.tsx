@@ -103,7 +103,6 @@ export default function EditProductModal({
         id: string;
         variantId: string;
         batchId: string;
-        reason: string;
     }>>([]);
 
     const [batchDrafts, setBatchDrafts] = useState<BatchDraft[]>(() =>
@@ -267,8 +266,14 @@ export default function EditProductModal({
         );
     }
 
+    const activeBatchDrafts = batchDrafts.filter((draft) =>
+        !stagedBatchDeletions.some((deletion) =>
+            deletion.variantId === draft.variantId &&
+            deletion.batchId === draft.batchId
+        )
+    );
     const validStockQuantities =
-        [...batchDrafts, ...unbatchedDrafts].every((draft) =>
+        [...activeBatchDrafts, ...unbatchedDrafts].every((draft) =>
             draft.stockQuantities.every((stock) => {
                 if (stock.quantity.trim() === "") {
                     return false;
@@ -280,7 +285,7 @@ export default function EditProductModal({
             })
         );
 
-    const validDates = batchDrafts.every((batch) => {
+    const validDates = activeBatchDrafts.every((batch) => {
         if (!batch.expiryDate) {
             return true;
         }
@@ -295,8 +300,7 @@ export default function EditProductModal({
     const canSave =
         reason.trim().length > 0 &&
         validStockQuantities &&
-        validDates &&
-        stagedBatchDeletions.every((deletion) => deletion.reason.trim() !== "");
+        validDates;
 
     const unbatchedDraftsByVariant = new Map<string, UnbatchedDraft[]>();
     for (const draft of unbatchedDrafts) {
@@ -326,7 +330,7 @@ export default function EditProductModal({
             deletedBatches: stagedBatchDeletions.map((deletion) => ({
                 variantId: deletion.variantId,
                 batchId: deletion.batchId,
-                reason: deletion.reason.trim()
+                reason: reason.trim()
             })),
 
             batches: batchDrafts
@@ -425,18 +429,11 @@ export default function EditProductModal({
                 {
                     id: crypto.randomUUID(),
                     variantId: batch.variantId,
-                    batchId: batch.batchId,
-                    reason: ""
+                    batchId: batch.batchId
                 }
             ]);
         }
         setPendingBatchDeletion(null);
-    }
-
-    function updateBatchDeletionReason(id: string, value: string) {
-        setStagedBatchDeletions((current) => current.map((deletion) =>
-            deletion.id === id ? { ...deletion, reason: value } : deletion
-        ));
     }
 
     return (
@@ -527,20 +524,14 @@ export default function EditProductModal({
                                     const label =
                                         `${variant?.variantName ?? "Variant"} / ${batch?.batchNumber ?? "Batch number not set"}`;
                                     return (
-                                        <label className="product-edit-field" key={deletion.id}>
-                                            Reason for deleting {label}
-                                            <textarea
-                                                aria-label={`Reason for deleting ${label}`}
-                                                onChange={(event) => updateBatchDeletionReason(
-                                                    deletion.id,
-                                                    event.target.value
-                                                )}
-                                                rows={2}
-                                                value={deletion.reason}
-                                            />
-                                        </label>
+                                        <p key={deletion.id}>
+                                            {label} will be deleted when you save these changes.
+                                        </p>
                                     );
                                 })}
+                                <p>
+                                    The reason above will be recorded for each staged deletion.
+                                </p>
                             </section>
                         )}
 
@@ -569,7 +560,7 @@ export default function EditProductModal({
                                     </button>
                                 </div>
 
-                                {batchDrafts
+                                {activeBatchDrafts
                                     .filter((draft) => draft.variantId === variant.id)
                                     .map((draft) => {
                                     const batch = batches.find(

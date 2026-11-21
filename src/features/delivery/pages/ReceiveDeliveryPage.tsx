@@ -19,7 +19,9 @@ import {
 import CreateProductModal from "../../products/components/CreateProductModal";
 import AddDeliveryVariantModal from "../components/AddDeliveryVariantModal";
 import ReceiveDeliveryItemModal from "../components/ReceiveDeliveryItemModal";
+import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
 import "./ReceiveDeliveryPage.css";
+import "../../../expiry/expiryDisplay.css";
 
 interface ReceiveDeliveryPageProps {
     products: productStructure[];
@@ -720,6 +722,9 @@ export default function ReceiveDeliveryPage({
                                         const packaging = variant?.packagingHierarchy.find(
                                             (level) => level.id === item.packagingLevelId
                                         );
+                                        const expiryDisplay = item.expiryDate
+                                            ? getExpiryDisplay(item.expiryDate)
+                                            : undefined;
                                         return (
                                             <li key={item.deliveryItemId}>
                                                 <strong>{product?.name ?? item.productId}</strong>
@@ -733,7 +738,14 @@ export default function ReceiveDeliveryPage({
                                                 <span>
                                                     Batch {item.batchNumber ?? "not specified"}
                                                     {" · "}
-                                                    Expiry {item.expiryDate ?? "not specified"}
+                                                    {expiryDisplay ? (
+                                                        <span className={`expiry-display expiry-display--${expiryDisplay.colorCategory}`}>
+                                                            Expiry {expiryDisplay.dateLabel} ·{" "}
+                                                            {expiryDisplay.remainingLabel}
+                                                        </span>
+                                                    ) : (
+                                                        "Expiry not specified"
+                                                    )}
                                                 </span>
                                                 <span>
                                                     Cost {item.costPrice ?? "empty"}

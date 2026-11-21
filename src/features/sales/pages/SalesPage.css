@@ -47,6 +47,15 @@
     background: #fff9e8;
 }
 
+.sales-expired-confirmation.expiry-display {
+    display: grid;
+    padding: 14px;
+}
+
+.sales-expired-confirmation.expiry-display--expired p {
+    color: #87332d;
+}
+
 .sales-expired-confirmation p {
     margin: 0;
     color: #72530a;

@@ -177,12 +177,13 @@ describe("EditProductModal unbatched inventory display", () => {
         expect(onSave).not.toHaveBeenCalled();
     });
 
-    it("confirms batch deletion, stages it with a separate reason, and saves once", () => {
+    it("stages batch deletion without changing stock and saves with one reason", () => {
         const onSave = vi.fn();
+        const record = inventoryRecord("batch-record", "batch-1", 4);
         render(createElement(EditProductModal, {
             product,
             batches,
-            inventoryRecords: [inventoryRecord("batch-record", "batch-1", 4)],
+            inventoryRecords: [record],
             onEditProductDetails: () => undefined,
             onClose: () => undefined,
             onSave
@@ -202,16 +203,20 @@ describe("EditProductModal unbatched inventory display", () => {
             name: "Confirm Delete"
         }));
         expect(onSave).not.toHaveBeenCalled();
+        expect(screen.queryByRole("button", { name: "Delete Batch" }))
+            .not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Reason for deleting Medicine 500mg / B1"))
+            .not.toBeInTheDocument();
+        expect(record.stockQuantities).toEqual([
+            { packagingLevelId: packagingLevel.id, quantity: 4 }
+        ]);
+        expect(batches).toHaveLength(1);
+
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
         expect(saveButton).toBeDisabled();
-        fireEvent.change(screen.getByLabelText("Reason for deleting Medicine 500mg / B1"), {
-            target: { value: "   " }
-        });
+        fireEvent.click(saveButton);
+        expect(onSave).not.toHaveBeenCalled();
         fireEvent.change(screen.getByLabelText("Why are you making these changes?"), {
-            target: { value: "Remove recalled batch" }
-        });
-        expect(saveButton).toBeDisabled();
-        fireEvent.change(screen.getByLabelText("Reason for deleting Medicine 500mg / B1"), {
             target: { value: "  Remove recalled batch  " }
         });
         expect(saveButton).toBeEnabled();

@@ -157,8 +157,7 @@ export default function ProductEditModal({
         draft.reason.trim() === "" ||
         hasErrors ||
         (isDraftLocked &&
-            (hasStructuralChanges || stagedDeletions.length > 0)) ||
-        stagedDeletions.some(({ deletion }) => deletion.reason.trim() === "");
+            (hasStructuralChanges || stagedDeletions.length > 0));
     const orderedVariants = initialVariantId
         ? [...draft.variants].sort((first, second) =>
             first.id === initialVariantId
@@ -302,15 +301,6 @@ export default function ProductEditModal({
         setPendingDeletion(null);
     }
 
-    function updateDeletionReason(id: string, reason: string) {
-        setStagedDeletions((current) => current.map((staged) =>
-            staged.id === id
-                ? { ...staged, deletion: { ...staged.deletion, reason } }
-                : staged
-        ));
-        setSaveError(null);
-    }
-
     function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (
@@ -326,10 +316,6 @@ export default function ProductEditModal({
         if (hasErrors) {
             return;
         }
-        if (stagedDeletions.some(({ deletion }) => deletion.reason.trim() === "")) {
-            return;
-        }
-
         try {
             const updatedProduct = buildUpdatedProduct(product, draft);
             let nextInventoryRecords = [...inventoryRecords];
@@ -383,7 +369,7 @@ export default function ProductEditModal({
                 nextInventoryBatches,
                 stagedDeletions.map(({ deletion }) => ({
                     ...deletion,
-                    reason: deletion.reason.trim()
+                    reason: draft.reason.trim()
                 }))
             );
             onClose();
@@ -439,6 +425,11 @@ export default function ProductEditModal({
                                 value={draft.reason}
                             />
                             {fieldError(errors, "reason")}
+                            {stagedDeletions.length > 0 && (
+                                <span className="product-edit-help">
+                                    This reason will also be recorded for each staged deletion.
+                                </span>
+                            )}
                         </label>
                     </section>
 
@@ -519,7 +510,14 @@ export default function ProductEditModal({
                                 </button>
                             </div>
                             {fieldError(errors, "variants")}
-                            {orderedVariants.map((productVariant) => {
+                            {orderedVariants
+                                .filter((productVariant) =>
+                                    !stagedDeletions.some(({ deletion }) =>
+                                        deletion.type === "variant" &&
+                                        deletion.variantId === productVariant.id
+                                    )
+                                )
+                                .map((productVariant) => {
                                 const variantIndex = draft.variants.findIndex(
                                     (item) => item.id === productVariant.id
                                 );
@@ -667,11 +665,19 @@ export default function ProductEditModal({
                                                     <option value="">
                                                         Lowest packaging level (default)
                                                     </option>
-                                                    {productVariant.packaging.map((level) => (
-                                                        <option key={level.id} value={level.id}>
-                                                            {level.name || "Unnamed packaging"}
-                                                        </option>
-                                                    ))}
+                                                    {productVariant.packaging
+                                                        .filter((level) =>
+                                                            !stagedDeletions.some(({ deletion }) =>
+                                                                deletion.type === "packaging" &&
+                                                                deletion.variantId === productVariant.id &&
+                                                                deletion.packagingLevelId === level.id
+                                                            )
+                                                        )
+                                                        .map((level) => (
+                                                            <option key={level.id} value={level.id}>
+                                                                {level.name || "Unnamed packaging"}
+                                                            </option>
+                                                        ))}
                                                 </select>
                                                 {fieldError(
                                                     errors,
@@ -755,7 +761,18 @@ export default function ProductEditModal({
                                                 No packaging levels defined.
                                             </p>
                                         )}
-                                        {productVariant.packaging.map((level, levelIndex) => {
+                                        {productVariant.packaging
+                                            .filter((level) =>
+                                                !stagedDeletions.some(({ deletion }) =>
+                                                    deletion.type === "packaging" &&
+                                                    deletion.variantId === productVariant.id &&
+                                                    deletion.packagingLevelId === level.id
+                                                )
+                                            )
+                                            .map((level) => {
+                                            const levelIndex = productVariant.packaging.findIndex(
+                                                (candidate) => candidate.id === level.id
+                                            );
                                             const levelPrefix =
                                                 `${variantPrefix}.packaging.${levelIndex}`;
                                             const existingVariant = product.variant.find(
@@ -854,7 +871,12 @@ export default function ProductEditModal({
                                                                 </option>
                                                                 {productVariant.packaging
                                                                     .filter((candidate) =>
-                                                                        candidate.id !== level.id
+                                                                        candidate.id !== level.id &&
+                                                                        !stagedDeletions.some(({ deletion }) =>
+                                                                            deletion.type === "packaging" &&
+                                                                            deletion.variantId === productVariant.id &&
+                                                                            deletion.packagingLevelId === candidate.id
+                                                                        )
                                                                     )
                                                                     .map((candidate) => (
                                                                         <option
@@ -1013,18 +1035,9 @@ export default function ProductEditModal({
                                         ? productVariant?.variantName ?? "variant"
                                         : `${packagingName} packaging level`;
                                     return (
-                                        <label className="product-edit-field" key={id}>
-                                            Reason for deleting {targetName}
-                                            <textarea
-                                                aria-label={`Reason for deleting ${targetName}`}
-                                                onChange={(event) => updateDeletionReason(
-                                                    id,
-                                                    event.target.value
-                                                )}
-                                                rows={2}
-                                                value={deletion.reason}
-                                            />
-                                        </label>
+                                        <p key={id}>
+                                            {targetName} will be deleted when you save these changes.
+                                        </p>
                                     );
                                 })}
                             </section>

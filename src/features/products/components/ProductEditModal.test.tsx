@@ -645,7 +645,7 @@ describe("ProductEditModal", () => {
         expect(markup).not.toContain("Manage Stock");
     });
 
-    it("confirms variant deletion, stages it, and commits only after reasons are valid", () => {
+    it("stages variant deletion, hides it, and commits with one reason", () => {
         const onSave = vi.fn();
         render(createElement(ProductEditModal, {
             product,
@@ -669,13 +669,18 @@ describe("ProductEditModal", () => {
             name: "Confirm Delete"
         }));
         expect(onSave).not.toHaveBeenCalled();
+        expect(screen.queryByRole("heading", { name: "Tablets" }))
+            .not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Reason for deleting Tablets"))
+            .not.toBeInTheDocument();
+        expect(product.variant).toHaveLength(2);
 
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
-        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets"), {
-            target: { value: "Discontinue tablet variant" }
-        });
+        expect(saveButton).toBeDisabled();
+        fireEvent.click(saveButton);
+        expect(onSave).not.toHaveBeenCalled();
         fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
-            target: { value: "Update product details" }
+            target: { value: "Discontinue tablet variant" }
         });
         expect(saveButton).toBeEnabled();
         fireEvent.click(saveButton);
@@ -686,14 +691,30 @@ describe("ProductEditModal", () => {
             variantId: "variant-1",
             reason: "Discontinue tablet variant"
         }]);
+        expect(product.variant).toHaveLength(2);
     });
 
-    it("opens a packaging-specific confirmation and stages that packaging level", () => {
+    it("hides staged packaging without changing persisted inventory", () => {
         const onSave = vi.fn();
+        const record: inventory = {
+            id: "inventory-1",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: "batch-1",
+            stockQuantities: [{ packagingLevelId: "box", quantity: 8 }]
+        };
+        const batch: inventoryBatch = {
+            batchId: "batch-1",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: null,
+            pricingByPackagingLevel: []
+        };
         render(createElement(ProductEditModal, {
             product,
-            inventoryRecords: [],
-            inventoryBatches: [],
+            inventoryRecords: [record],
+            inventoryBatches: [batch],
             onManageStock: () => undefined,
             onClose: () => undefined,
             onSave
@@ -710,9 +731,33 @@ describe("ProductEditModal", () => {
             name: "Confirm Delete"
         }));
 
-        expect(screen.getByLabelText("Reason for deleting Box packaging level"))
-            .toBeInTheDocument();
+        expect(screen.queryByText("Box", {
+            selector: ".product-edit-packaging strong"
+        })).not.toBeInTheDocument();
+        expect(screen.getByText("Pack", {
+            selector: ".product-edit-packaging strong"
+        })).toBeInTheDocument();
+        expect(screen.queryByLabelText("Reason for deleting Box packaging level"))
+            .not.toBeInTheDocument();
         expect(onSave).not.toHaveBeenCalled();
+        expect(product.variant[0].packagingHierarchy).toHaveLength(2);
+        expect(record.stockQuantities).toEqual([
+            { packagingLevelId: "box", quantity: 8 }
+        ]);
+        expect(batch.batchId).toBe("batch-1");
+
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Remove Box packaging level" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(onSave).toHaveBeenCalledOnce();
+        expect(onSave.mock.calls[0][4]).toEqual([{
+            type: "packaging",
+            variantId: "variant-1",
+            packagingLevelId: "box",
+            reason: "Remove Box packaging level"
+        }]);
     });
 
     it("blocks deletion of the packaging level currently used by the threshold", () => {
@@ -822,11 +867,8 @@ describe("ProductEditModal", () => {
         fireEvent.click(within(confirmation).getByRole("button", {
             name: "Confirm Delete"
         }));
-        fireEvent.change(screen.getByLabelText("Reason for deleting Box packaging level"), {
-            target: { value: "Remove Box after changing threshold" }
-        });
         fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
-            target: { value: "Remove unused Box level" }
+            target: { value: "Remove Box after changing threshold" }
         });
         fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
 

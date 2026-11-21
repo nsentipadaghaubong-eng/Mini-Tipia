@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
 import { getInventoryDisplay } from "../../../inventory/inventoryLookup";
+import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
 import type { productStructure, variant } from "../../../products/productStructure";
 import { getInventoryBatchById } from "../../../inventory/inventoryBatch";
 import { prepareSaleDraft } from "../../../sales/salesEngine";
@@ -16,6 +17,7 @@ import {
     getAvailableQuantity
 } from "../pages/salesProductSelection";
 import "./SalesItemModal.css";
+import "../../../expiry/expiryDisplay.css";
 
 interface SalesItemModalProps {
     product: productStructure;
@@ -123,6 +125,9 @@ export default function SalesItemModal({
     const selectedChoice = choices.find(
         (choice) => choice.inventoryRecord.id === inventoryRecordId
     );
+    const selectedExpiry = selectedChoice?.batch?.expiryDate
+        ? getExpiryDisplay(selectedChoice.batch.expiryDate)
+        : undefined;
     const selectedPackaging = variant.packagingHierarchy.find(
         (level) => level.id === packagingLevelId
     );
@@ -356,8 +361,8 @@ export default function SalesItemModal({
                                     const batchText = choice.batch
                                         ? `Batch ${display.batchNumber ?? choice.batch.batchId}`
                                         : "Unbatched stock";
-                                    const expiry = display.expiryDate
-                                        ? ` · expires ${display.expiryDate.toISOString().slice(0, 10)}`
+                                    const expiryDisplay = display.expiryDate
+                                        ? getExpiryDisplay(display.expiryDate)
                                         : "";
                                     const stockText = display.stockQuantities
                                         .filter((stock) => stock.quantity > 0)
@@ -370,11 +375,15 @@ export default function SalesItemModal({
                                         .join(", ");
                                     return (
                                         <option
+                                            className={expiryDisplay
+                                                ? `expiry-display--${expiryDisplay.colorCategory}`
+                                                : undefined}
                                             key={choice.inventoryRecord.id}
                                             value={choice.inventoryRecord.id}
                                         >
-                                            {batchText}{expiry}
-                                            {choice.expired ? " · EXPIRED" : ""}
+                                            {batchText}{expiryDisplay
+                                                ? ` · ${expiryDisplay.remainingLabel}`
+                                                : ""}
                                             {choice.recommended ? " · FEFO recommended" : ""}
                                             {" · "}{stockText || "No available stock"}
                                         </option>
@@ -386,7 +395,10 @@ export default function SalesItemModal({
                             <p role="status">No eligible inventory records are available.</p>
                         )}
                         {selectedChoice?.expired && (
-                            <p className="sales-expired-warning" role="alert">
+                            <p
+                                className="sales-expired-warning expiry-display expiry-display--expired"
+                                role="alert"
+                            >
                                 This batch is expired. It is not blocked by FEFO; approval requires confirmation.
                             </p>
                         )}
@@ -399,9 +411,11 @@ export default function SalesItemModal({
                                 {selectedChoice.recommended
                                     ? " · FEFO recommended"
                                     : ""}
-                                {selectedChoice.batch?.expiryDate
-                                    ? ` · Expires ${selectedChoice.batch.expiryDate.toISOString().slice(0, 10)}`
-                                    : ""}
+                                {selectedExpiry && (
+                                    <span className={`expiry-display expiry-display--${selectedExpiry.colorCategory}`}>
+                                        {selectedExpiry.remainingLabel}
+                                    </span>
+                                )}
                                 {" · "}
                                 Available {availableQuantity}{" "}
                                 {packagingQuantityLabel(

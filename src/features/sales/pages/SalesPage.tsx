@@ -2,6 +2,7 @@ import { useReducer, useRef, useState } from "react";
 import type { productStructure, variant } from "../../../products/productStructure";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
+import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
 import { getInventoryBatchById } from "../../../inventory/inventoryBatch";
 import { getInventoryDisplay } from "../../../inventory/inventoryLookup";
 import {
@@ -548,6 +549,9 @@ export default function SalesPage({
                                     inventoryBatches
                                 )
                                 : undefined;
+                            const expiryDisplay = display?.expiryDate
+                                ? getExpiryDisplay(display.expiryDate)
+                                : undefined;
 
                             return (
                                 <li key={item.lineId}>
@@ -564,9 +568,11 @@ export default function SalesPage({
                                             {batch
                                                 ? `Batch ${display?.batchNumber ?? batch.batchNumber ?? batch.batchId}`
                                                 : "Unbatched"}
-                                            {display?.expiryDate
-                                                ? ` · expires ${display.expiryDate.toISOString().slice(0, 10)}`
-                                                : ""}
+                                            {expiryDisplay && (
+                                                <span className={`expiry-display expiry-display--${expiryDisplay.colorCategory}`}>
+                                                    {expiryDisplay.remainingLabel}
+                                                </span>
+                                            )}
                                             {" · "}
                                             Discount {item.discountAmount.toFixed(2)}
                                             {" · "}
@@ -607,7 +613,10 @@ export default function SalesPage({
                         </div>
                     )}
                     {confirmExpiredBatch && (
-                        <div className="sales-expired-confirmation" role="alert">
+                        <div
+                            className="sales-expired-confirmation expiry-display expiry-display--expired"
+                            role="alert"
+                        >
                             <p>
                                 This sale includes an expired batch. Confirm explicitly to continue.
                             </p>

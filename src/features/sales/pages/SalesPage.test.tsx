@@ -10,7 +10,7 @@ import {
     within
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     applicationReducer,
     createInitialApplicationState
@@ -294,32 +294,62 @@ describe("Sales search-first product selection", () => {
     });
 
     it("selects a product, displays variants, and opens and closes the item modal", () => {
-        renderSales();
-        fireEvent.change(screen.getByRole("searchbox", { name: "Search products" }), {
-            target: { value: "pana" }
-        });
-        fireEvent.click(screen.getByRole("button", { name: "Panadol" }));
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-20T12:00:00.000Z"));
 
-        expect(screen.getByRole("searchbox", { name: "Search products" }))
-            .toHaveValue("");
-        expect(screen.queryByRole("list", { name: "Matching products" }))
-            .not.toBeInTheDocument();
-        expect(screen.getByRole("region", { name: "Selected product" }))
-            .toHaveTextContent("Panadol");
-        expect(screen.getByRole("button", { name: "500 mg tablet" })).toBeVisible();
-        expect(screen.queryByLabelText("Select inventory record"))
-            .not.toBeInTheDocument();
+        try {
+            renderSales();
+            fireEvent.change(screen.getByRole("searchbox", { name: "Search products" }), {
+                target: { value: "pana" }
+            });
+            fireEvent.click(screen.getByRole("button", { name: "Panadol" }));
 
-        fireEvent.click(screen.getByRole("button", { name: "500 mg tablet" }));
-        expect(screen.getByRole("dialog", { name: "Add medicine to sale" }))
-            .toBeVisible();
-        expect(screen.getByText(/FEFO recommended/)).toBeVisible();
-        expect(screen.getByRole("option", {
-            name: /Batch B-100.*expires 2027-06-30.*FEFO recommended/
-        })).toBeInTheDocument();
+            expect(screen.getByRole("searchbox", { name: "Search products" }))
+                .toHaveValue("");
+            expect(screen.queryByRole("list", { name: "Matching products" }))
+                .not.toBeInTheDocument();
+            expect(screen.getByRole("region", { name: "Selected product" }))
+                .toHaveTextContent("Panadol");
+            expect(screen.getByRole("button", { name: "500 mg tablet" })).toBeVisible();
+            expect(screen.queryByLabelText("Select inventory record"))
+                .not.toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: "Close sales item" }));
-        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole("button", { name: "500 mg tablet" }));
+            expect(screen.getByRole("dialog", { name: "Add medicine to sale" }))
+                .toBeVisible();
+            expect(screen.getByText(/FEFO recommended/)).toBeVisible();
+            const batchOption = screen.getByRole("option", {
+                name: /Batch B-100.*\d+ days remaining.*FEFO recommended/
+            });
+            expect(batchOption).toBeInTheDocument();
+            expect(batchOption).toHaveClass("expiry-display--healthy");
+            expect(batchOption).not.toHaveTextContent("2027-06-30");
+
+            fireEvent.click(screen.getByRole("button", { name: "Close sales item" }));
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("shows remaining days without the actual expiry date in a sale draft", () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-20T12:00:00.000Z"));
+
+        try {
+            renderSales();
+            addItem(1);
+
+            const draft = screen.getByRole("region", {
+                name: "Current sale draft"
+            });
+            expect(draft).toHaveTextContent("222 days remaining");
+            expect(draft).not.toHaveTextContent("2027-06-30");
+            expect(screen.getByText("222 days remaining").closest(".expiry-display"))
+                .toHaveClass("expiry-display--healthy");
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it("renders sale information and preserves it when adding and editing items", () => {
@@ -1043,11 +1073,20 @@ describe("Sales item calculations and draft workflow", () => {
         const page = renderSales(initial);
         enterReceivedBy();
         addItem(1);
+        const draft = screen.getByRole("region", {
+            name: "Current sale draft"
+        });
+        expect(draft).toHaveTextContent(/Expired \d+ days ago/);
+        expect(screen.getByText(/Expired \d+ days ago/).closest(".expiry-display"))
+            .toHaveClass("expiry-display--expired");
+        expect(draft).not.toHaveTextContent("2020-01-01");
 
         fireEvent.click(screen.getByRole("button", { name: "Approve Sale" }));
 
-        expect(screen.getByText(/includes an expired batch/))
-            .toBeInTheDocument();
+        const expiredConfirmation = screen.getByText(/includes an expired batch/)
+            .closest(".sales-expired-confirmation");
+        expect(expiredConfirmation).toBeInTheDocument();
+        expect(expiredConfirmation).toHaveClass("expiry-display--expired");
         expect(screen.getByRole("button", {
             name: "Confirm Sale with Expired Stock"
         })).toBeVisible();

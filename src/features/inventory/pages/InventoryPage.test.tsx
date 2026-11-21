@@ -445,6 +445,53 @@ describe("InventoryPage navigation", () => {
         expect(screen.getByRole("button", { name: "Add batch" })).toBeInTheDocument();
     });
 
+    it("shows each batch expiry date and its remaining or elapsed days", () => {
+        const healthyBatch: inventoryBatch = {
+            ...editableBatch,
+            expiryDate: new Date("2027-03-31T00:00:00.000Z")
+        };
+        const expiredBatch: inventoryBatch = {
+            ...editableBatch,
+            batchId: "batch-expired",
+            batchNumber: "LOT-EXPIRED",
+            expiryDate: new Date("2026-11-15T00:00:00.000Z")
+        };
+        const expiredRecord = {
+            ...editableRecord,
+            id: "inventory-expired",
+            batchId: expiredBatch.batchId
+        };
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-20T12:00:00.000Z"));
+
+        try {
+            render(createElement(InventoryPage, {
+                products: [editableProduct],
+                inventoryRecords: [editableRecord, expiredRecord],
+                inventoryBatches: [healthyBatch, expiredBatch],
+                onInventoryCommit: () => undefined,
+                navigationRequest: null,
+                onNavigate: () => undefined,
+                onNavigationConsumed: () => undefined,
+                onNavigationDismissed: () => undefined
+            }));
+
+            fireEvent.click(screen.getByRole("button", { name: "View" }));
+            fireEvent.click(screen.getByRole("button", { name: /Tablets/ }));
+
+            expect(screen.getByText(/Expires: 31 Mar 2027/)).toBeInTheDocument();
+            expect(screen.getByText("131 days remaining")).toBeInTheDocument();
+            expect(screen.getByText("131 days remaining").parentElement)
+                .toHaveClass("expiry-display--healthy");
+            expect(screen.getByText(/Expires: 15 Nov 2026/)).toBeInTheDocument();
+            expect(screen.getByText("Expired 5 days ago")).toBeInTheDocument();
+            expect(screen.getByText("Expired 5 days ago").parentElement)
+                .toHaveClass("expiry-display--expired");
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("confirms batch deletion, supports cancellation, and removes stock on save", () => {
         const onInventoryCommit = renderInventoryDetails();
 
@@ -463,11 +510,14 @@ describe("InventoryPage navigation", () => {
         });
         fireEvent.click(within(confirmation).getByRole("button", { name: "Confirm Delete" }));
         expect(onInventoryCommit).not.toHaveBeenCalled();
+        expect(screen.queryByRole("button", { name: "Delete Batch" }))
+            .not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Reason for deleting Tablets / LOT-1"))
+            .not.toBeInTheDocument();
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
         expect(saveButton).toBeDisabled();
-        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets / LOT-1"), {
-            target: { value: "Remove recalled batch" }
-        });
+        fireEvent.click(saveButton);
+        expect(onInventoryCommit).not.toHaveBeenCalled();
         fireEvent.change(screen.getByLabelText("Why are you making these changes?"), {
             target: { value: "Remove recalled batch" }
         });
@@ -550,7 +600,7 @@ describe("InventoryPage navigation", () => {
         expect(onInventoryCommit).not.toHaveBeenCalled();
     });
 
-    it("requires a separate reason for every staged batch deletion", () => {
+    it("uses one reason for all staged batch deletions and commits only on save", () => {
         const secondBatch = {
             ...editableBatch,
             batchId: "batch-editable-2",
@@ -571,6 +621,8 @@ describe("InventoryPage navigation", () => {
         fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", {
             name: "Confirm Delete"
         }));
+        expect(screen.getAllByRole("button", { name: "Delete Batch" }))
+            .toHaveLength(1);
         fireEvent.click(screen.getByRole("button", { name: "Delete Batch" }));
         fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", {
             name: "Confirm Delete"
@@ -578,13 +630,11 @@ describe("InventoryPage navigation", () => {
 
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
         expect(saveButton).toBeDisabled();
-        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets / LOT-1"), {
-            target: { value: "Remove first lot" }
-        });
-        expect(saveButton).toBeDisabled();
-        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets / LOT-2"), {
-            target: { value: "Remove second lot" }
-        });
+        expect(screen.queryByRole("button", { name: "Delete Batch" }))
+            .not.toBeInTheDocument();
+        expect(onInventoryCommit).not.toHaveBeenCalled();
+        expect(editableRecord.stockQuantities[0]?.quantity).toBe(4);
+        expect(secondRecord.stockQuantities[0]?.quantity).toBe(6);
         fireEvent.change(screen.getByLabelText("Why are you making these changes?"), {
             target: { value: "Remove recalled stock" }
         });
@@ -595,7 +645,7 @@ describe("InventoryPage navigation", () => {
         expect(onInventoryCommit.mock.calls[0][0].activityEvents
             .filter((event) => event.type === "inventory.batch_removed")
             .map((event) => event.reason)
-        ).toEqual(["Remove first lot", "Remove second lot"]);
+        ).toEqual(["Remove recalled stock", "Remove recalled stock"]);
     });
 
     it("discards a staged batch deletion when the inventory edit session is cancelled", () => {
@@ -604,14 +654,17 @@ describe("InventoryPage navigation", () => {
         fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", {
             name: "Confirm Delete"
         }));
-        fireEvent.change(screen.getByLabelText("Reason for deleting Tablets / LOT-1"), {
-            target: { value: "Remove recalled lot" }
-        });
+        expect(screen.queryByRole("button", { name: "Delete Batch" }))
+            .not.toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
         expect(onInventoryCommit).not.toHaveBeenCalled();
         expect(screen.queryByRole("dialog", { name: "Edit Inventory" }))
             .not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Edit Stock" }));
+        expect(screen.getByRole("button", { name: "Delete Batch" }))
+            .toBeInTheDocument();
+        expect(editableRecord.stockQuantities[0]?.quantity).toBe(4);
     });
 });
 
@@ -650,6 +703,13 @@ describe("InventoryPage low-stock status", () => {
             name: "Low-stock medicine"
         })).toBeInTheDocument();
         expect(screen.getByText("Low stock", { selector: "strong" }))
+            .toBeInTheDocument();
+    });
+
+    it("shows positive stock above the threshold as In stock", () => {
+        renderLowStockStatusPage(11);
+
+        expect(screen.getByText("In stock", { selector: "strong" }))
             .toBeInTheDocument();
     });
 });

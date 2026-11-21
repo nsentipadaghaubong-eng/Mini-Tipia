@@ -231,6 +231,27 @@ describe("variant low-stock thresholds", () => {
             });
     });
 
+    it("converts a highest-level threshold to terminal units before comparison", () => {
+        const selectedVariant = testVariant({
+            lowStockThreshold: {
+                quantity: 2,
+                packagingLevelId: "case"
+            }
+        });
+        const aggregate = aggregateVariantStock([
+            displayRecord(selectedVariant, "tablet-stock", [
+                { packagingLevelId: "tablet", quantity: 65 }
+            ], null)
+        ]);
+
+        expect(getVariantLowStockStatus(selectedVariant, aggregate)).toMatchObject({
+            thresholdConfigured: true,
+            thresholdPackagingLevelId: "case",
+            hasStock: true,
+            isLowStock: true
+        });
+    });
+
     it("does not classify unconfigured variants as low stock", () => {
         const selectedVariant = testVariant({ lowStockThreshold: undefined });
         const aggregate = aggregateVariantStock([

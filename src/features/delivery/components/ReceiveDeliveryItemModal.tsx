@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { DeliveryDraftItem } from "../../../deliveries/deliveryDraft";
 import type { productStructure, variant } from "../../../products/productStructure";
 import { validatePackagingHierarchy } from "../../../packaging/packagingValidation";
+import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
+import "../../../expiry/expiryDisplay.css";
 
 function priceInput(value: number | null | undefined): string {
     return value === null || value === undefined ? "" : String(value);
@@ -49,6 +51,9 @@ export default function ReceiveDeliveryItemModal({
         priceInput(item?.sellingPrice)
     );
     const [errorMessage, setErrorMessage] = useState("");
+    const expiryDisplay = expiryDate === ""
+        ? undefined
+        : getExpiryDisplay(expiryDate);
 
     function handlePackagingLevelChange(value: string) {
         setPackagingLevelId(value);
@@ -188,6 +193,17 @@ export default function ReceiveDeliveryItemModal({
                                     type="date"
                                     value={expiryDate}
                                 />
+                                {expiryDisplay && (
+                                    <span
+                                        aria-live="polite"
+                                        className={`expiry-display expiry-display--${expiryDisplay.colorCategory}`}
+                                    >
+                                        <span>
+                                            Expiry date: {expiryDisplay.dateLabel}
+                                        </span>
+                                        <span>{expiryDisplay.remainingLabel}</span>
+                                    </span>
+                                )}
                             </label>
                             <label className="delivery-item-field">
                                 <span>Cost price</span>

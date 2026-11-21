@@ -31,6 +31,7 @@ import type { productStructure } from "../../../products/productStructure";
 import type { SaleDraft } from "../../../sales/salesDraft";
 import type { DeliveryDraft } from "../../../deliveries/deliveryDraft";
 import { getProductDraftLockMessages } from "../../../products/productDraftLock";
+import { getExpiryDisplay } from "../../../expiry/expiryDisplay";
 import {
     createProductEditIntent,
     resolveInventoryManageTarget,
@@ -38,6 +39,7 @@ import {
     type NavigationRequest
 } from "../../../navigation/navigationIntent";
 import "./InventoryPage.css";
+import "../../../expiry/expiryDisplay.css";
 
 interface InventoryPageProps {
     inventoryRecords: inventory[];
@@ -1168,8 +1170,11 @@ export default function InventoryPage({
 
                                     <div className="batch-card-list">
 
-                                        {selectedVariant.records.map(
-                                            (record) => (
+                                        {selectedVariant.records.map((record) => {
+                                            const expiryDisplay = record.expiryDate
+                                                ? getExpiryDisplay(record.expiryDate)
+                                                : undefined;
+                                            return (
 
                                                 <article
                                                     className="batch-card"
@@ -1184,10 +1189,14 @@ export default function InventoryPage({
                                                                 : record.batchNumber ?? "No batch number"}
                                                         </strong>
 
-                                                        {record.expiryDate && (
-                                                            <span>
-                                                                Expires:{" "}
-                                                                {record.expiryDate.toLocaleDateString()}
+                                                        {expiryDisplay && (
+                                                            <span className={`expiry-display expiry-display--${expiryDisplay.colorCategory}`}>
+                                                                <span>
+                                                                    Expires: {expiryDisplay.dateLabel}
+                                                                </span>
+                                                                <span>
+                                                                    {expiryDisplay.remainingLabel}
+                                                                </span>
                                                             </span>
                                                         )}
 
@@ -1204,26 +1213,36 @@ export default function InventoryPage({
 
                                                 </article>
 
-                                            )
-                                        )}
+                                            );
+                                        })}
 
                                         {selectedVariantBatches
                                             .filter((batch) => !selectedVariant.records.some(
                                                 (record) => record.batchId === batch.batchId
                                             ))
-                                            .map((batch) => (
-                                                <article className="batch-card" key={batch.batchId}>
-                                                    <div className="batch-card-heading">
-                                                        <strong>{batch.batchNumber ?? "Batch number not set"}</strong>
-                                                        {batch.expiryDate && (
-                                                            <span>
-                                                                Expires: {batch.expiryDate.toLocaleDateString()}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <p>No inventory record is associated with this batch.</p>
-                                                </article>
-                                            ))}
+                                            .map((batch) => {
+                                                const expiryDisplay = batch.expiryDate
+                                                    ? getExpiryDisplay(batch.expiryDate)
+                                                    : undefined;
+                                                return (
+                                                    <article className="batch-card" key={batch.batchId}>
+                                                        <div className="batch-card-heading">
+                                                            <strong>{batch.batchNumber ?? "Batch number not set"}</strong>
+                                                            {expiryDisplay && (
+                                                                <span className={`expiry-display expiry-display--${expiryDisplay.colorCategory}`}>
+                                                                    <span>
+                                                                        Expires: {expiryDisplay.dateLabel}
+                                                                    </span>
+                                                                    <span>
+                                                                        {expiryDisplay.remainingLabel}
+                                                                    </span>
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <p>No inventory record is associated with this batch.</p>
+                                                    </article>
+                                                );
+                                            })}
 
                                     </div>
 

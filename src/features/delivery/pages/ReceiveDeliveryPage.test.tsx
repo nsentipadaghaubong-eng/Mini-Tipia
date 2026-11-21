@@ -606,6 +606,73 @@ describe("Receive Delivery page", () => {
         expect(onSave).not.toHaveBeenCalled();
     });
 
+    it("updates the expiry display when the date changes and removes it when cleared", () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-20T12:00:00.000Z"));
+
+        try {
+            render(
+                <ReceiveDeliveryItemModal
+                    onClose={() => undefined}
+                    onSave={() => undefined}
+                    product={products[0]}
+                    productVariant={products[0].variant[0]}
+                />
+            );
+            const dialog = screen.getByRole("dialog", { name: "Receive Item" });
+            const expiryInput = within(dialog).getByLabelText("Expiry date");
+
+            fireEvent.change(expiryInput, {
+                target: { value: "2026-11-21" }
+            });
+            expect(within(dialog).getByText("Expiry date: 21 Nov 2026"))
+                .toBeInTheDocument();
+            expect(within(dialog).getByText("1 day remaining"))
+                .toBeInTheDocument();
+            expect(within(dialog).getByText("1 day remaining").parentElement)
+                .toHaveClass("expiry-display--near-expiry");
+
+            fireEvent.change(expiryInput, {
+                target: { value: "2026-11-20" }
+            });
+            expect(within(dialog).getByText("Expires today"))
+                .toBeInTheDocument();
+            expect(within(dialog).getByText("Expires today").parentElement)
+                .toHaveClass("expiry-display--expired");
+
+            fireEvent.change(expiryInput, {
+                target: { value: "2026-11-22" }
+            });
+            expect(within(dialog).getByText("Expiry date: 22 Nov 2026"))
+                .toBeInTheDocument();
+            expect(within(dialog).getByText("2 days remaining"))
+                .toBeInTheDocument();
+
+            fireEvent.change(expiryInput, { target: { value: "" } });
+            expect(within(dialog).queryByText("Expiry date: 22 Nov 2026"))
+                .not.toBeInTheDocument();
+            expect(within(dialog).queryByText("2 days remaining"))
+                .not.toBeInTheDocument();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("colors expiry information in the delivery draft summary", () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-11-20T12:00:00.000Z"));
+
+        try {
+            renderPage(makeState([draftWithItem("delivery-expiry", "Supplier")]));
+            const expiryDisplay = screen.getByText(/Expiry 31 Dec 2027/);
+
+            expect(expiryDisplay).toHaveTextContent(/\d+ days remaining/);
+            expect(expiryDisplay).toHaveClass("expiry-display--healthy");
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("stores blank batch and expiry values as optional when adding an item", () => {
         const page = renderPage();
         fillRequiredHeader();
