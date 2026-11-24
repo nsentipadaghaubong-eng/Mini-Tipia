@@ -8,6 +8,7 @@ import {
     buildVariantRemovalActivityInput,
     buildProductDeletionActivityInput,
     buildProductCreationActivityInputs,
+    buildDeliveryDraftCancellationActivityInput,
     buildProductUpdateActivityInputs,
     snapshotBatch,
     snapshotPackagingLevel,
@@ -23,6 +24,8 @@ import {
 import type { inventory } from "./inventory/inventoryStock";
 import { adjustInventoryStock } from "./inventory/inventoryAdjustment";
 import {
+    assertNoDuplicateLogicalBatchIdentities,
+    findLogicalBatchMatches,
     validateBatchPricingCollection,
     type inventoryBatch
 } from "./inventory/inventoryBatch";
@@ -214,6 +217,11 @@ export type ApplicationAction =
         draft: DeliveryDraft;
     }
     | {
+        type: "delivery.draft_cancelled";
+        deliveryId: string;
+        event: ActivityEvent;
+    }
+    | {
         type: "delivery.draft_details_updated";
         deliveryId: string;
         changes: DeliveryDraftDetailsChanges;
@@ -401,6 +409,198 @@ function assertActivityInputMatches(
     }
 }
 
+function getInventorySaveOperationId(
+    event: ActivityEvent
+): string | undefined {
+    let entitySuffix: string;
+    switch (event.type) {
+        case "inventory.batch_created":
+            if (event.source !== "inventory_edit") {
+                return undefined;
+            }
+            entitySuffix = event.batch.batchId;
+            break;
+        case "inventory.batch_updated":
+            entitySuffix = event.after.batchId;
+            break;
+        case "inventory.batch_removed":
+            entitySuffix = event.removedBatch.batchId;
+            break;
+        case "inventory.stock_adjusted":
+            entitySuffix =
+                `${event.inventoryId}:${event.packagingLevel.packagingLevelId}`;
+            break;
+        default:
+            return undefined;
+    }
+
+    const operationKeyPrefix = `${event.type}:`;
+    const operationKeySuffix = `:${entitySuffix}`;
+    if (
+        !event.operationKey.startsWith(operationKeyPrefix) ||
+        !event.operationKey.endsWith(operationKeySuffix)
+    ) {
+        return undefined;
+    }
+
+    const operationId = event.operationKey.slice(
+        operationKeyPrefix.length,
+        event.operationKey.length - operationKeySuffix.length
+    );
+    return operationId.trim().length > 0 ? operationId : undefined;
+}
+
+function validateNewInventorySaveOperationId(
+    state: ApplicationState,
+    events: readonly ActivityEvent[]
+): void {
+    let operationId: string | undefined;
+    for (const event of events) {
+        const eventOperationId = getInventorySaveOperationId(event);
+        if (eventOperationId === undefined) {
+            throw new Error(
+                "Inventory save Activity contains an invalid operation ID."
+            );
+        }
+        if (
+            operationId !== undefined &&
+            operationId !== eventOperationId
+        ) {
+            throw new Error(
+                "Inventory save Activity must share one operation ID."
+            );
+        }
+        operationId = eventOperationId;
+    }
+
+    if (
+        operationId !== undefined &&
+        state.activityEvents.some(
+            (event) => getInventorySaveOperationId(event) === operationId
+        )
+    ) {
+        throw new Error(
+            "Inventory save operation ID has already been used."
+        );
+    }
+}
+
+function validateInventorySaveReplay(
+    state: ApplicationState,
+    action: Extract<ApplicationAction, { type: "inventory.saved" }>
+): void {
+    if (action.events.length === 0) {
+        throw new Error(
+            "Inventory replay does not match the committed operation."
+        );
+    }
+
+    let operationId: string | undefined;
+    const replayOperationKeys = new Set<string>();
+    for (const submittedEvent of action.events) {
+        const submittedOperationId =
+            getInventorySaveOperationId(submittedEvent);
+        if (
+            submittedOperationId === undefined ||
+            (operationId !== undefined &&
+                operationId !== submittedOperationId)
+        ) {
+            throw new Error(
+                "Inventory replay contains invalid or mixed operation evidence."
+            );
+        }
+        operationId = submittedOperationId;
+
+        if (replayOperationKeys.has(submittedEvent.operationKey)) {
+            throw new Error(
+                "Inventory replay contains duplicate operation evidence."
+            );
+        }
+        replayOperationKeys.add(submittedEvent.operationKey);
+    }
+
+    if (operationId === undefined) {
+        throw new Error(
+            "Inventory replay does not match the committed operation."
+        );
+    }
+
+    const originalEvents = state.activityEvents.filter(
+        (existing) => getInventorySaveOperationId(existing) === operationId
+    );
+    const originalEventsByOperationKey = new Map<string, ActivityEvent>();
+    for (const originalEvent of originalEvents) {
+        if (originalEventsByOperationKey.has(originalEvent.operationKey)) {
+            throw new Error(
+                "Inventory replay does not match the committed operation."
+            );
+        }
+        originalEventsByOperationKey.set(
+            originalEvent.operationKey,
+            originalEvent
+        );
+    }
+    if (
+        originalEvents.length === 0 ||
+        originalEventsByOperationKey.size !== action.events.length
+    ) {
+        throw new Error(
+            "Inventory replay does not match the complete committed operation."
+        );
+    }
+
+    for (const submittedEvent of action.events) {
+        const originalEvent = originalEventsByOperationKey.get(
+            submittedEvent.operationKey
+        );
+        if (!originalEvent || originalEvent.type !== submittedEvent.type) {
+            throw new Error(
+                "Inventory replay does not match the committed operation."
+            );
+        }
+
+        if (!activityValuesEqual(
+            activityInputFromEvent(submittedEvent),
+            activityInputFromEvent(originalEvent)
+        )) {
+            throw new Error(
+                "Inventory replay Activity does not match the committed operation."
+            );
+        }
+    }
+
+    if (
+        replayOperationKeys.size !== action.events.length ||
+        !activityValuesEqual(
+            action.inventoryRecords,
+            state.inventoryRecords
+        ) ||
+        !activityValuesEqual(
+            action.inventoryBatches,
+            state.inventoryBatches
+        )
+    ) {
+        throw new Error(
+            "Inventory replay payload does not match the committed operation."
+        );
+    }
+}
+
+function inventoryStockQuantitiesEqual(
+    left: inventory["stockQuantities"],
+    right: inventory["stockQuantities"]
+): boolean {
+    return left.length === right.length &&
+        left.every((stock) => {
+            const matches = right.filter(
+                (candidate) =>
+                    candidate.packagingLevelId === stock.packagingLevelId
+            );
+            return matches.length === 1 &&
+                matches[0].quantity === stock.quantity;
+        });
+}
+
 function isCanonicalActivityTimestamp(value: unknown): value is string {
     if (typeof value !== "string") {
         return false;
@@ -414,6 +614,8 @@ function validateInventorySave(
     state: ApplicationState,
     action: Extract<ApplicationAction, { type: "inventory.saved" }>
 ): void {
+    validateNewInventorySaveOperationId(state, action.events);
+
     const existingEventIds = new Set(
         state.activityEvents.map((event) => event.eventId)
     );
@@ -559,6 +761,15 @@ function validateInventorySave(
                 ? null
                 : new Date(event.after.expiryDate)
         };
+        const identityCollision = findLogicalBatchMatches(
+            expectedBatches,
+            updatedBatch
+        ).find((candidate) => candidate.batchId !== currentBatch.batchId);
+        if (identityCollision) {
+            throw new Error(
+                "Batch metadata update collides with another logical batch identity."
+            );
+        }
         const operationId = getRemovalOperationId(
             event.operationKey,
             "inventory.batch_updated:",
@@ -614,21 +825,43 @@ function validateInventorySave(
         ...state.inventoryRecords.map((record) => record.id),
         ...state.inventoryBatches.map((batch) => batch.batchId)
     ]);
+    const convertedInventoryIds = new Set<string>();
 
     for (const event of action.events) {
         if (event.type !== "inventory.batch_created") {
             continue;
         }
+        const inventorySnapshot = event.inventory;
+        if (event.source !== "inventory_edit" || !inventorySnapshot) {
+            throw new Error("A new Inventory batch requires unique batch and stock snapshots.");
+        }
+
+        const sourceRecords = state.inventoryRecords.filter(
+            (record) => record.id === inventorySnapshot.inventoryId
+        );
+        const sourceRecord = sourceRecords.length === 1
+            ? sourceRecords[0]
+            : undefined;
+        const isUnbatchedConversion = sourceRecord !== undefined &&
+            sourceRecord.productId === event.batch.productId &&
+            sourceRecord.variantId === event.batch.variantId &&
+            sourceRecord.batchId === null;
+        const hasUnbatchedRecord = state.inventoryRecords.some(
+            (record) =>
+                record.productId === event.batch.productId &&
+                record.variantId === event.batch.variantId &&
+                record.batchId === null
+        );
         if (
-            event.source !== "inventory_edit" ||
-            !event.inventory ||
             batchIds.has(event.batch.batchId) ||
             !event.batch.batchId.trim() ||
-            recordIds.has(event.inventory.inventoryId) ||
-            !event.inventory.inventoryId.trim() ||
+            (recordIds.has(inventorySnapshot.inventoryId) &&
+                !isUnbatchedConversion) ||
+            !inventorySnapshot.inventoryId.trim() ||
             reservedIds.has(event.batch.batchId) ||
-            reservedIds.has(event.inventory.inventoryId) ||
-            event.batch.batchId === event.inventory.inventoryId
+            (reservedIds.has(inventorySnapshot.inventoryId) &&
+                !isUnbatchedConversion) ||
+            event.batch.batchId === inventorySnapshot.inventoryId
         ) {
             throw new Error("A new Inventory batch requires unique batch and stock snapshots.");
         }
@@ -643,9 +876,9 @@ function validateInventorySave(
             !productVariant ||
             event.batch.productName !== product.name ||
             event.batch.variantName !== productVariant.variantName ||
-            event.inventory.productId !== event.batch.productId ||
-            event.inventory.variantId !== event.batch.variantId ||
-            event.inventory.batch?.batchId !== event.batch.batchId ||
+            inventorySnapshot.productId !== event.batch.productId ||
+            inventorySnapshot.variantId !== event.batch.variantId ||
+            inventorySnapshot.batch?.batchId !== event.batch.batchId ||
             expectedRecords.some((record) =>
                 record.productId === event.batch.productId &&
                 record.variantId === event.batch.variantId &&
@@ -660,7 +893,38 @@ function validateInventorySave(
             event.batch.batchId
         );
         const batch = inventoryBatchFromSnapshot(event.batch);
-        const record = inventoryRecordFromSnapshot(event.inventory);
+        const identityCollision = findLogicalBatchMatches(
+            [...expectedBatches, ...action.inventoryBatches],
+            batch
+        ).find((candidate) => candidate.batchId !== batch.batchId);
+        if (identityCollision) {
+            throw new Error(
+                "A new inventory batch collides with an existing logical batch identity."
+            );
+        }
+        const record = inventoryRecordFromSnapshot(inventorySnapshot);
+        if (isUnbatchedConversion) {
+            if (!sourceRecord) {
+                throw new Error(
+                    "Unbatched inventory record is no longer available for conversion."
+                );
+            }
+            if (
+                convertedInventoryIds.has(record.id) ||
+                !inventoryStockQuantitiesEqual(
+                    sourceRecord.stockQuantities,
+                    record.stockQuantities
+                )
+            ) {
+                throw new Error(
+                    "Unbatched stock conversion must preserve the existing quantities."
+                );
+            }
+        } else if (hasUnbatchedRecord) {
+            throw new Error(
+                "Unbatched inventory must be converted before adding another batch."
+            );
+        }
         validateInventoryRelationships(product, record, [
             ...expectedBatches,
             batch
@@ -675,7 +939,27 @@ function validateInventorySave(
         reservedIds.add(batch.batchId);
         reservedIds.add(record.id);
         expectedBatches.push(batch);
-        expectedRecords.push(record);
+        if (isUnbatchedConversion) {
+            if (!sourceRecord) {
+                throw new Error(
+                    "Unbatched inventory record is no longer available for conversion."
+                );
+            }
+            const sourceIndex = expectedRecords.findIndex(
+                (candidate) =>
+                    candidate.id === sourceRecord.id &&
+                    candidate.batchId === null
+            );
+            if (sourceIndex === -1) {
+                throw new Error(
+                    "Unbatched inventory record is no longer available for conversion."
+                );
+            }
+            expectedRecords[sourceIndex] = record;
+            convertedInventoryIds.add(record.id);
+        } else {
+            expectedRecords.push(record);
+        }
     }
 
     const changedStock = new Set<string>();
@@ -746,6 +1030,7 @@ function validateInventorySave(
     ) {
         throw new Error("Inventory save would remove or alter unrelated records.");
     }
+    assertNoDuplicateLogicalBatchIdentities(expectedBatches);
 }
 
 function getProductStructureIds(product: productStructure): string[] {
@@ -785,6 +1070,10 @@ function validateProductStructure(product: productStructure): void {
         new Set(ids).size !== ids.length
     ) {
         throw new Error("Product contains invalid or duplicate identifiers.");
+    }
+
+    if (product.variant.length === 0) {
+        throw new Error("Product must contain at least one variant.");
     }
 
     for (const productVariant of product.variant) {
@@ -1566,8 +1855,10 @@ export function applicationReducer(
                 event?.type !== "product.variant_added" ||
                 event.operationKey !== operationKey ||
                 event.productId !== action.productId ||
-                JSON.stringify(event.variant) !==
-                    JSON.stringify(snapshotVariant(action.variant))
+                !activityValuesEqual(
+                    event.variant,
+                    snapshotVariant(action.variant)
+                )
             ) {
                 throw new Error(
                     "A variant creation requires matching variant Activity."
@@ -1587,6 +1878,29 @@ export function applicationReducer(
                 (existing) => existing.operationKey === operationKey
             );
             if (alreadyRecorded && variantAlreadyExists) {
+                const originalEvents = state.activityEvents.filter(
+                    (existing) => existing.operationKey === operationKey
+                );
+                const originalVariant = product.variant.find(
+                    (candidate) => candidate.id === action.variant.id
+                );
+                if (
+                    originalEvents.length !== 1 ||
+                    originalEvents[0].type !== "product.variant_added" ||
+                    originalVariant === undefined ||
+                    !activityValuesEqual(
+                        snapshotVariant(originalVariant),
+                        snapshotVariant(action.variant)
+                    ) ||
+                    !activityValuesEqual(
+                        activityInputFromEvent(originalEvents[0]),
+                        activityInputFromEvent(event)
+                    )
+                ) {
+                    throw new Error(
+                        "Variant replay does not match the previously committed variant."
+                    );
+                }
                 return state;
             }
             const draftLockMessages = getProductDraftLockMessages(
@@ -2490,6 +2804,7 @@ export function applicationReducer(
                     )
                 )
             ) {
+                validateInventorySaveReplay(state, action);
                 return state;
             }
             validateInventoryDraftLocks(
@@ -3177,6 +3492,56 @@ export function applicationReducer(
                 deliveryDrafts: [...state.deliveryDrafts, draft]
             };
         }
+        case "delivery.draft_cancelled": {
+            const matchingDrafts = state.deliveryDrafts.filter(
+                (draft) => draft.deliveryId === action.deliveryId
+            );
+            if (matchingDrafts.length !== 1) {
+                throw new Error(`Delivery draft not found: ${action.deliveryId}`);
+            }
+            const draft = validateDeliveryDraft(matchingDrafts[0]);
+            if (draft.status !== "draft") {
+                throw new Error(`Cannot cancel a ${draft.status} delivery.`);
+            }
+
+            const { event } = action;
+            const operationKey = `delivery.draft_cancelled:${draft.deliveryId}`;
+            if (
+                event.type !== "delivery.draft_cancelled" ||
+                event.deliveryId !== draft.deliveryId ||
+                event.operationKey !== operationKey ||
+                !event.eventId.trim() ||
+                !isCanonicalActivityTimestamp(event.occurredAt) ||
+                state.activityEvents.some(
+                    (existing) =>
+                        existing.eventId === event.eventId ||
+                        existing.operationKey === operationKey
+                )
+            ) {
+                throw new Error("Delivery cancellation contains invalid Activity metadata.");
+            }
+
+            assertActivityInputMatches(
+                event,
+                buildDeliveryDraftCancellationActivityInput(draft, state.products),
+                "Delivery cancellation Activity does not match the active draft."
+            );
+            const activityEvents = appendActivityEvents(
+                state.activityEvents,
+                [event]
+            );
+            if (activityEvents.length !== state.activityEvents.length + 1) {
+                throw new Error("Delivery cancellation Activity could not be recorded.");
+            }
+
+            return {
+                ...state,
+                deliveryDrafts: state.deliveryDrafts.filter(
+                    (candidate) => candidate.deliveryId !== draft.deliveryId
+                ),
+                activityEvents
+            };
+        }
         case "delivery.draft_details_updated": {
             const draftIndex = state.deliveryDrafts.findIndex(
                 (draft) => draft.deliveryId === action.deliveryId
@@ -3252,6 +3617,29 @@ export function applicationReducer(
                     candidate.operationKey === `delivery.received:${plan.draft.deliveryId}`
             );
             if (currentDraft.status === "received" && existingEvent) {
+                if (
+                    existingEvent.type !== "delivery.received" ||
+                    event.type !== "delivery.received" ||
+                    !activityValuesEqual(event, existingEvent) ||
+                    plan.draft.deliveryId !== existingEvent.deliveryId ||
+                    !activityValuesEqual(plan.draft, currentDraft) ||
+                    !activityValuesEqual(
+                        plan.inventoryBatches,
+                        state.inventoryBatches
+                    ) ||
+                    !activityValuesEqual(
+                        plan.inventoryRecords,
+                        state.inventoryRecords
+                    ) ||
+                    !activityValuesEqual(
+                        plan.activity,
+                        activityInputFromEvent(existingEvent)
+                    )
+                ) {
+                    throw new Error(
+                        "Delivery approval replay does not match the committed approval."
+                    );
+                }
                 return state;
             }
             if (currentDraft.status !== "draft") {

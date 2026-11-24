@@ -16,6 +16,67 @@ export interface inventoryBatch {
     pricingByPackagingLevel: BatchPackagingPricing[];
 }
 
+export function batchExpiryKey(expiryDate: Date | null): string | null {
+    return expiryDate === null
+        ? null
+        : expiryDate.toISOString().slice(0, 10);
+}
+
+export function batchIdentityMatches(
+    first: Pick<inventoryBatch, "productId" | "variantId" | "batchNumber" | "expiryDate">,
+    second: Pick<inventoryBatch, "productId" | "variantId" | "batchNumber" | "expiryDate">
+): boolean {
+    if (
+        first.productId !== second.productId ||
+        first.variantId !== second.variantId
+    ) {
+        return false;
+    }
+
+    if (first.batchNumber === null && first.expiryDate === null) {
+        return false;
+    }
+    if (second.batchNumber === null && second.expiryDate === null) {
+        return false;
+    }
+
+    return first.batchNumber === second.batchNumber &&
+        batchExpiryKey(first.expiryDate) === batchExpiryKey(second.expiryDate);
+}
+
+export function findLogicalBatchMatches(
+    batches: readonly inventoryBatch[],
+    identity: Pick<inventoryBatch, "productId" | "variantId" | "batchNumber" | "expiryDate">
+): inventoryBatch[] {
+    return batches.filter((batch) =>
+        batchIdentityMatches(batch, identity)
+    );
+}
+
+export function assertNoDuplicateLogicalBatchIdentities(
+    batches: readonly inventoryBatch[]
+): void {
+    for (let index = 0; index < batches.length; index += 1) {
+        const batch = batches[index];
+        if (
+            batch.batchNumber === null &&
+            batch.expiryDate === null
+        ) {
+            continue;
+        }
+        const duplicate = batches.find((candidate, candidateIndex) =>
+            candidateIndex !== index &&
+            candidate.batchId !== batch.batchId &&
+            batchIdentityMatches(batch, candidate)
+        );
+        if (duplicate) {
+            throw new Error(
+                "Duplicate logical batch identity found in inventory state."
+            );
+        }
+    }
+}
+
 export function validateBatchPricingCollection(
     value: unknown,
     validPackagingLevelIds: readonly string[]

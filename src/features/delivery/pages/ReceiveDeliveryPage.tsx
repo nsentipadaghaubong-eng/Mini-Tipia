@@ -36,6 +36,7 @@ interface ReceiveDeliveryPageProps {
     onCatalogueProductCreated: (product: productStructure) => void;
     onVariantCreated: (productId: string, productVariant: variant) => void;
     onDraftCreated: (draft: DeliveryDraft) => void;
+    onDraftCancelled: (deliveryId: string) => boolean;
     onDraftDetailsUpdated: (
         deliveryId: string,
         changes: DeliveryDraftDetailsChanges,
@@ -146,6 +147,7 @@ export default function ReceiveDeliveryPage({
     onCatalogueProductCreated,
     onVariantCreated,
     onDraftCreated,
+    onDraftCancelled,
     onDraftDetailsUpdated,
     onDraftItemAdded,
     onDraftItemUpdated,
@@ -172,6 +174,10 @@ export default function ReceiveDeliveryPage({
     const [isReceivingItem, setIsReceivingItem] = useState(false);
     const [editingItem, setEditingItem] = useState<DeliveryDraftItem>();
     const [isApproving, setIsApproving] = useState(false);
+    const [isDeleteDraftConfirmationOpen, setIsDeleteDraftConfirmationOpen] =
+        useState(false);
+    const [isDeletingDraft, setIsDeletingDraft] = useState(false);
+    const [deleteDraftError, setDeleteDraftError] = useState("");
     const [approvalError, setApprovalError] = useState("");
     const [completionMessage, setCompletionMessage] = useState("");
     const handledNavigationRequestId = useRef<number | null>(null);
@@ -287,10 +293,13 @@ export default function ReceiveDeliveryPage({
     const canAddItems = (!deliveryNavigationRequest && isNewDeliveryEntry) ||
         selectedDraft?.status === "draft";
 
-    function startNextDeliveryEntry() {
+    function startNextDeliveryEntry(showCompletionMessage = true) {
         if (deliveryNavigationRequest) {
             onNavigationDismissed(deliveryNavigationRequest.requestId);
         }
+        setIsDeleteDraftConfirmationOpen(false);
+        setIsDeletingDraft(false);
+        setDeleteDraftError("");
         setSelectedDeliveryId("");
         setIsNewDeliveryEntry(true);
         setForm(formFromDraft(undefined));
@@ -305,9 +314,9 @@ export default function ReceiveDeliveryPage({
         setIsReceivingItem(false);
         setEditingItem(undefined);
         setApprovalError("");
-        setCompletionMessage(
-            "Delivery received successfully. Inventory has been updated. You can prepare another delivery."
-        );
+        setCompletionMessage(showCompletionMessage
+            ? "Delivery received successfully. Inventory has been updated. You can prepare another delivery."
+            : "");
     }
 
     function nextUpdatedAt(draft: DeliveryDraft): string {
@@ -449,6 +458,35 @@ export default function ReceiveDeliveryPage({
                 : message);
         } finally {
             setIsApproving(false);
+        }
+    }
+
+    function handleCancelDeliveryDraft() {
+        if (!selectedDraft || selectedDraft.status !== "draft" || isApproving) {
+            return;
+        }
+        if (isDeletingDraft) {
+            return;
+        }
+        setIsDeletingDraft(true);
+        setDeleteDraftError("");
+        try {
+            if (onDraftCancelled(selectedDraft.deliveryId)) {
+                setIsDeleteDraftConfirmationOpen(false);
+                startNextDeliveryEntry(false);
+            } else {
+                setDeleteDraftError(
+                    "The delivery draft could not be deleted because it is no longer available."
+                );
+            }
+        } catch (error) {
+            setDeleteDraftError(
+                error instanceof Error
+                    ? error.message
+                    : "The delivery draft could not be deleted."
+            );
+        } finally {
+            setIsDeletingDraft(false);
         }
     }
 
@@ -793,14 +831,27 @@ export default function ReceiveDeliveryPage({
                                 </span>
                             </div>
                             {selectedDraft.status === "draft" && (
-                                <button
-                                    className="delivery-primary-button"
-                                    disabled={isApproving}
-                                    onClick={handleApproveDelivery}
-                                    type="button"
-                                >
-                                    {isApproving ? "Approving Delivery…" : "Approve Delivery"}
-                                </button>
+                                <>
+                                    <button
+                                        className="delivery-secondary-button"
+                                        disabled={isApproving || isDeletingDraft}
+                                        onClick={() => {
+                                            setDeleteDraftError("");
+                                            setIsDeleteDraftConfirmationOpen(true);
+                                        }}
+                                        type="button"
+                                    >
+                                        Delete
+                                    </button>
+                                    <button
+                                        className="delivery-primary-button"
+                                        disabled={isApproving}
+                                        onClick={handleApproveDelivery}
+                                        type="button"
+                                    >
+                                        {isApproving ? "Approving Delivery…" : "Approve Delivery"}
+                                    </button>
+                                </>
                             )}
                             {approvalError && (
                                 <p className="delivery-approval-error" role="alert">
@@ -923,6 +974,76 @@ export default function ReceiveDeliveryPage({
                     product={selectedProduct}
                     products={products}
                 />
+            )}
+            {isDeleteDraftConfirmationOpen && selectedDraft && (
+                <div className="delivery-draft-delete-overlay">
+                    <section
+                        aria-describedby="delivery-draft-delete-description"
+                        aria-labelledby="delivery-draft-delete-title"
+                        aria-modal="true"
+                        className="delivery-draft-delete-modal"
+                        role="alertdialog"
+                    >
+                        <header className="delivery-draft-delete-header">
+                            <h2 id="delivery-draft-delete-title">
+                                Delete Entire Delivery Draft?
+                            </h2>
+                            <button
+                                aria-label="Close delete draft confirmation"
+                                className="delivery-draft-delete-close"
+                                disabled={isDeletingDraft}
+                                onClick={() => {
+                                    setDeleteDraftError("");
+                                    setIsDeleteDraftConfirmationOpen(false);
+                                }}
+                                type="button"
+                            >
+                                ×
+                            </button>
+                        </header>
+                        <div className="delivery-draft-delete-content">
+                            <p id="delivery-draft-delete-description">
+                                You are about to delete this entire delivery draft.
+                            </p>
+                            <p>
+                                All items and their entered details, including quantities,
+                                batch numbers, expiry dates and other delivery information,
+                                will be permanently removed from this unfinished draft.
+                            </p>
+                            <p>This action cannot be undone.</p>
+                            <p>Are you sure you want to continue?</p>
+                            {deleteDraftError && (
+                                <p className="delivery-draft-delete-error" role="alert">
+                                    {deleteDraftError}
+                                </p>
+                            )}
+                            <div className="delivery-draft-delete-actions">
+                                <button
+                                    autoFocus
+                                    className="delivery-secondary-button"
+                                    disabled={isDeletingDraft}
+                                    onClick={() => {
+                                        setDeleteDraftError("");
+                                        setIsDeleteDraftConfirmationOpen(false);
+                                    }}
+                                    type="button"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    className="delivery-primary-button"
+                                    disabled={isDeletingDraft}
+                                    onClick={handleCancelDeliveryDraft}
+                                    type="button"
+                                >
+                                    {isDeletingDraft
+                                        ? "Deleting…"
+                                        : "Confirm Deletion"}
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
             )}
         </div>
     );

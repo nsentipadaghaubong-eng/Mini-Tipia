@@ -1,0 +1,26 @@
+.product-validation-warning-modal {
+    width: min(100%, 520px);
+}
+
+.product-validation-warning-modal .inventory-modal-content p {
+    margin: 0 0 12px;
+    color: var(--color-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.product-validation-warning-modal .inventory-modal-content ul {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding-left: 22px;
+    color: var(--color-ink);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.product-validation-warning-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 24px 22px;
+}

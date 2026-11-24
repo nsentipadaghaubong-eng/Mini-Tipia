@@ -11,6 +11,7 @@ import DashboardPage from "./features/dashboard/pages/DashboardPage";
 import {
     buildProductDeletionActivityInput,
     buildProductCreationActivityInputs,
+    buildDeliveryDraftCancellationActivityInput,
     buildProductUpdateActivityInputs,
     prepareActivityEvents,
     snapshotVariant
@@ -66,6 +67,7 @@ function App() {
         useState<NavigationRequest | null>(null);
     const nextNavigationRequestId = useRef(0);
     const approvedDeliveries = useRef(new Set<string>());
+    const cancellingDeliveries = useRef(new Set<string>());
     const [applicationState, dispatch] = useReducer(
         applicationReducer,
         undefined,
@@ -190,6 +192,42 @@ function App() {
             type: "delivery.draft_created",
             draft
         });
+    }
+
+    function handleCancelDeliveryDraft(deliveryId: string): boolean {
+        if (cancellingDeliveries.current.has(deliveryId)) {
+            return false;
+        }
+        const matchingDrafts = applicationState.deliveryDrafts.filter(
+            (draft) => draft.deliveryId === deliveryId
+        );
+        if (matchingDrafts.length !== 1 || matchingDrafts[0].status !== "draft") {
+            return false;
+        }
+
+        cancellingDeliveries.current.add(deliveryId);
+        try {
+            const [event] = prepareActivityEvents([
+                buildDeliveryDraftCancellationActivityInput(
+                    matchingDrafts[0],
+                    applicationState.products
+                )
+            ]);
+            if (!event) {
+                throw new Error("Delivery cancellation Activity could not be created.");
+            }
+            const action = {
+                type: "delivery.draft_cancelled" as const,
+                deliveryId,
+                event
+            };
+            applicationReducer(applicationState, action);
+            dispatch(action);
+            return true;
+        } catch (error) {
+            cancellingDeliveries.current.delete(deliveryId);
+            throw error;
+        }
     }
 
     function handleDeliveryDraftItemAdded(
@@ -615,6 +653,7 @@ function App() {
                     onNavigationConsumed={handleNavigationConsumed}
                     onNavigationDismissed={handleNavigationDismissed}
                     onDraftCreated={handleDeliveryDraftCreated}
+                    onDraftCancelled={handleCancelDeliveryDraft}
                     onDraftDetailsUpdated={handleDeliveryDraftDetailsUpdated}
                     onDraftItemAdded={handleDeliveryDraftItemAdded}
                     onDraftItemUpdated={handleDeliveryDraftItemUpdated}

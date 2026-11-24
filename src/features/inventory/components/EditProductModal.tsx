@@ -14,6 +14,7 @@ interface BatchDraft {
     variantId: string;
     batchId: string;
     isNew: boolean;
+    isConversion: boolean;
     batchNumber: string;
     expiryDate: string;
     inventoryId: string | null;
@@ -48,6 +49,7 @@ export interface EditProductChanges {
         batchId: string;
         batchNumber: string | null;
         expiryDate: Date | null;
+        sourceUnbatchedInventoryId: string | null;
         stockQuantities: {
             packagingLevelId: string;
             quantity: number;
@@ -136,6 +138,7 @@ export default function EditProductModal({
                     variantId: variant.id,
                     batchId: batch.batchId,
                     isNew: false,
+                    isConversion: false,
                     batchNumber: batch.batchNumber ?? "",
                     expiryDate: formatDateForInput(batch.expiryDate),
                     inventoryId: matchingInventory?.inventoryId ?? null,
@@ -201,6 +204,71 @@ export default function EditProductModal({
             setSaveError("Add a packaging level to this variant before creating a batch.");
             return;
         }
+        if (batchDrafts.some((draft) =>
+            draft.variantId === variantId && draft.isConversion
+        )) {
+            setSaveError("Save the unbatched-stock conversion before adding another batch.");
+            return;
+        }
+
+        const unbatchedRecord = inventoryRecords.find((record) =>
+            record.productId === product.id &&
+            record.variantId === variantId &&
+            record.batchId === null
+        );
+        if (unbatchedRecord) {
+            const unbatchedDraft = unbatchedDrafts.find(
+                (draft) => draft.inventoryId === unbatchedRecord.inventoryId
+            );
+            if (!unbatchedDraft) {
+                setSaveError("The unbatched inventory record is no longer available.");
+                return;
+            }
+
+            const stockIsUnchanged =
+                unbatchedDraft.stockQuantities.length ===
+                    unbatchedRecord.stockQuantities.length &&
+                unbatchedRecord.stockQuantities.every((stock) => {
+                    const draftStock = unbatchedDraft.stockQuantities.find(
+                        (candidate) =>
+                            candidate.packagingLevelId === stock.packagingLevelId
+                    );
+                    return draftStock !== undefined &&
+                        draftStock.quantity.trim() !== "" &&
+                        Number(draftStock.quantity) === stock.quantity;
+                });
+            if (!stockIsUnchanged) {
+                setSaveError(
+                    "Save the unbatched stock adjustment before converting it to a batch."
+                );
+                return;
+            }
+
+            setSaveError(null);
+            setBatchDrafts((currentDrafts) => [
+                ...currentDrafts,
+                {
+                    variantId,
+                    batchId: `batch-${crypto.randomUUID()}`,
+                    isNew: true,
+                    isConversion: true,
+                    batchNumber: "",
+                    expiryDate: "",
+                    inventoryId: unbatchedRecord.inventoryId,
+                    stockQuantities: unbatchedRecord.stockQuantities.map((stock) => ({
+                        packagingLevelId: stock.packagingLevelId,
+                        quantity: String(stock.quantity)
+                    }))
+                }
+            ]);
+            setUnbatchedDrafts((currentDrafts) =>
+                currentDrafts.filter(
+                    (draft) => draft.inventoryId !== unbatchedRecord.inventoryId
+                )
+            );
+            return;
+        }
+
         setSaveError(null);
         setBatchDrafts((currentDrafts) => [
             ...currentDrafts,
@@ -208,6 +276,7 @@ export default function EditProductModal({
                 variantId,
                 batchId: `batch-${crypto.randomUUID()}`,
                 isNew: true,
+                isConversion: false,
                 batchNumber: "",
                 expiryDate: "",
                 inventoryId: null,
@@ -229,6 +298,9 @@ export default function EditProductModal({
         setBatchDrafts((currentDrafts) =>
             currentDrafts.map((draft) => {
                 if (draft.variantId !== variantId || draft.batchId !== batchId) {
+                    return draft;
+                }
+                if (draft.isConversion) {
                     return draft;
                 }
 
@@ -304,11 +376,13 @@ export default function EditProductModal({
             parsedDate.getUTCMonth() + 1 === Number(monthText) &&
             parsedDate.getUTCDate() === Number(dayText);
     });
+    const validBatchNumbers = true;
 
     const canSave =
         reason.trim().length > 0 &&
         validStockQuantities &&
-        validDates;
+        validDates &&
+        validBatchNumbers;
 
     const unbatchedDraftsByVariant = new Map<string, UnbatchedDraft[]>();
     for (const draft of unbatchedDrafts) {
@@ -374,6 +448,9 @@ export default function EditProductModal({
                     batchNumber: batch.batchNumber.trim() || null,
                     expiryDate: batch.expiryDate
                         ? new Date(`${batch.expiryDate}T00:00:00.000Z`)
+                        : null,
+                    sourceUnbatchedInventoryId: batch.isConversion
+                        ? batch.inventoryId
                         : null,
                     stockQuantities: batch.stockQuantities.map((stock) => ({
                         packagingLevelId: stock.packagingLevelId,
@@ -554,7 +631,13 @@ export default function EditProductModal({
                                     <button
                                         className="secondary-button"
                                         onClick={() => addBatch(variant.id)}
-                                        disabled={isDraftLocked}
+                                        disabled={
+                                            isDraftLocked ||
+                                            batchDrafts.some((draft) =>
+                                                draft.variantId === variant.id &&
+                                                draft.isConversion
+                                            )
+                                        }
                                         type="button"
                                     >
                                         Add batch
@@ -673,6 +756,11 @@ export default function EditProductModal({
 
                                             <div className="edit-stock-section">
                                                 <h5>Stock quantities</h5>
+                                                {draft.isConversion && (
+                                                    <p>
+                                                        Existing unbatched stock will move into this batch without changing its quantities.
+                                                    </p>
+                                                )}
 
                                                 {matchingInventory || draft.isNew ? (
 
@@ -701,6 +789,7 @@ export default function EditProductModal({
                                                                         type="number"
                                                                         min="0"
                                                                         step="1"
+                                                                        readOnly={draft.isConversion}
                                                                         value={stock.quantity}
                                                                         onChange={(event) =>
                                                                             updateStockQuantity(

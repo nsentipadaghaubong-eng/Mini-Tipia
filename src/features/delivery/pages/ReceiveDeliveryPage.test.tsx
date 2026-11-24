@@ -16,6 +16,7 @@ import {
     createInitialApplicationState
 } from "../../../applicationState";
 import {
+    buildDeliveryDraftCancellationActivityInput,
     buildProductCreationActivityInputs,
     prepareActivityEvents,
     snapshotVariant
@@ -133,6 +134,31 @@ function renderPage(
                     type: "delivery.draft_created",
                     draft
                 })}
+                onDraftCancelled={(deliveryId) => {
+                    const draft = state.deliveryDrafts.find(
+                        (candidate) => candidate.deliveryId === deliveryId
+                    );
+                    if (!draft) {
+                        return false;
+                    }
+                    const [event] = prepareActivityEvents([
+                        buildDeliveryDraftCancellationActivityInput(
+                            draft,
+                            state.products
+                        )
+                    ]);
+                    if (!event) {
+                        throw new Error("Cancellation fixture requires an Activity event.");
+                    }
+                    const action = {
+                        type: "delivery.draft_cancelled" as const,
+                        deliveryId,
+                        event
+                    };
+                    applicationReducer(state, action);
+                    dispatch(action);
+                    return true;
+                }}
                 onDraftItemAdded={(deliveryId, item, updatedAt) => dispatch({
                     type: "delivery.draft_item_added",
                     deliveryId,
@@ -253,6 +279,69 @@ function clickVariant(name: string) {
 }
 
 describe("Receive Delivery page", () => {
+    it("opens a whole-draft deletion confirmation without cancelling the draft", () => {
+        const draft = draftWithItem("delivery-delete-now", "Supplier One");
+        const page = renderPage(makeState([draft]));
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+        const confirmation = screen.getByRole("alertdialog", {
+            name: "Delete Entire Delivery Draft?"
+        });
+        expect(within(confirmation).getByText(
+            "All items and their entered details, including quantities, batch numbers, expiry dates and other delivery information, will be permanently removed from this unfinished draft."
+        )).toBeInTheDocument();
+        expect(page.state.deliveryDrafts).toEqual([draft]);
+        expect(page.state.activityEvents).toEqual([]);
+        expect(page.state.inventoryRecords).toEqual([]);
+        expect(page.state.inventoryBatches).toEqual([]);
+    });
+
+    it("cancelling the whole-draft confirmation preserves the draft and items", () => {
+        const draft = draftWithItem("delivery-delete-cancel", "Supplier One");
+        const page = renderPage(makeState([draft]));
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+        const confirmation = screen.getByRole("alertdialog", {
+            name: "Delete Entire Delivery Draft?"
+        });
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Cancel"
+        }));
+
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+        expect(page.state.deliveryDrafts).toEqual([draft]);
+        expect(page.state.deliveryDrafts[0].items).toEqual(draft.items);
+        expect(page.state.activityEvents).toEqual([]);
+    });
+
+    it("confirming whole-draft deletion cancels once and creates one cancellation event", () => {
+        const draft = draftWithItem("delivery-delete-confirm", "Supplier One");
+        const page = renderPage(makeState([draft]));
+
+        fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+        const confirmation = screen.getByRole("alertdialog", {
+            name: "Delete Entire Delivery Draft?"
+        });
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Confirm Deletion"
+        }));
+
+        expect(page.state.deliveryDrafts).toEqual([]);
+        expect(page.state.activityEvents).toHaveLength(1);
+        expect(page.state.activityEvents[0]).toMatchObject({
+            type: "delivery.draft_cancelled",
+            deliveryId: draft.deliveryId
+        });
+        expect(page.state.inventoryRecords).toEqual([]);
+        expect(page.state.inventoryBatches).toEqual([]);
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        expect(screen.queryByText(/cancelled|deleted/i)).not.toBeInTheDocument();
+        expect(screen.getByText(
+            "Delivery details are staged here. The draft will be created when its first item is added."
+        )).toBeInTheDocument();
+    });
+
     it("opens the requested pending delivery and leaves the other draft unchanged", () => {
         const firstDraft = draftWithItem("delivery-first-target", "Supplier One");
         const secondDraft = draftWithItem("delivery-second-target", "Supplier Two");
@@ -1512,6 +1601,7 @@ describe("Receive Delivery page", () => {
                                 onNavigationConsumed={() => undefined}
                                 onNavigationDismissed={() => undefined}
                                 onDraftCreated={() => undefined}
+                                onDraftCancelled={() => false}
                                 onDraftDetailsUpdated={() => undefined}
                                 onDraftItemAdded={() => undefined}
                                 onDraftItemUpdated={() => undefined}

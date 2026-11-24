@@ -769,6 +769,24 @@ select {
     overscroll-behavior: contain;
 }
 
+.inventory-lock-warning-modal {
+    width: min(100%, 480px);
+    max-height: none;
+}
+
+.inventory-lock-warning-modal .inventory-modal-content p {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.inventory-lock-warning-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 24px 22px;
+}
+
 .modal-section-title {
     margin: 0 0 13px;
     color: var(--color-ink);

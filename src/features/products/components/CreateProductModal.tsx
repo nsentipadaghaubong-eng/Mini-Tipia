@@ -14,6 +14,7 @@ import {
 import type { productStructure } from "../../../products/productStructure";
 import type { inventory } from "../../../inventory/inventoryStock";
 import type { inventoryBatch } from "../../../inventory/inventoryBatch";
+import ProductValidationWarningModal from "./ProductValidationWarningModal";
 import "./CreateProductModal.css";
 
 interface CommonCreateProductModalProps {
@@ -62,6 +63,8 @@ export default function CreateProductModal({
 }: CreateProductModalProps) {
     const [draft, setDraft] = useState(emptyDraft);
     const [submitError, setSubmitError] = useState<string | null>(null);
+    const [validationWarningErrors, setValidationWarningErrors] =
+        useState<string[] | null>(null);
     const errors = validateProductCreationDraft(draft);
 
     function updateVariant(
@@ -80,6 +83,7 @@ export default function CreateProductModal({
     function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (Object.keys(errors).length > 0) {
+            setValidationWarningErrors(Object.values(errors));
             return;
         }
 
@@ -109,6 +113,7 @@ export default function CreateProductModal({
                 );
                 onCreate(result);
             }
+            setValidationWarningErrors(null);
             onClose();
         } catch (error) {
             setSubmitError(
@@ -153,7 +158,11 @@ export default function CreateProductModal({
                     </button>
                 </div>
 
-                <form className="create-product-form" onSubmit={handleSubmit}>
+                <form
+                    className="create-product-form"
+                    noValidate
+                    onSubmit={handleSubmit}
+                >
                     <div className="inventory-modal-content create-product-content">
                         <section className="create-product-section">
                             <h3 className="modal-section-title">Product information</h3>
@@ -311,7 +320,6 @@ export default function CreateProductModal({
                         </button>
                         <button
                             className="primary-button"
-                            disabled={Object.keys(errors).length > 0}
                             type="submit"
                         >
                             {mode === "catalogue"
@@ -321,6 +329,14 @@ export default function CreateProductModal({
                     </footer>
                 </form>
             </section>
+            {validationWarningErrors && (
+                <ProductValidationWarningModal
+                    description="Please correct the following before creating this product."
+                    errors={validationWarningErrors}
+                    onCancel={() => setValidationWarningErrors(null)}
+                    title="Unable to Create Product"
+                />
+            )}
         </div>
     );
 

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { prepareActivityEvents } from "../activity/activity";
+import {
+    buildDeliveryDraftCancellationActivityInput,
+    prepareActivityEvents
+} from "../activity/activity";
 import {
     applicationReducer,
     createInitialApplicationState
@@ -14,6 +17,7 @@ import {
 } from "./deliveryDraft";
 import { prepareDeliveryApproval } from "./deliveryApproval";
 import type { productStructure } from "../products/productStructure";
+import { getProductDraftLockMessages } from "../products/productDraftLock";
 import { resolveDefaultSellingPrice } from "../sales/salesEngine";
 
 const product: productStructure = {
@@ -242,6 +246,117 @@ describe("Delivery approval and stock-in", () => {
         expect(secondPlan.inventoryRecords[0].stockQuantities).toEqual([
             { packagingLevelId: "box", quantity: 6 }
         ]);
+    });
+
+    it("merges unnumbered batches with the same expiry across delivery dates", () => {
+        const state = initialState([]);
+        const first = withItems(makeDraft("unnumbered-expiry-1", "2026-11-07"), [
+            makeItem("item-1", {
+                batchNumber: null,
+                expiryDate: "2027-12-31",
+                quantity: 2
+            })
+        ]);
+        const firstPlan = makePlan(first, state);
+        const second = withItems(makeDraft("unnumbered-expiry-2", "2026-11-08"), [
+            makeItem("item-2", {
+                batchNumber: null,
+                expiryDate: "2027-12-31",
+                quantity: 4
+            })
+        ]);
+        const secondPlan = makePlan(second, {
+            ...state,
+            inventoryRecords: firstPlan.inventoryRecords,
+            inventoryBatches: firstPlan.inventoryBatches
+        });
+
+        expect(secondPlan.inventoryBatches).toHaveLength(1);
+        expect(secondPlan.inventoryRecords).toHaveLength(1);
+        expect(secondPlan.inventoryRecords[0].stockQuantities).toEqual([
+            { packagingLevelId: "box", quantity: 6 }
+        ]);
+    });
+
+    it("keeps unnumbered batches separate when expiry differs", () => {
+        const state = initialState([]);
+        const draft = withItems(makeDraft("unnumbered-different-expiry"), [
+            makeItem("item-1", {
+                batchNumber: null,
+                expiryDate: "2027-12-31"
+            }),
+            makeItem("item-2", {
+                batchNumber: null,
+                expiryDate: "2028-01-31",
+                quantity: 2
+            })
+        ]);
+        const plan = makePlan(draft, state);
+
+        expect(plan.inventoryBatches).toHaveLength(2);
+        expect(plan.inventoryRecords).toHaveLength(2);
+    });
+
+    it("rejects approval when duplicate logical identities already exist", () => {
+        const state = initialState([]);
+        const duplicateBatch = {
+            batchId: "existing-duplicate",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
+        };
+        const stateWithDuplicate = {
+            ...state,
+            inventoryBatches: [
+                duplicateBatch,
+                { ...duplicateBatch, batchId: "existing-duplicate-2" }
+            ]
+        };
+        const draft = withItems(makeDraft("duplicate-state"), [
+            makeItem("item-1")
+        ]);
+
+        expect(() => makePlan(draft, stateWithDuplicate))
+            .toThrow(/Duplicate logical batch identity/i);
+    });
+
+    it("rejects duplicate logical identities at the application reducer boundary atomically", () => {
+        const draft = withItems(makeDraft("delivery-duplicate-reducer"), [
+            makeItem("item-1")
+        ]);
+        const state = initialState([draft]);
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const duplicateBatchOne = {
+            batchId: "duplicate-reducer-one",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "LOT-1",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
+        };
+        const duplicateBatchTwo = {
+            ...duplicateBatchOne,
+            batchId: "duplicate-reducer-two"
+        };
+        const duplicateState = {
+            ...state,
+            inventoryBatches: [duplicateBatchOne, duplicateBatchTwo]
+        };
+        const before = structuredClone(duplicateState);
+
+        expect(() => applicationReducer(duplicateState, {
+            type: "delivery.approved",
+            plan,
+            event
+        })).toThrow(/Duplicate logical batch identity/i);
+        expect(duplicateState).toEqual(before);
+        expect(duplicateState.inventoryRecords).toEqual([]);
+        expect(duplicateState.inventoryBatches).toHaveLength(2);
+        expect(duplicateState.activityEvents).toEqual([]);
+        expect(duplicateState.deliveryDrafts[0]?.status).toBe("draft");
     });
 
     it.each([
@@ -510,7 +625,7 @@ describe("Delivery approval and stock-in", () => {
         });
     });
 
-    it("keeps unnumbered batches separate by receipt date", () => {
+    it("keeps no-number/no-expiry batches separate across and within deliveries", () => {
         const state = initialState([]);
         const first = withItems(makeDraft("unnumbered-1", "2026-11-07"), [
             makeItem("item-1", {
@@ -542,11 +657,14 @@ describe("Delivery approval and stock-in", () => {
             }
         );
 
-        expect(secondPlan.inventoryBatches.map((batch) => batch.receivedDate))
-            .toEqual(["2026-11-07", "2026-11-08"]);
-        expect(secondPlan.inventoryRecords).toHaveLength(2);
-        expect(firstPlan.inventoryRecords[0].stockQuantities).toEqual([
-            { packagingLevelId: "box", quantity: 5 }
+        expect(secondPlan.inventoryBatches).toHaveLength(3);
+        expect(secondPlan.inventoryRecords).toHaveLength(3);
+        expect(secondPlan.inventoryRecords.map((record) =>
+            record.stockQuantities
+        ).flat()).toEqual([
+            { packagingLevelId: "box", quantity: 3 },
+            { packagingLevelId: "box", quantity: 2 },
+            { packagingLevelId: "box", quantity: 3 }
         ]);
     });
 
@@ -612,6 +730,150 @@ describe("Delivery approval and stock-in", () => {
         );
         expect(applicationReducer(committed, action)).toBe(committed);
         expect(committed.inventoryRecords[0].stockQuantities[0].quantity).toBe(3);
+    });
+
+    it("rejects conflicting replay after approval without changing application state", () => {
+        const draft = withItems(makeDraft("delivery-replay-conflict"), [
+            makeItem("item-1", { quantity: 3 })
+        ]);
+        const state = initialState([draft]);
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const committed = applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event
+        });
+        const before = structuredClone(committed);
+
+        const conflictingPlan = {
+            ...plan,
+            inventoryRecords: plan.inventoryRecords.map((record) => ({
+                ...record,
+                stockQuantities: record.stockQuantities.map((stock) => ({
+                    ...stock,
+                    quantity: stock.quantity + 10
+                }))
+            }))
+        };
+        expect(() => applicationReducer(committed, {
+            type: "delivery.approved",
+            plan: conflictingPlan,
+            event
+        })).toThrow("Delivery approval replay does not match the committed approval.");
+        expect(committed).toEqual(before);
+
+        if (event.type === "delivery.received") {
+            const conflictingEvent = {
+                ...event,
+                items: event.items.map((item) => ({
+                    ...item,
+                    stock: item.stock.map((stock) => ({
+                        ...stock,
+                        quantity: stock.quantity + 10
+                    }))
+                }))
+            };
+            expect(() => applicationReducer(committed, {
+                type: "delivery.approved",
+                plan,
+                event: conflictingEvent
+            })).toThrow("Delivery approval replay does not match the committed approval.");
+            expect(committed).toEqual(before);
+        }
+    });
+
+    it("accepts an exact replay when plan and Activity object properties are reordered", () => {
+        const draft = withItems(makeDraft("delivery-replay-property-order"), [
+            makeItem("item-1", { quantity: 3 })
+        ]);
+        const state = initialState([draft]);
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const action = {
+            type: "delivery.approved" as const,
+            plan,
+            event
+        };
+        const committed = applicationReducer(state, action);
+        const before = structuredClone(committed);
+
+        function reverseObjectKeyOrder(value: unknown): unknown {
+            if (Array.isArray(value)) {
+                return value.map(reverseObjectKeyOrder);
+            }
+            if (value instanceof Date) {
+                return value;
+            }
+            if (value !== null && typeof value === "object") {
+                return Object.fromEntries(
+                    Object.entries(value)
+                        .reverse()
+                        .map(([key, nested]) => [
+                            key,
+                            reverseObjectKeyOrder(nested)
+                        ])
+                );
+            }
+            return value;
+        }
+
+        const reorderedPlan = reverseObjectKeyOrder(plan) as typeof plan;
+        const reorderedEvent = reverseObjectKeyOrder(event) as typeof event;
+
+        expect(applicationReducer(committed, {
+            type: "delivery.approved",
+            plan: reorderedPlan,
+            event: reorderedEvent
+        })).toBe(committed);
+        expect(committed).toEqual(before);
+        expect(committed.inventoryRecords).toHaveLength(1);
+        expect(committed.inventoryRecords[0]?.stockQuantities[0]?.quantity).toBe(3);
+        expect(committed.inventoryBatches).toHaveLength(1);
+        expect(committed.activityEvents).toHaveLength(1);
+    });
+
+    it("commits and replay-stabilizes separate no-number/no-expiry delivery lines", () => {
+        const draft = withItems(makeDraft("delivery-no-identity-replay"), [
+            makeItem("item-1", {
+                batchNumber: null,
+                expiryDate: null,
+                quantity: 3
+            }),
+            makeItem("item-2", {
+                batchNumber: null,
+                expiryDate: null,
+                quantity: 2
+            })
+        ]);
+        const state = initialState([draft]);
+        const plan = makePlan(draft, state);
+        const event = makeApprovalEvent(plan);
+        const action = {
+            type: "delivery.approved" as const,
+            plan,
+            event
+        };
+        const committed = applicationReducer(state, action);
+        const batchIds = committed.inventoryBatches.map((batch) => batch.batchId);
+        const recordIds = committed.inventoryRecords.map((record) => record.id);
+
+        expect(new Set(batchIds).size).toBe(2);
+        expect(new Set(recordIds).size).toBe(2);
+        expect(committed.inventoryRecords).toHaveLength(2);
+        expect(committed.inventoryRecords.map((record) =>
+            record.stockQuantities[0]?.quantity
+        ).sort()).toEqual([2, 3]);
+        expect(committed.inventoryBatches).toHaveLength(2);
+        expect(committed.activityEvents).toHaveLength(1);
+
+        expect(applicationReducer(committed, action)).toBe(committed);
+        expect(committed.inventoryBatches.map((batch) => batch.batchId)).toEqual(batchIds);
+        expect(committed.inventoryRecords.map((record) => record.id)).toEqual(recordIds);
+        expect(committed.inventoryRecords.map((record) =>
+            record.stockQuantities[0]?.quantity
+        ).sort()).toEqual([2, 3]);
+        expect(committed.activityEvents).toHaveLength(1);
     });
 
     it("rechecks matching existing batches and exact inventory deltas at commit", () => {
@@ -1284,5 +1546,149 @@ describe("Delivery approval and stock-in", () => {
             event
         })).toThrow("Delivery approval does not match the active draft.");
         expect(editedState).toEqual(before);
+    });
+
+    it("cancels a delivery draft atomically, records its snapshot, and releases every product lock", () => {
+        const secondProduct: productStructure = {
+            id: "medicine-second",
+            name: "Second medicine",
+            variant: [{
+                id: "capsules",
+                variantName: "Capsules",
+                packagingHierarchy: [{
+                    id: "pack-second",
+                    name: "Pack",
+                    costPrice: null,
+                    sellingPrice: 20,
+                    quantityofNextLevel: null,
+                    nextLevelId: null
+                }]
+            }]
+        };
+        const draft = withItems(makeDraft("delivery-cancel"), [
+            makeItem("first-item"),
+            makeItem("second-item", {
+                productId: secondProduct.id,
+                variantId: secondProduct.variant[0].id,
+                packagingLevelId: "pack-second"
+            })
+        ]);
+        const inventoryBatches: ApplicationState["inventoryBatches"] = [{
+            batchId: "cancel-batch",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchNumber: "CANCEL-LOT",
+            expiryDate: new Date("2027-12-31T00:00:00.000Z"),
+            pricingByPackagingLevel: []
+        }];
+        const inventoryRecords: ApplicationState["inventoryRecords"] = [{
+            id: "cancel-inventory",
+            productId: product.id,
+            variantId: product.variant[0].id,
+            batchId: "cancel-batch",
+            stockQuantities: [{ packagingLevelId: "box", quantity: 7 }]
+        }];
+        const state: ApplicationState = {
+            ...initialState([draft]),
+            products: [product, secondProduct],
+            inventoryRecords,
+            inventoryBatches
+        };
+        const [event] = prepareActivityEvents([
+            buildDeliveryDraftCancellationActivityInput(draft, state.products)
+        ], {
+            makeId: () => "delivery-cancel-event",
+            now: () => new Date("2026-11-08T10:00:00.000Z")
+        });
+        if (!event) {
+            throw new Error("Cancellation fixture requires an Activity event.");
+        }
+        const action = {
+            type: "delivery.draft_cancelled" as const,
+            deliveryId: draft.deliveryId,
+            event
+        };
+        const before = structuredClone(state);
+
+        const cancelled = applicationReducer(state, action);
+
+        expect(cancelled.deliveryDrafts).toEqual([]);
+        expect(cancelled.activityEvents).toHaveLength(1);
+        expect(cancelled.activityEvents[0]).toMatchObject({
+            type: "delivery.draft_cancelled",
+            deliveryId: draft.deliveryId,
+            supplierName: "Supplier",
+            invoiceNumber: "INV-1",
+            items: [
+                { productId: product.id, quantity: 3 },
+                { productId: secondProduct.id, quantity: 3 }
+            ]
+        });
+        expect(cancelled.inventoryRecords).toBe(inventoryRecords);
+        expect(cancelled.inventoryRecords[0]?.stockQuantities).toEqual([
+            { packagingLevelId: "box", quantity: 7 }
+        ]);
+        expect(cancelled.inventoryBatches).toBe(inventoryBatches);
+        expect(cancelled.inventoryBatches[0]?.expiryDate)
+            .toEqual(new Date("2027-12-31T00:00:00.000Z"));
+        for (const productToCheck of state.products) {
+            expect(getProductDraftLockMessages(
+                productToCheck.id,
+                cancelled.saleDrafts,
+                cancelled.deliveryDrafts
+            )).toEqual([]);
+        }
+        expect(state).toEqual(before);
+
+        const cancelledBeforeReplay = structuredClone(cancelled);
+        expect(() => applicationReducer(cancelled, action)).toThrow(
+            `Delivery draft not found: ${draft.deliveryId}`
+        );
+        expect(cancelled).toEqual(cancelledBeforeReplay);
+    });
+
+    it("rejects stale, received, or already-cancelled delivery cancellation actions atomically", () => {
+        const draft = withItems(makeDraft("delivery-cancel-stale"), [
+            makeItem("stale-item")
+        ]);
+        const state = initialState([draft]);
+        const [event] = prepareActivityEvents([
+            buildDeliveryDraftCancellationActivityInput(draft, state.products)
+        ], {
+            makeId: () => "delivery-cancel-stale-event",
+            now: () => new Date("2026-11-08T10:00:00.000Z")
+        });
+        if (!event) {
+            throw new Error("Cancellation fixture requires an Activity event.");
+        }
+        const action = {
+            type: "delivery.draft_cancelled" as const,
+            deliveryId: draft.deliveryId,
+            event
+        };
+        const editedDraft = {
+            ...draft,
+            supplier: "Changed supplier",
+            updatedAt: "2026-11-07T10:02:00.000Z"
+        };
+        const staleState = { ...state, deliveryDrafts: [editedDraft] };
+        const staleBefore = structuredClone(staleState);
+
+        expect(() => applicationReducer(staleState, action)).toThrow(
+            "Delivery cancellation Activity does not match the active draft."
+        );
+        expect(staleState).toEqual(staleBefore);
+
+        for (const status of ["received", "cancelled"] as const) {
+            const inactiveState = {
+                ...state,
+                deliveryDrafts: [{ ...draft, status }]
+            };
+            const before = structuredClone(inactiveState);
+            expect(() => applicationReducer(inactiveState, action)).toThrow(
+                `Cannot cancel a ${status} delivery.`
+            );
+            expect(inactiveState).toEqual(before);
+        }
     });
 });

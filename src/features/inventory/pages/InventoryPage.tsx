@@ -15,7 +15,10 @@ import {
 } from "../../../inventory/inventoryAdjustment";
 import type { stockAdjustment } from "../../../inventory/inventoryAdjustment";
 import type { inventory } from "../../../inventory/inventoryStock";
-import type { inventoryBatch } from "../../../inventory/inventoryBatch";
+import {
+    findLogicalBatchMatches,
+    type inventoryBatch
+} from "../../../inventory/inventoryBatch";
 import {
     buildBatchCreatedActivityInput,
     buildBatchRemovalActivityInput,
@@ -199,6 +202,22 @@ function describeVariantStockStatus(
     return "In stock";
 }
 
+function describeLowStockThreshold(variant: VariantGroup): string {
+    const status = variant.lowStockStatus;
+    if (!status?.thresholdConfigured) {
+        return "Not configured";
+    }
+
+    const packagingLevel = variant.aggregatedStock.packagingLevels.find(
+        (level) => level.id === status.thresholdPackagingLevelId
+    );
+    if (status.thresholdQuantity === undefined || !packagingLevel) {
+        throw new Error("Low-stock threshold does not match the selected variant.");
+    }
+
+    return `${status.thresholdQuantity} ${packagingLevel.name}`;
+}
+
 export default function InventoryPage({
     inventoryRecords: inventoryState,
     inventoryBatches: inventoryBatchesState,
@@ -222,13 +241,16 @@ export default function InventoryPage({
 
     const [editingProductId, setEditingProductId] =
     useState<string | null>(null);
-    const [inventoryLockMessages, setInventoryLockMessages] = useState<string[]>([]);
+    const [inventoryLockWarningOpen, setInventoryLockWarningOpen] =
+    useState(false);
+    const [dismissedInventoryLockWarningRequestId, setDismissedInventoryLockWarningRequestId] =
+    useState<number | null>(null);
     const handledNavigationRequestId = useRef<number | null>(null);
 
     useEffect(() => {
         if (
             !navigationRequest ||
-            navigationRequest.consumed ||
+        navigationRequest.consumed ||
             handledNavigationRequestId.current === navigationRequest.requestId ||
             navigationRequest.intent.type !== "inventory.manage"
         ) {
@@ -308,6 +330,22 @@ export default function InventoryPage({
     const editingProduct = inventoryNavigationIntent
         ? inventoryNavigationProduct
         : productsState.find((product) => product.id === editingProductId);
+    const editingProductLockMessages = editingProduct
+        ? getProductDraftLockMessages(
+            editingProduct.id,
+            saleDrafts,
+            deliveryDrafts
+        )
+        : [];
+    const navigationLockWarningOpen =
+        inventoryNavigationProduct !== undefined &&
+        inventoryNavigationTarget !== undefined &&
+        getProductDraftLockMessages(
+            inventoryNavigationProduct.id,
+            saleDrafts,
+            deliveryDrafts
+        ).length > 0 &&
+        navigationRequest?.requestId !== dismissedInventoryLockWarningRequestId;
 
     const editingInventoryRecords = productGroups.find(
         (product) => product.productId === editingProduct?.id
@@ -374,7 +412,6 @@ export default function InventoryPage({
     function closeProduct() {
         setSelectedProductId(null);
         setSelectedVariantId(null);
-        setInventoryLockMessages([]);
     }
 
     function handleSaveInventoryChanges(changes: EditProductChanges) {
@@ -436,6 +473,10 @@ export default function InventoryPage({
             const targetIncluded = target.batchId === null
                 ? changes.unbatched.some(
                     (item) => item.inventoryId === target.id &&
+                        item.variantId === target.variantId
+                ) || changes.newBatches.some(
+                    (item) =>
+                        item.sourceUnbatchedInventoryId === target.id &&
                         item.variantId === target.variantId
                 )
                 : changes.batches.some(
@@ -560,6 +601,17 @@ export default function InventoryPage({
             batch.variantId,
             batch.batchId
         ])));
+        for (const batch of nextInventoryBatches) {
+            const collision = findLogicalBatchMatches(
+                nextInventoryBatches,
+                batch
+            ).find((candidate) => candidate.batchId !== batch.batchId);
+            if (collision) {
+                throw new Error(
+                    "Batch metadata update collides with another logical batch identity."
+                );
+            }
+        }
 
         const nextInventory = inventoryState.filter((record) =>
             record.batchId === null ||
@@ -572,6 +624,7 @@ export default function InventoryPage({
         const createdBatchIds = new Set<string>();
         const createdBatches: inventoryBatch[] = [];
         const createdInventoryRecords: inventory[] = [];
+        const convertedInventoryIds = new Set<string>();
         for (const newBatch of changes.newBatches) {
             const productVariant = currentProduct.variant.find(
                 (variant) => variant.id === newBatch.variantId
@@ -627,20 +680,75 @@ export default function InventoryPage({
                     : new Date(newBatch.expiryDate),
                 pricingByPackagingLevel: []
             };
-            const record = createInventory(
-                productId,
-                newBatch.variantId,
-                newBatch.batchId,
-                newBatch.stockQuantities
-            );
+            const collision = findLogicalBatchMatches(
+                [...inventoryBatchesState, ...createdBatches],
+                batch
+            ).find((candidate) => candidate.batchId !== batch.batchId);
+            if (collision) {
+                throw new Error(
+                    "A new batch collides with an existing logical batch identity."
+                );
+            }
+            let record: inventory;
+            if (newBatch.sourceUnbatchedInventoryId !== null) {
+                if (convertedInventoryIds.has(
+                    newBatch.sourceUnbatchedInventoryId
+                )) {
+                    throw new Error(
+                        "A source unbatched inventory record can only be converted once per save."
+                    );
+                }
+
+                const sourceIndex = nextInventory.findIndex(
+                    (candidate) =>
+                        candidate.id === newBatch.sourceUnbatchedInventoryId &&
+                        candidate.productId === productId &&
+                        candidate.variantId === newBatch.variantId &&
+                        candidate.batchId === null
+                );
+                const sourceRecord = nextInventory[sourceIndex];
+                const quantitiesMatch = sourceRecord !== undefined &&
+                    sourceRecord.stockQuantities.length ===
+                        newBatch.stockQuantities.length &&
+                    sourceRecord.stockQuantities.every((stock, index) => {
+                        const newStock = newBatch.stockQuantities[index];
+                        return newStock?.packagingLevelId === stock.packagingLevelId &&
+                            newStock.quantity === stock.quantity;
+                    });
+                if (sourceIndex === -1 || !sourceRecord || !quantitiesMatch) {
+                    throw new Error(
+                        "The unbatched inventory quantities must remain unchanged during conversion."
+                    );
+                }
+
+                record = { ...sourceRecord, batchId: newBatch.batchId };
+                nextInventory[sourceIndex] = record;
+                convertedInventoryIds.add(sourceRecord.id);
+            } else {
+                if (nextInventory.some((candidate) =>
+                    candidate.productId === productId &&
+                    candidate.variantId === newBatch.variantId &&
+                    candidate.batchId === null
+                )) {
+                    throw new Error(
+                        "Unbatched inventory must be converted before adding another batch."
+                    );
+                }
+                record = createInventory(
+                    productId,
+                    newBatch.variantId,
+                    newBatch.batchId,
+                    newBatch.stockQuantities
+                );
+                nextInventory.push(record);
+            }
             validateInventoryPackagingRelationships(currentProduct, record);
             createdBatches.push(batch);
             createdInventoryRecords.push(record);
             nextInventoryBatches.push(batch);
-            nextInventory.push(record);
         }
         const newAdjustments: stockAdjustment[] = [];
-        const seenInventoryIds = new Set<string>();
+        const seenInventoryIds = new Set(convertedInventoryIds);
 
         for (const batchChanges of changes.batches) {
             if (batchChanges.inventoryId === null) {
@@ -816,10 +924,10 @@ export default function InventoryPage({
             deliveryDrafts
         );
         if (blockers.length > 0) {
-            setInventoryLockMessages(blockers);
+            setInventoryLockWarningOpen(true);
             return;
         }
-        setInventoryLockMessages([]);
+        setInventoryLockWarningOpen(false);
         setEditingProductId(productId);
     }
 
@@ -915,8 +1023,46 @@ export default function InventoryPage({
 
             </div>
 
-            {inventoryLockMessages.length > 0 && (
-                <p role="alert">{inventoryLockMessages.join(" ")}</p>
+            {(inventoryLockWarningOpen || navigationLockWarningOpen) && (
+                <div className="inventory-modal-overlay">
+                    <section
+                        className="inventory-modal inventory-lock-warning-modal"
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-labelledby="inventory-lock-warning-title"
+                        aria-describedby="inventory-lock-warning-message"
+                    >
+                        <div className="inventory-modal-header">
+                            <h2 id="inventory-lock-warning-title">
+                                Product Currently Locked
+                            </h2>
+                        </div>
+                        <div className="inventory-modal-content">
+                            <p id="inventory-lock-warning-message">
+                                This product is currently in an active draft. You
+                                cannot edit its inventory until the draft is
+                                completed or cancelled.
+                            </p>
+                        </div>
+                        <div className="inventory-lock-warning-actions">
+                            <button
+                                className="primary-button"
+                                type="button"
+                                onClick={() => {
+                                    setInventoryLockWarningOpen(false);
+                                    if (navigationRequest) {
+                                        setDismissedInventoryLockWarningRequestId(
+                                            navigationRequest.requestId
+                                        );
+                                    }
+                                    dismissInventoryNavigation();
+                                }}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </section>
+                </div>
             )}
 
             {/* Product cards */}
@@ -1161,6 +1307,12 @@ export default function InventoryPage({
                                                 selectedVariant.aggregatedStock.batchCount
                                             )}
                                         </span>
+                                        <p className="variant-batch-count">
+                                            <span>Low Stock Threshold:</span>{" "}
+                                            <strong>
+                                                {describeLowStockThreshold(selectedVariant)}
+                                            </strong>
+                                        </p>
 
                                     </div>
 
@@ -1258,7 +1410,7 @@ export default function InventoryPage({
 
             )}
 
-            {editingProduct && (
+            {editingProduct && editingProductLockMessages.length === 0 && (
                 <EditProductModal
                     product={editingProduct}
                     batches={inventoryBatchesState}
@@ -1278,11 +1430,7 @@ export default function InventoryPage({
                         setEditingProductId(null);
                     }}
                     onSave={handleSaveInventoryChanges}
-                    draftLockMessages={getProductDraftLockMessages(
-                        editingProduct.id,
-                        saleDrafts,
-                        deliveryDrafts
-                    )}
+                    draftLockMessages={editingProductLockMessages}
                 />
             )}
 

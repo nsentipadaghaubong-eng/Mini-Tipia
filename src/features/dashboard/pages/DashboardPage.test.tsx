@@ -708,6 +708,356 @@ describe("Dashboard inventory alerts", () => {
         )).toBeInTheDocument();
     });
 
+    it("classifies multiple variants of one product independently", () => {
+        const product: productStructure = {
+            id: "product-multi-variant",
+            name: "Multi Variant Medicine",
+            variant: [
+                {
+                    id: "variant-low",
+                    variantName: "Low Variant",
+                    lowStockThreshold: {
+                        quantity: 5,
+                        packagingLevelId: "unit-low"
+                    },
+                    packagingHierarchy: [{
+                        id: "unit-low",
+                        name: "Unit",
+                        nextLevelId: null,
+                        quantityofNextLevel: null,
+                        costPrice: null,
+                        sellingPrice: null
+                    }]
+                },
+                {
+                    id: "variant-in-stock",
+                    variantName: "In Stock Variant",
+                    lowStockThreshold: {
+                        quantity: 5,
+                        packagingLevelId: "unit-healthy"
+                    },
+                    packagingHierarchy: [{
+                        id: "unit-healthy",
+                        name: "Unit",
+                        nextLevelId: null,
+                        quantityofNextLevel: null,
+                        costPrice: null,
+                        sellingPrice: null
+                    }]
+                }
+            ]
+        };
+        renderDashboard({
+            products: [product],
+            inventoryRecords: [
+                {
+                    id: "record-low",
+                    productId: product.id,
+                    variantId: "variant-low",
+                    batchId: null,
+                    stockQuantities: [{
+                        packagingLevelId: "unit-low",
+                        quantity: 5
+                    }]
+                },
+                {
+                    id: "record-in-stock",
+                    productId: product.id,
+                    variantId: "variant-in-stock",
+                    batchId: null,
+                    stockQuantities: [{
+                        packagingLevelId: "unit-healthy",
+                        quantity: 6
+                    }]
+                }
+            ]
+        });
+
+        const lowStockCard = screen.getByRole("button", {
+            name: "Open Low Stock details, 1 affected product/variant"
+        });
+        expect(lowStockCard).toHaveTextContent("1");
+        expect(screen.getByRole("button", {
+            name: "Open Out of Stock details, 0 affected products/variants"
+        })).toBeInTheDocument();
+
+        fireEvent.click(lowStockCard);
+        const dialog = screen.getByRole("dialog", { name: "Low Stock" });
+        expect(within(dialog).getByText(
+            "Multi Variant Medicine · Low Variant"
+        )).toBeInTheDocument();
+        expect(within(dialog).queryByText(
+            "Multi Variant Medicine · In Stock Variant"
+        )).not.toBeInTheDocument();
+    });
+
+    it("separates zero-stock and positive low-stock variants of one product", () => {
+        const product: productStructure = {
+            id: "product-zero-and-low",
+            name: "Mixed Stock Medicine",
+            variant: [
+                {
+                    id: "variant-zero",
+                    variantName: "Zero Variant",
+                    lowStockThreshold: {
+                        quantity: 5,
+                        packagingLevelId: "unit-zero"
+                    },
+                    packagingHierarchy: [{
+                        id: "unit-zero",
+                        name: "Unit",
+                        nextLevelId: null,
+                        quantityofNextLevel: null,
+                        costPrice: null,
+                        sellingPrice: null
+                    }]
+                },
+                {
+                    id: "variant-positive",
+                    variantName: "Positive Variant",
+                    lowStockThreshold: {
+                        quantity: 5,
+                        packagingLevelId: "unit-positive"
+                    },
+                    packagingHierarchy: [{
+                        id: "unit-positive",
+                        name: "Unit",
+                        nextLevelId: null,
+                        quantityofNextLevel: null,
+                        costPrice: null,
+                        sellingPrice: null
+                    }]
+                }
+            ]
+        };
+        renderDashboard({
+            products: [product],
+            inventoryRecords: [
+                {
+                    id: "record-zero",
+                    productId: product.id,
+                    variantId: "variant-zero",
+                    batchId: null,
+                    stockQuantities: [{
+                        packagingLevelId: "unit-zero",
+                        quantity: 0
+                    }]
+                },
+                {
+                    id: "record-positive",
+                    productId: product.id,
+                    variantId: "variant-positive",
+                    batchId: null,
+                    stockQuantities: [{
+                        packagingLevelId: "unit-positive",
+                        quantity: 3
+                    }]
+                }
+            ]
+        });
+
+        fireEvent.click(screen.getByRole("button", {
+            name: "Open Low Stock details, 1 affected product/variant"
+        }));
+        const lowStockDialog = screen.getByRole("dialog", { name: "Low Stock" });
+        expect(within(lowStockDialog).getByText(
+            "Mixed Stock Medicine · Positive Variant"
+        )).toBeInTheDocument();
+        expect(within(lowStockDialog).queryByText(
+            "Mixed Stock Medicine · Zero Variant"
+        )).not.toBeInTheDocument();
+        fireEvent.click(within(lowStockDialog).getByRole("button", {
+            name: "Close Low Stock details"
+        }));
+
+        fireEvent.click(screen.getByRole("button", {
+            name: "Open Out of Stock details, 1 affected product/variant"
+        }));
+        const outOfStockDialog = screen.getByRole("dialog", {
+            name: "Out of Stock"
+        });
+        expect(within(outOfStockDialog).getByText(
+            "Mixed Stock Medicine · Zero Variant"
+        )).toBeInTheDocument();
+        expect(within(outOfStockDialog).queryByText(
+            "Mixed Stock Medicine · Positive Variant"
+        )).not.toBeInTheDocument();
+    });
+
+    it("counts multiple batch quantities once after packaging conversion", () => {
+        const product: productStructure = {
+            id: "product-multi-batch",
+            name: "Batch Aggregate Medicine",
+            variant: [{
+                id: "variant-multi-batch",
+                variantName: "Tablets",
+                lowStockThreshold: {
+                    quantity: 20,
+                    packagingLevelId: "unit-batch"
+                },
+                packagingHierarchy: [
+                    {
+                        id: "box-batch",
+                        name: "Box",
+                        nextLevelId: "unit-batch",
+                        quantityofNextLevel: 10,
+                        costPrice: null,
+                        sellingPrice: null
+                    },
+                    {
+                        id: "unit-batch",
+                        name: "Unit",
+                        nextLevelId: null,
+                        quantityofNextLevel: null,
+                        costPrice: null,
+                        sellingPrice: null
+                    }
+                ]
+            }]
+        };
+        const inventoryRecords: inventory[] = [
+            {
+                id: "record-batch-box",
+                productId: product.id,
+                variantId: "variant-multi-batch",
+                batchId: "batch-box",
+                stockQuantities: [{
+                    packagingLevelId: "box-batch",
+                    quantity: 1
+                }]
+            },
+            {
+                id: "record-batch-unit",
+                productId: product.id,
+                variantId: "variant-multi-batch",
+                batchId: "batch-unit",
+                stockQuantities: [{
+                    packagingLevelId: "unit-batch",
+                    quantity: 5
+                }]
+            }
+        ];
+        renderDashboard({
+            products: [product],
+            inventoryRecords,
+            inventoryBatches: [
+                makeBatch(product, "batch-box", dateOffset(120)),
+                makeBatch(product, "batch-unit", dateOffset(120))
+            ]
+        });
+
+        const lowStockCard = screen.getByRole("button", {
+            name: "Open Low Stock details, 1 affected product/variant"
+        });
+        expect(lowStockCard).toHaveTextContent("1");
+        fireEvent.click(lowStockCard);
+        const dialog = screen.getByRole("dialog", { name: "Low Stock" });
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(1);
+        expect(within(dialog).getByText(
+            "Batch Aggregate Medicine · Tablets"
+        )).toBeInTheDocument();
+        expect(within(dialog).getByText(
+            "Current stock: 1 Box, 5 Unit"
+        )).toBeInTheDocument();
+        expect(within(dialog).getByText(
+            "Threshold: 20 Unit"
+        )).toBeInTheDocument();
+    });
+
+    it("includes exact multi-level threshold stock in Low Stock", () => {
+        const product: productStructure = {
+            id: "product-exact-multilevel",
+            name: "Exact Threshold Medicine",
+            variant: [{
+                id: "variant-exact-multilevel",
+                variantName: "Tablets",
+                lowStockThreshold: {
+                    quantity: 5,
+                    packagingLevelId: "box-exact"
+                },
+                packagingHierarchy: [
+                    {
+                        id: "case-exact",
+                        name: "Case",
+                        nextLevelId: "box-exact",
+                        quantityofNextLevel: 12,
+                        costPrice: null,
+                        sellingPrice: null
+                    },
+                    {
+                        id: "box-exact",
+                        name: "Box",
+                        nextLevelId: "unit-exact",
+                        quantityofNextLevel: 10,
+                        costPrice: null,
+                        sellingPrice: null
+                    },
+                    {
+                        id: "unit-exact",
+                        name: "Unit",
+                        nextLevelId: null,
+                        quantityofNextLevel: null,
+                        costPrice: null,
+                        sellingPrice: null
+                    }
+                ]
+            }]
+        };
+        renderDashboard({
+            products: [product],
+            inventoryRecords: [{
+                id: "record-exact",
+                productId: product.id,
+                variantId: "variant-exact-multilevel",
+                batchId: null,
+                stockQuantities: [
+                    {
+                        packagingLevelId: "box-exact",
+                        quantity: 4
+                    },
+                    {
+                        packagingLevelId: "unit-exact",
+                        quantity: 10
+                    }
+                ]
+            }]
+        });
+
+        const lowStockCard = screen.getByRole("button", {
+            name: "Open Low Stock details, 1 affected product/variant"
+        });
+        expect(lowStockCard).toHaveTextContent("1");
+        fireEvent.click(lowStockCard);
+        const dialog = screen.getByRole("dialog", { name: "Low Stock" });
+        expect(within(dialog).getByText(
+            "Exact Threshold Medicine · Tablets"
+        )).toBeInTheDocument();
+        expect(within(dialog).getByText(
+            "Threshold: 5 Box"
+        )).toBeInTheDocument();
+    });
+
+    it("excludes above-threshold stock from Low and Out of Stock", () => {
+        const product = makeProduct(
+            "product-above-threshold",
+            "Above Threshold Medicine",
+            "variant-above-threshold",
+            "Tablets",
+            5
+        );
+        renderDashboard({
+            products: [product],
+            inventoryRecords: [makeInventoryRecord(product, 6)]
+        });
+
+        expect(screen.getByRole("button", {
+            name: "Open Low Stock details, 0 affected products/variants"
+        })).toBeInTheDocument();
+        expect(screen.getByRole("button", {
+            name: "Open Out of Stock details, 0 affected products/variants"
+        })).toBeInTheDocument();
+    });
+
     it("converts and aggregates stock across packaging levels before classifying it", () => {
         const product: productStructure = {
             id: "product-multilevel",

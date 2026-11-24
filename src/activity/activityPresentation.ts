@@ -38,6 +38,7 @@ export const ACTIVITY_FILTER_OPTIONS = [
     { value: "product-edited", label: "Product edited" },
     { value: "product-deleted", label: "Product deleted" },
     { value: "received-delivery", label: "Received delivery" },
+    { value: "cancelled-delivery", label: "Cancelled delivery" },
     { value: "sales", label: "Sales" },
     { value: "inventory-adjusted", label: "Inventory adjusted" }
 ] as const;
@@ -948,6 +949,38 @@ const presentations: {
             )
         };
     },
+    "delivery.draft_cancelled": (event) => ({
+        title: "Delivery draft cancelled",
+        summary: joinSummary(
+            formatBusinessDate(event.deliveryDate),
+            cleanText(event.supplierName),
+            event.items.length === 1
+                ? "1 item"
+                : `${formatQuantity(event.items.length)} items`
+        ),
+        details: sections(
+            section(
+                "Cancelled delivery",
+                dateField("Delivery date", event.deliveryDate),
+                textField("Receiver", event.receivedBy),
+                textField("Supplier", event.supplierName),
+                textField("Invoice", event.invoiceNumber)
+            ),
+            ...event.items.map((item, index) => section(
+                joinSummary(
+                    `Item ${index + 1}`,
+                    cleanText(item.productName),
+                    cleanText(item.variantName)
+                ),
+                textField("Packaging", item.packagingLevel.name),
+                quantityField("Quantity", item.quantity),
+                textField("Batch", item.batchNumber),
+                dateField("Expiry date", item.expiryDate),
+                field("Cost price", formatMoney(item.costPrice) ?? "Empty"),
+                field("Selling price", formatMoney(item.sellingPrice) ?? "Empty")
+            ))
+        )
+    }),
     "sale.completed": (event) => {
         const staffName = cleanText(event.staffMember?.displayName);
         const finalAmount = formatMoney(event.finalAmount);
@@ -1039,6 +1072,8 @@ function matchesActivityType(
             return event.type === "product.deleted";
         case "received-delivery":
             return event.type === "delivery.received";
+        case "cancelled-delivery":
+            return event.type === "delivery.draft_cancelled";
         case "sales":
             return event.type === "sale.completed";
         case "inventory-adjusted":
@@ -1097,6 +1132,8 @@ function createEventPresentation(event: ActivityEvent): ActivityPresentation {
         case "inventory.stock_adjusted":
             return presentations[event.type](event);
         case "delivery.received":
+            return presentations[event.type](event);
+        case "delivery.draft_cancelled":
             return presentations[event.type](event);
         case "sale.completed":
             return presentations[event.type](event);

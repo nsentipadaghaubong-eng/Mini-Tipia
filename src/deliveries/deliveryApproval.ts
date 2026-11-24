@@ -6,8 +6,7 @@ import {
 import type { inventory } from "../inventory/inventoryStock";
 import { addStock, createInventory } from "../inventory/inventoryStock";
 import type {
-    BatchPackagingPricing,
-    inventoryBatch
+    BatchPackagingPricing
 } from "../inventory/inventoryBatch";
 import type { productStructure } from "../products/productStructure";
 import { validatePackagingHierarchy } from "../packaging/packagingValidation";
@@ -18,6 +17,11 @@ import {
     type DeliveryDraftItem
 } from "./deliveryDraft";
 import { validateInventoryRelationships } from "../inventory/inventoryValidation";
+import {
+    batchIdentityMatches,
+    assertNoDuplicateLogicalBatchIdentities,
+    type inventoryBatch
+} from "../inventory/inventoryBatch";
 
 export interface DeliveryApprovalPlan {
     draft: DeliveryDraft;
@@ -31,20 +35,26 @@ export interface DeliveryApprovalOptions {
     now?: () => Date;
 }
 
-function expiryKey(value: Date | null): string | null {
-    return value?.toISOString().slice(0, 10) ?? null;
-}
-
 export function deliveryDraftItemMatchesBatch(
     item: DeliveryDraftItem,
-    draft: DeliveryDraft,
+    _draft: DeliveryDraft,
     batch: inventoryBatch
 ): boolean {
-    return batch.productId === item.productId &&
-        batch.variantId === item.variantId &&
-        batch.batchNumber === item.batchNumber &&
-        expiryKey(batch.expiryDate) === item.expiryDate &&
-        (item.batchNumber !== null || batch.receivedDate === draft.deliveryDate);
+    if (
+        item.batchNumber === null &&
+        item.expiryDate === null
+    ) {
+        return false;
+    }
+
+    return batchIdentityMatches(batch, {
+        productId: item.productId,
+        variantId: item.variantId,
+        batchNumber: item.batchNumber,
+        expiryDate: item.expiryDate === null
+            ? null
+            : new Date(`${item.expiryDate}T00:00:00.000Z`)
+    });
 }
 
 function findOrCreateBatch(
@@ -196,6 +206,7 @@ export function prepareDeliveryApproval(
     options: DeliveryApprovalOptions = {}
 ): DeliveryApprovalPlan {
     const draft = validateDeliveryDraft(sourceDraft);
+    assertNoDuplicateLogicalBatchIdentities(inventoryBatches);
     if (draft.status !== "draft") {
         throw new Error(`Cannot approve a ${draft.status} delivery.`);
     }

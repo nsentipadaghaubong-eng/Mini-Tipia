@@ -95,8 +95,13 @@ describe("ProductEditModal", () => {
         expect(screen.getByText(
             "A low-stock threshold is required for variants with packaging."
         )).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled();
         fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+        expect(screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        })).toHaveTextContent(
+            "A low-stock threshold is required for variants with packaging."
+        );
         expect(onSave).not.toHaveBeenCalled();
     });
 
@@ -124,7 +129,13 @@ describe("ProductEditModal", () => {
         expect(screen.getByText(
             "A low-stock threshold is required for variants with packaging."
         )).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+        expect(screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        })).toHaveTextContent(
+            "A low-stock threshold is required for variants with packaging."
+        );
         expect(onSave).not.toHaveBeenCalled();
     });
 
@@ -172,10 +183,10 @@ describe("ProductEditModal", () => {
 
         expect(markup).toContain('aria-label="Close product editor"');
         expect(markup).toContain("A reason for this product update is required.");
-        expect(markup).toContain('disabled="" type="submit"');
+        expect(markup).not.toContain('disabled="" type="submit"');
     });
 
-    it("disables saving for an empty or whitespace-only reason", () => {
+    it("shows a validation warning for an empty or whitespace-only reason", () => {
         render(createElement(ProductEditModal, {
             product,
             inventoryRecords: [],
@@ -190,15 +201,107 @@ describe("ProductEditModal", () => {
             name: /Reason for update/
         });
 
-        expect(saveButton).toBeDisabled();
+        expect(saveButton).toBeEnabled();
+        fireEvent.click(saveButton);
+        expect(screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        })).toHaveTextContent("A reason for this product update is required.");
+        fireEvent.click(within(screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        })).getByRole("button", { name: "Cancel" }));
+
         fireEvent.change(reasonInput, { target: { value: "   " } });
-        expect(saveButton).toBeDisabled();
+        expect(saveButton).toBeEnabled();
+        fireEvent.click(saveButton);
+        const warning = screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        });
+        expect(warning).toHaveTextContent(
+            "A reason for this product update is required."
+        );
+        fireEvent.click(within(warning).getByRole("button", { name: "Cancel" }));
+
         fireEvent.change(reasonInput, { target: { value: "Correct product details" } });
         expect(saveButton).toBeEnabled();
         fireEvent.change(reasonInput, { target: { value: "" } });
-        expect(saveButton).toBeDisabled();
+        expect(saveButton).toBeEnabled();
         fireEvent.change(reasonInput, { target: { value: "   " } });
-        expect(saveButton).toBeDisabled();
+        expect(saveButton).toBeEnabled();
+    });
+
+    it("lists multiple validation errors, preserves the draft, and saves after correction", () => {
+        const onSave = vi.fn();
+        const onClose = vi.fn();
+        render(createElement(ProductEditModal, {
+            product,
+            inventoryRecords: [],
+            inventoryBatches: [],
+            onManageStock: () => undefined,
+            onClose,
+            onSave
+        }));
+
+        fireEvent.change(screen.getByLabelText("Product name"), {
+            target: { value: "Preserved Medicine Name" }
+        });
+        fireEvent.change(screen.getAllByLabelText(/^Variant name/)[0], {
+            target: { value: "" }
+        });
+        fireEvent.change(screen.getAllByLabelText(
+            /Low-stock threshold quantity/
+        )[0], { target: { value: "" } });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        const warning = screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        });
+        expect(within(warning).getAllByRole("listitem").map((item) =>
+            item.textContent
+        )).toEqual([
+            "A reason for this product update is required.",
+            "Variant name is required.",
+            "A low-stock threshold is required for variants with packaging."
+        ]);
+        expect(within(warning).getAllByRole("button").map((button) =>
+            button.textContent
+        )).toEqual(["Cancel"]);
+        expect(onSave).not.toHaveBeenCalled();
+        expect(onClose).not.toHaveBeenCalled();
+
+        fireEvent.click(within(warning).getByRole("button", { name: "Cancel" }));
+
+        expect(screen.getByRole("dialog", { name: "Edit Product" }))
+            .toBeInTheDocument();
+        expect(screen.getByLabelText("Product name"))
+            .toHaveValue("Preserved Medicine Name");
+        expect(screen.getAllByLabelText(/^Variant name/)[0]).toHaveValue("");
+        expect(screen.getAllByLabelText(
+            /Low-stock threshold quantity/
+        )[0]).toHaveValue(null);
+
+        fireEvent.change(screen.getAllByLabelText(/^Variant name/)[0], {
+            target: { value: "Updated Tablets" }
+        });
+        fireEvent.change(screen.getAllByLabelText(
+            /Low-stock threshold quantity/
+        )[0], { target: { value: "8" } });
+        fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
+            target: { value: "Correct product details" }
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+
+        expect(onSave).toHaveBeenCalledOnce();
+        const savedProduct = onSave.mock.calls[0][0] as productStructure;
+        expect(savedProduct.name).toBe("Preserved Medicine Name");
+        expect(savedProduct.variant[0]).toMatchObject({
+            variantName: "Updated Tablets",
+            lowStockThreshold: {
+                quantity: 8,
+                packagingLevelId: "pack"
+            }
+        });
+        expect(onSave.mock.calls[0][1]).toBe("Correct product details");
+        expect(onClose).toHaveBeenCalledOnce();
     });
 
     it("keeps the reason section outside the independently scrollable editor", () => {
@@ -275,7 +378,7 @@ describe("ProductEditModal", () => {
         expect(screen.getAllByRole("button", { name: "Add packaging level" })[0])
             .toBeDisabled();
         expect(screen.getAllByLabelText(/Current total stock/)[0]).toHaveValue(12);
-        expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Save Changes" })).toBeEnabled();
         expect(screen.getByRole("alert")).toHaveTextContent(
             "Its inventory and product structure cannot be modified"
         );
@@ -755,15 +858,29 @@ describe("ProductEditModal", () => {
         expect(product.variant).toHaveLength(2);
 
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
-        expect(saveButton).toBeDisabled();
+        expect(saveButton).toBeEnabled();
         fireEvent.click(saveButton);
+        let warning = screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        });
+        expect(warning).toHaveTextContent(
+            "A reason for this product update is required."
+        );
+        fireEvent.click(within(warning).getByRole("button", { name: "Cancel" }));
         expect(onSave).not.toHaveBeenCalled();
         const reasonInput = screen.getByRole("textbox", {
             name: /Reason for update/
         });
         fireEvent.change(reasonInput, { target: { value: " \t " } });
-        expect(saveButton).toBeDisabled();
+        expect(saveButton).toBeEnabled();
         fireEvent.click(saveButton);
+        warning = screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        });
+        expect(warning).toHaveTextContent(
+            "A reason for this product update is required."
+        );
+        fireEvent.click(within(warning).getByRole("button", { name: "Cancel" }));
         expect(onSave).not.toHaveBeenCalled();
         fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
             target: { value: "Discontinue tablet variant" }

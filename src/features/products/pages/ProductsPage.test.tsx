@@ -822,9 +822,20 @@ describe("ProductsPage deletion", () => {
         }));
 
         const saveButton = screen.getByRole("button", { name: "Save Changes" });
-        expect(saveButton).toBeDisabled();
+        expect(saveButton).toBeEnabled();
         expect(screen.queryByLabelText("Reason for deleting Bottle packaging level"))
             .not.toBeInTheDocument();
+        fireEvent.click(saveButton);
+        const validationWarning = screen.getByRole("alertdialog", {
+            name: "Unable to Save Changes"
+        });
+        expect(validationWarning).toHaveTextContent(
+            "A reason for this product update is required."
+        );
+        expect(onUpdateProduct).not.toHaveBeenCalled();
+        fireEvent.click(within(validationWarning).getByRole("button", {
+            name: "Cancel"
+        }));
         fireEvent.change(screen.getByRole("textbox", { name: /Reason for update/ }), {
             target: { value: "Discontinue tablet variant and remove obsolete container" }
         });

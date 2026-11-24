@@ -25,6 +25,7 @@ import {
     minimumProductVariantMessage,
     type ProductRecordDeletionDraft
 } from "../../../products/productDeletion";
+import ProductValidationWarningModal from "./ProductValidationWarningModal";
 import "./ProductEditModal.css";
 
 interface ProductEditModalProps {
@@ -125,6 +126,8 @@ export default function ProductEditModal({
         createProductUpdateDraft(product)
     );
     const [saveError, setSaveError] = useState<string | null>(null);
+    const [validationWarningErrors, setValidationWarningErrors] =
+        useState<string[] | null>(null);
     const [pendingDeletion, setPendingDeletion] =
         useState<ProductRecordDeletionDraft | null>(null);
     const [stagedDeletions, setStagedDeletions] = useState<Array<{
@@ -146,11 +149,8 @@ export default function ProductEditModal({
     const hasStructuralChanges =
         JSON.stringify(getProductStructureDraft(draft.variants)) !==
         JSON.stringify(getProductStructureDraft(originalVariantDraft));
-    const saveDisabled =
-        draft.reason.trim() === "" ||
-        hasErrors ||
-        (isDraftLocked &&
-            (hasStructuralChanges || stagedDeletions.length > 0));
+    const saveDisabled = isDraftLocked &&
+        (hasStructuralChanges || stagedDeletions.length > 0);
     const orderedVariants = initialVariantId
         ? [...draft.variants].sort((first, second) =>
             first.id === initialVariantId
@@ -330,14 +330,13 @@ export default function ProductEditModal({
             setSaveError(draftLockMessages.join(" "));
             return;
         }
-        if (draft.reason.trim() === "") {
-            return;
-        }
         if (hasErrors) {
+            setValidationWarningErrors(Object.values(errors));
             return;
         }
+        let updatedProduct: productStructure;
         try {
-            const updatedProduct = buildUpdatedProduct(product, draft);
+            updatedProduct = buildUpdatedProduct(product, draft);
             for (const record of inventoryRecords) {
                 if (record.productId === product.id) {
                     validateInventoryPackagingRelationships(
@@ -346,6 +345,15 @@ export default function ProductEditModal({
                     );
                 }
             }
+        } catch (error) {
+            setValidationWarningErrors([
+                error instanceof Error
+                    ? error.message
+                    : "The product information is invalid."
+            ]);
+            return;
+        }
+        try {
             onSave(
                 updatedProduct,
                 draft.reason.trim(),
@@ -354,6 +362,7 @@ export default function ProductEditModal({
                     reason: draft.reason.trim()
                 }))
             );
+            setValidationWarningErrors(null);
             onClose();
         } catch (error) {
             setSaveError(
@@ -394,7 +403,7 @@ export default function ProductEditModal({
                     </button>
                 </header>
 
-                <form onSubmit={handleSubmit}>
+                <form noValidate onSubmit={handleSubmit}>
                     <section className="product-edit-section product-edit-reason">
                         <label className="product-edit-field product-edit-reason-label">
                             Reason for update
@@ -1046,6 +1055,14 @@ export default function ProductEditModal({
                     </footer>
                 </form>
             </section>
+            {validationWarningErrors && (
+                <ProductValidationWarningModal
+                    description="Please correct the following before saving these changes."
+                    errors={validationWarningErrors}
+                    onCancel={() => setValidationWarningErrors(null)}
+                    title="Unable to Save Changes"
+                />
+            )}
             {pendingDeletion && (
                 <div className="inventory-modal-overlay">
                     <section

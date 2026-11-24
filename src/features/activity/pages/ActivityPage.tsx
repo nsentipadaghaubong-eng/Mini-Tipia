@@ -41,6 +41,7 @@ const eventIcons: Record<ActivityEvent["type"], LucideIcon> = {
     "inventory.batch_removed": Trash2,
     "inventory.stock_adjusted": ArrowLeftRight,
     "delivery.received": Truck,
+    "delivery.draft_cancelled": Trash2,
     "sale.completed": ShoppingCart
 };
 

@@ -8,6 +8,7 @@ import type { stockAdjustment } from "../inventory/inventoryAdjustment";
 import { getStockQuantityOrZero } from "../inventory/inventoryStock";
 import type { packagingLevel } from "../packaging/packagingHierarchy";
 import type { productStructure, variant } from "../products/productStructure";
+import type { DeliveryDraft } from "../deliveries/deliveryDraft";
 
 // Activity exists only in application memory and does not survive a restart.
 export interface ActivityPackagingSnapshot {
@@ -233,6 +234,29 @@ export type ActivityEventInput = ActivityBaseInput & (
             readonly batch: ActivityBatchSnapshot | null;
             readonly pricingAtReceipt: BatchPackagingPricing;
             readonly stock: readonly ActivityStockSnapshot[];
+        }[];
+    }
+    | {
+        readonly type: "delivery.draft_cancelled";
+        readonly deliveryId: string;
+        readonly createdAt: string;
+        readonly updatedAt: string;
+        readonly deliveryDate: string;
+        readonly receivedBy: string;
+        readonly supplierName: string | null;
+        readonly invoiceNumber: string | null;
+        readonly items: readonly {
+            readonly deliveryItemId: string;
+            readonly productId: string;
+            readonly productName: string;
+            readonly variantId: string;
+            readonly variantName: string;
+            readonly packagingLevel: ActivityPackagingSnapshot;
+            readonly quantity: number;
+            readonly batchNumber: string | null;
+            readonly expiryDate: string | null;
+            readonly costPrice: number | null;
+            readonly sellingPrice: number | null;
         }[];
     }
     | {
@@ -482,6 +506,64 @@ export function snapshotInventory(
         variantName: productVariant.variantName,
         batch: batch ? snapshotBatch(batch, product) : null,
         stock
+    };
+}
+
+export function buildDeliveryDraftCancellationActivityInput(
+    draft: DeliveryDraft,
+    products: readonly productStructure[]
+): ActivityEventInput {
+    const items = draft.items.map((item) => {
+        const matchingProducts = products.filter(
+            (product) => product.id === item.productId
+        );
+        if (matchingProducts.length !== 1) {
+            throw new Error("Cannot snapshot a delivery draft with an invalid product.");
+        }
+        const product = matchingProducts[0];
+        const matchingVariants = product.variant.filter(
+            (productVariant) => productVariant.id === item.variantId
+        );
+        if (matchingVariants.length !== 1) {
+            throw new Error("Cannot snapshot a delivery draft with an invalid variant.");
+        }
+        const productVariant = matchingVariants[0];
+        const matchingPackaging = productVariant.packagingHierarchy.filter(
+            (level) => level.id === item.packagingLevelId
+        );
+        if (matchingPackaging.length !== 1) {
+            throw new Error("Cannot snapshot a delivery draft with invalid packaging.");
+        }
+
+        return {
+            deliveryItemId: item.deliveryItemId,
+            productId: product.id,
+            productName: product.name,
+            variantId: productVariant.id,
+            variantName: productVariant.variantName,
+            packagingLevel: snapshotPackagingLevel(
+                matchingPackaging[0],
+                productVariant.packagingHierarchy
+            ),
+            quantity: item.quantity,
+            batchNumber: item.batchNumber,
+            expiryDate: item.expiryDate,
+            costPrice: item.costPrice,
+            sellingPrice: item.sellingPrice
+        };
+    });
+
+    return {
+        type: "delivery.draft_cancelled",
+        operationKey: `delivery.draft_cancelled:${draft.deliveryId}`,
+        deliveryId: draft.deliveryId,
+        createdAt: draft.createdAt,
+        updatedAt: draft.updatedAt,
+        deliveryDate: draft.deliveryDate,
+        receivedBy: draft.receivedBy,
+        supplierName: draft.supplier ?? null,
+        invoiceNumber: draft.invoiceNumber ?? null,
+        items
     };
 }
 

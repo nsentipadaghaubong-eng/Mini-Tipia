@@ -290,6 +290,54 @@ describe("App Sales approval workflow", () => {
 });
 
 describe("App Receive Delivery approval workflow", () => {
+    it("cancels a draft through App, removes it from pending deliveries, and retains Activity", () => {
+        const draft = makeDeliveryDraft(
+            "delivery-cancel-app",
+            "Cancellation Supplier",
+            "CANCEL-INV"
+        );
+        const initialState = {
+            ...makeSalesAppState(),
+            deliveryDrafts: [draft]
+        };
+        const inventoryRecords = structuredClone(initialState.inventoryRecords);
+        const inventoryBatches = structuredClone(initialState.inventoryBatches);
+        const getLatestState = seedAppState(initialState);
+
+        render(<App />);
+        fireEvent.click(screen.getByRole("link", {
+            name: "Receive Delivery"
+        }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+        const cancelledState = getLatestState();
+        expect(cancelledState.deliveryDrafts).toEqual([]);
+        expect(cancelledState.inventoryRecords).toEqual(inventoryRecords);
+        expect(cancelledState.inventoryBatches).toEqual(inventoryBatches);
+        expect(cancelledState.activityEvents.filter(
+            (event) => event.type === "delivery.draft_cancelled"
+        )).toHaveLength(1);
+        expect(cancelledState.activityEvents.some(
+            (event) => event.type === "delivery.received"
+        )).toBe(false);
+        expect(cancelledState.activityEvents.some(
+            (event) => event.type === "inventory.batch_created"
+        )).toBe(false);
+
+        fireEvent.click(screen.getByRole("link", { name: "Dashboard" }));
+        expect(screen.queryByRole("heading", { name: "Pending Delivery" }))
+            .not.toBeInTheDocument();
+        expect(screen.getByText(
+            "There are no pending Sales or Receive Delivery drafts."
+        )).toBeVisible();
+
+        fireEvent.click(screen.getByRole("link", { name: "Activity" }));
+        expect(screen.getByText("Delivery draft cancelled")).toBeVisible();
+        expect(screen.getByText(/Cancellation Supplier/, {
+            selector: ".activity-entry-summary"
+        })).toBeVisible();
+    });
+
     it("receives a delivery through App, updating inventory and releasing the product lock", () => {
         const initialState = makeSalesAppState();
         const getLatestState = seedAppState(initialState);
@@ -387,11 +435,17 @@ describe("App Receive Delivery approval workflow", () => {
         }
         const inventory = within(inventoryPage);
         fireEvent.click(inventory.getByRole("button", { name: "Edit Stock" }));
-        expect(screen.getByRole("alert")).toHaveTextContent(
-            "This product is currently in a Receive Delivery draft."
+        const inventoryLockWarning = screen.getByRole("alertdialog", {
+            name: "Product Currently Locked"
+        });
+        expect(inventoryLockWarning).toHaveTextContent(
+            "This product is currently in an active draft. You cannot edit its inventory until the draft is completed or cancelled."
         );
         expect(screen.queryByRole("dialog", { name: "Edit Inventory" }))
             .not.toBeInTheDocument();
+        fireEvent.click(within(inventoryLockWarning).getByRole("button", {
+            name: "Cancel"
+        }));
 
         fireEvent.click(screen.getByRole("link", { name: "Products" }));
         fireEvent.click(screen.getByRole("button", {
