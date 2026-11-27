@@ -1,5 +1,5 @@
 
-import { useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import AppLayout from "./components/layout/AppLayout";
 import InventoryPage from "./features/inventory/pages/InventoryPage";
 import type { InventoryCommit } from "./features/inventory/pages/InventoryPage";
@@ -17,18 +17,16 @@ import {
     snapshotVariant
 } from "./activity/activity";
 import {
-    applicationReducer,
-    createInitialApplicationState
+    applicationReducer
 } from "./applicationState";
-import type { ApplicationAction } from "./applicationState";
+import type { ApplicationAction, ApplicationState } from "./applicationState";
 import type { ProductCreationResult } from "./products/productCreation";
 import type { productStructure } from "./products/productStructure";
 import type { variant } from "./products/productStructure";
 import {
-    getProductDeletionBlockMessages,
-    prepareProductRecordDeletionPlan,
-    type ProductRecordDeletionDraft
+    getProductDeletionBlockMessages
 } from "./products/productDeletion";
+import type { ProductRecordDeletionDraft } from "./products/productDeletion";
 import type {
     SaleDraft,
     SaleDraftDetailsChanges,
@@ -51,6 +49,16 @@ import {
     type NavigationIntent,
     type NavigationRequest
 } from "./navigation/navigationIntent";
+import { loadApplicationStateHydration } from "./persistence/applicationStartup";
+import type { ApplicationStateHydration } from "./persistence/applicationStateHydration";
+import { createApplicationStateFromHydration } from "./persistence/applicationStateProjection";
+import {
+    persistCatalogueProduct,
+    persistFullProduct,
+    persistProductUpdate,
+    persistVariantAddition
+} from "./persistence/repositories/productWriteRepository";
+import { getProductDraftLockMessages } from "./products/productDraftLock";
 
 type AppPage =
     | "dashboard"
@@ -60,7 +68,17 @@ type AppPage =
     | "sales"
     | "activity";
 
-function App() {
+interface WorkflowAppProps {
+    initialApplicationState: ApplicationState;
+    hydration: ApplicationStateHydration;
+    onCommittedWriteRecovery: () => void;
+}
+
+export function WorkflowApp({
+    initialApplicationState,
+    hydration,
+    onCommittedWriteRecovery
+}: WorkflowAppProps) {
     const [activePage, setActivePage] =
         useState<AppPage>("dashboard");
     const [navigationRequest, setNavigationRequest] =
@@ -70,9 +88,47 @@ function App() {
     const cancellingDeliveries = useRef(new Set<string>());
     const [applicationState, dispatch] = useReducer(
         applicationReducer,
-        undefined,
-        createInitialApplicationState
+        initialApplicationState
     );
+    const applicationStateRef = useRef(applicationState);
+    const productWriteInProgress = useRef(false);
+    const [isProductWritePending, setIsProductWritePending] = useState(false);
+    const persistenceOnlyActiveDraftCount =
+        getPersistenceOnlyActiveDraftCount(hydration);
+    const persistenceOnlyRecordCount = getPersistenceOnlyCount(hydration);
+
+    useEffect(() => {
+        applicationStateRef.current = applicationState;
+    }, [applicationState]);
+
+    async function commitCatalogueAction(
+        action: ApplicationAction,
+        persist: (state: ApplicationState) => Promise<void>
+    ): Promise<void> {
+        if (productWriteInProgress.current) {
+            throw new Error("Another catalogue write is already in progress.");
+        }
+        productWriteInProgress.current = true;
+        setIsProductWritePending(true);
+        const stateBeforeWrite = applicationStateRef.current;
+        try {
+            applicationReducer(stateBeforeWrite, action);
+            await persist(stateBeforeWrite);
+            try {
+                applicationReducer(applicationStateRef.current, action);
+            } catch (error) {
+                onCommittedWriteRecovery();
+                throw new Error(
+                    `SQLite committed the catalogue write, but ApplicationState could not publish it. The application is reloading persisted data. ${describeError(error)}`,
+                    { cause: error }
+                );
+            }
+            dispatch(action);
+        } finally {
+            productWriteInProgress.current = false;
+            setIsProductWritePending(false);
+        }
+    }
 
     function handleNavigation(intent: NavigationIntent) {
         const destination = getNavigationDestination(intent);
@@ -108,42 +164,72 @@ function App() {
         );
     }
 
-    function handleCreateProduct(result: ProductCreationResult) {
-        dispatch({
+    async function handleCreateProduct(result: ProductCreationResult): Promise<void> {
+        const events = prepareActivityEvents(
+            buildProductCreationActivityInputs(
+                result.product,
+                result.inventoryRecords,
+                result.inventoryBatches
+            )
+        );
+        if (events.length !== 1 + result.inventoryBatches.length) {
+            throw new Error(
+                "Full Product creation Activity could not be prepared."
+            );
+        }
+        const action = {
             type: "product.created",
             result,
-            events: prepareActivityEvents(
-                buildProductCreationActivityInputs(
-                    result.product,
-                    result.inventoryRecords,
-                    result.inventoryBatches
-                )
+            events
+        } satisfies ApplicationAction;
+        await commitCatalogueAction(action, (currentState) =>
+            persistFullProduct(
+                result,
+                currentState.products,
+                currentState.inventoryRecords,
+                currentState.inventoryBatches,
+                events
             )
-        });
+        );
     }
 
-    function handleCatalogueProductCreated(product: productStructure) {
+    async function handleCatalogueProductCreated(
+        product: productStructure
+    ): Promise<void> {
         const [event] = prepareActivityEvents(
             buildProductCreationActivityInputs(product, [], [])
         );
+        if (!event || event.type !== "product.created") {
+            throw new Error("Catalogue Product Activity could not be prepared.");
+        }
         const action = {
             type: "product.catalogue_created",
             product,
             events: [event]
         } satisfies ApplicationAction;
-        applicationReducer(applicationState, action);
-        dispatch(action);
+        await commitCatalogueAction(action, (currentState) =>
+            persistCatalogueProduct(product, currentState.products, event)
+        );
     }
 
-    function handleDeliveryVariantCreated(
+    async function handleDeliveryVariantCreated(
         productId: string,
         productVariant: variant
-    ) {
-        const product = applicationState.products.find(
+    ): Promise<void> {
+        const state = applicationStateRef.current;
+        const product = state.products.find(
             (candidate) => candidate.id === productId
         );
         if (!product) {
             throw new Error(`Product not found: ${productId}`);
+        }
+        const lockMessages = getProductDraftLockMessages(
+            productId,
+            state.saleDrafts,
+            state.deliveryDrafts
+        );
+        if (lockMessages.length > 0) {
+            throw new Error(lockMessages.join(" "));
         }
         const [event] = prepareActivityEvents([{
             type: "product.variant_added",
@@ -153,14 +239,18 @@ function App() {
             variant: snapshotVariant(productVariant),
             reason: "Added through Receive Delivery"
         }]);
+        if (!event || event.type !== "product.variant_added") {
+            throw new Error("Variant Activity could not be prepared.");
+        }
         const action = {
             type: "product.variant_added",
             productId,
             variant: productVariant,
             events: [event]
         } satisfies ApplicationAction;
-        applicationReducer(applicationState, action);
-        dispatch(action);
+        await commitCatalogueAction(action, () =>
+            persistVariantAddition(product, productVariant, event)
+        );
     }
 
     function handleInventoryCommit(commit: InventoryCommit) {
@@ -437,76 +527,38 @@ function App() {
         }
     }
 
-    function handleUpdateProduct(
+    async function handleUpdateProduct(
         product: productStructure,
         reason: string,
         stagedDeletions: ProductRecordDeletionDraft[] = []
-    ) {
-        const previousProduct = applicationState.products.find(
+    ): Promise<void> {
+        if (stagedDeletions.length > 0) {
+            throw new Error(
+                "Product, Variant, and packaging deletions are not persisted in this stage. Remove staged deletions before saving catalogue edits."
+            );
+        }
+        const state = applicationStateRef.current;
+        const previousProduct = state.products.find(
             (current) => current.id === product.id
         );
         if (!previousProduct) {
             throw new Error(`Product not found: ${product.id}`);
         }
-
-        if (stagedDeletions.length > 0) {
-            if (
-                JSON.stringify(product.variant) !==
-                JSON.stringify(previousProduct.variant)
-            ) {
-                throw new Error(
-                    "Save product structure changes separately from staged deletions."
-                );
-            }
-            const requests = stagedDeletions.map((deletion) => ({
-                ...deletion,
-                operationId: crypto.randomUUID()
-            }));
-            const plan = prepareProductRecordDeletionPlan(
-                previousProduct,
-                applicationState.inventoryRecords,
-                applicationState.inventoryBatches,
-                requests
-            );
-            const updatedProduct = {
-                ...product,
-                variant: plan.product.variant
-            };
-            for (const record of plan.inventoryRecords) {
-                if (record.productId === updatedProduct.id) {
-                    validateInventoryPackagingRelationships(updatedProduct, record);
-                }
-            }
-            const events = [...plan.events];
-            const hasProductUpdate =
-                JSON.stringify(updatedProduct) !== JSON.stringify(plan.product);
-            if (hasProductUpdate) {
-                events.push(...buildProductUpdateActivityInputs(
-                    plan.product,
-                    updatedProduct,
-                    plan.inventoryRecords,
-                    plan.inventoryRecords,
-                    plan.inventoryBatches,
-                    `product.updated:${product.id}:${crypto.randomUUID()}`,
-                    reason
-                ));
-            }
-            const action = {
-                type: "product.records_deleted",
-                productId: product.id,
-                deletions: requests,
-                product: plan.product,
-                ...(hasProductUpdate ? { updatedProduct } : {}),
-                inventoryRecords: plan.inventoryRecords,
-                inventoryBatches: plan.inventoryBatches,
-                events: prepareActivityEvents(events)
-            } satisfies ApplicationAction;
-            applicationReducer(applicationState, action);
-            dispatch(action);
-            return;
+        const lockMessages = getProductDraftLockMessages(
+            product.id,
+            state.saleDrafts,
+            state.deliveryDrafts
+        );
+        const hasStructureChanges =
+            JSON.stringify(previousProduct.variant) !==
+                JSON.stringify(product.variant) ||
+            previousProduct.genericName !== product.genericName ||
+            previousProduct.manufacturer !== product.manufacturer ||
+            previousProduct.category !== product.category;
+        if (lockMessages.length > 0 && hasStructureChanges) {
+            throw new Error(lockMessages.join(" "));
         }
-
-        for (const record of applicationState.inventoryRecords) {
+        for (const record of state.inventoryRecords) {
             if (record.productId === product.id) {
                 validateInventoryPackagingRelationships(product, record);
             }
@@ -519,15 +571,22 @@ function App() {
             events: prepareActivityEvents(buildProductUpdateActivityInputs(
                 previousProduct,
                 product,
-                applicationState.inventoryRecords,
-                applicationState.inventoryRecords,
-                applicationState.inventoryBatches,
+                state.inventoryRecords,
+                state.inventoryRecords,
+                state.inventoryBatches,
                 operationKey,
                 reason
             ))
         } satisfies ApplicationAction;
-        applicationReducer(applicationState, action);
-        dispatch(action);
+        const updateEvent = action.events.find(
+            (event) => event.type === "product.updated"
+        );
+        if (!updateEvent || updateEvent.type !== "product.updated") {
+            throw new Error("Product update Activity could not be prepared.");
+        }
+        await commitCatalogueAction(action, () =>
+            persistProductUpdate(previousProduct, product, updateEvent)
+        );
     }
 
     function handleDeleteProduct(
@@ -596,96 +655,245 @@ function App() {
             activePage={activePage}
             onSelectPage={handlePageSelection}
         >
-            <div hidden={activePage !== "dashboard"}>
-                <DashboardPage
-                    products={applicationState.products}
-                    inventoryRecords={applicationState.inventoryRecords}
-                    inventoryBatches={applicationState.inventoryBatches}
-                    saleDrafts={applicationState.saleDrafts}
-                    deliveryDrafts={applicationState.deliveryDrafts}
-                    onNavigate={handleNavigation}
-                />
+            <div className="persistence-status" role="status">
+                <p>
+                    Catalogue-only Product creation, Variant addition, and
+                    Product and packaging edits are saved to SQLite. Other
+                    workflows are not persisted yet.
+                </p>
+                {isProductWritePending && (
+                    <p aria-live="polite">Saving catalogue changes to SQLite.</p>
+                )}
+                {persistenceOnlyRecordCount > 0 && (
+                    <p>
+                        {persistenceOnlyRecordCount} persistence-only record(s)
+                        remain retained in the hydration model because the
+                        current workflows cannot represent them.
+                    </p>
+                )}
+                {persistenceOnlyActiveDraftCount > 0 && (
+                    <p role="alert">
+                        {persistenceOnlyActiveDraftCount} active persisted
+                        draft(s) cannot be represented safely. Workflow
+                        controls are disabled to protect their draft locks.
+                    </p>
+                )}
             </div>
-            <div hidden={activePage !== "products"}>
-                <ProductsPage
-                    navigationRequest={
-                        activePage === "products" ? navigationRequest : null
-                    }
-                    inventoryRecords={applicationState.inventoryRecords}
-                    inventoryBatches={applicationState.inventoryBatches}
-                    onCreateProduct={handleCreateProduct}
-                    onDeleteProduct={handleDeleteProduct}
-                    onUpdateProduct={handleUpdateProduct}
-                    saleDrafts={applicationState.saleDrafts}
-                    deliveryDrafts={applicationState.deliveryDrafts}
-                    onNavigate={handleNavigation}
-                    onNavigationConsumed={handleNavigationConsumed}
-                    onNavigationDismissed={handleNavigationDismissed}
-                    products={applicationState.products}
-                />
-            </div>
-            <div hidden={activePage !== "inventory"}>
-                <InventoryPage
-                    navigationRequest={
-                        activePage === "inventory" ? navigationRequest : null
-                    }
-                    inventoryRecords={applicationState.inventoryRecords}
-                    inventoryBatches={applicationState.inventoryBatches}
-                    onInventoryCommit={handleInventoryCommit}
-                    saleDrafts={applicationState.saleDrafts}
-                    deliveryDrafts={applicationState.deliveryDrafts}
-                    onNavigate={handleNavigation}
-                    onNavigationConsumed={handleNavigationConsumed}
-                    onNavigationDismissed={handleNavigationDismissed}
-                    products={applicationState.products}
-                />
-            </div>
-            <div hidden={activePage !== "delivery"}>
-                <ReceiveDeliveryPage
-                    products={applicationState.products}
-                    inventoryRecords={applicationState.inventoryRecords}
-                    inventoryBatches={applicationState.inventoryBatches}
-                    deliveryDrafts={applicationState.deliveryDrafts}
-                    saleDrafts={applicationState.saleDrafts}
-                    navigationRequest={
-                        activePage === "delivery" ? navigationRequest : null
-                    }
-                    onNavigationConsumed={handleNavigationConsumed}
-                    onNavigationDismissed={handleNavigationDismissed}
-                    onDraftCreated={handleDeliveryDraftCreated}
-                    onDraftCancelled={handleCancelDeliveryDraft}
-                    onDraftDetailsUpdated={handleDeliveryDraftDetailsUpdated}
-                    onDraftItemAdded={handleDeliveryDraftItemAdded}
-                    onDraftItemUpdated={handleDeliveryDraftItemUpdated}
-                    onDraftItemRemoved={handleDeliveryDraftItemRemoved}
-                    onApproveDelivery={handleApproveDelivery}
-                    onCatalogueProductCreated={handleCatalogueProductCreated}
-                    onVariantCreated={handleDeliveryVariantCreated}
-                />
-            </div>
-            <div hidden={activePage !== "sales"}>
-                <SalesPage
-                    products={applicationState.products}
-                    inventoryRecords={applicationState.inventoryRecords}
-                    inventoryBatches={applicationState.inventoryBatches}
-                    saleDrafts={applicationState.saleDrafts}
-                    navigationRequest={
-                        activePage === "sales" ? navigationRequest : null
-                    }
-                    onNavigationConsumed={handleNavigationConsumed}
-                    onNavigationDismissed={handleNavigationDismissed}
-                    onDraftCreated={handleSaleDraftCreated}
-                    onDraftDetailsUpdated={handleSaleDraftDetailsUpdated}
-                    onDraftItemAdded={handleSaleDraftItemAdded}
-                    onDraftItemUpdated={handleSaleDraftItemUpdated}
-                    onDraftItemRemoved={handleSaleDraftItemRemoved}
-                    onApproveSale={handleApproveSale}
-                />
-            </div>
-            <div hidden={activePage !== "activity"}>
-                <ActivityPage activityEvents={applicationState.activityEvents} />
+            <div inert={
+                persistenceOnlyActiveDraftCount > 0 ||
+                isProductWritePending ||
+                undefined
+            }>
+                <div hidden={activePage !== "dashboard"}>
+                    <DashboardPage
+                        products={applicationState.products}
+                        inventoryRecords={applicationState.inventoryRecords}
+                        inventoryBatches={applicationState.inventoryBatches}
+                        saleDrafts={applicationState.saleDrafts}
+                        deliveryDrafts={applicationState.deliveryDrafts}
+                        onNavigate={handleNavigation}
+                    />
+                </div>
+                <div hidden={activePage !== "products"}>
+                    <ProductsPage
+                        navigationRequest={
+                            activePage === "products" ? navigationRequest : null
+                        }
+                        inventoryRecords={applicationState.inventoryRecords}
+                        inventoryBatches={applicationState.inventoryBatches}
+                        onCreateProduct={handleCreateProduct}
+                        onDeleteProduct={handleDeleteProduct}
+                        onUpdateProduct={handleUpdateProduct}
+                        saleDrafts={applicationState.saleDrafts}
+                        deliveryDrafts={applicationState.deliveryDrafts}
+                        onNavigate={handleNavigation}
+                        onNavigationConsumed={handleNavigationConsumed}
+                        onNavigationDismissed={handleNavigationDismissed}
+                        products={applicationState.products}
+                    />
+                </div>
+                <div hidden={activePage !== "inventory"}>
+                    <InventoryPage
+                        navigationRequest={
+                            activePage === "inventory" ? navigationRequest : null
+                        }
+                        inventoryRecords={applicationState.inventoryRecords}
+                        inventoryBatches={applicationState.inventoryBatches}
+                        onInventoryCommit={handleInventoryCommit}
+                        saleDrafts={applicationState.saleDrafts}
+                        deliveryDrafts={applicationState.deliveryDrafts}
+                        onNavigate={handleNavigation}
+                        onNavigationConsumed={handleNavigationConsumed}
+                        onNavigationDismissed={handleNavigationDismissed}
+                        products={applicationState.products}
+                    />
+                </div>
+                <div hidden={activePage !== "delivery"}>
+                    <ReceiveDeliveryPage
+                        products={applicationState.products}
+                        inventoryRecords={applicationState.inventoryRecords}
+                        inventoryBatches={applicationState.inventoryBatches}
+                        deliveryDrafts={applicationState.deliveryDrafts}
+                        saleDrafts={applicationState.saleDrafts}
+                        navigationRequest={
+                            activePage === "delivery" ? navigationRequest : null
+                        }
+                        onNavigationConsumed={handleNavigationConsumed}
+                        onNavigationDismissed={handleNavigationDismissed}
+                        onDraftCreated={handleDeliveryDraftCreated}
+                        onDraftCancelled={handleCancelDeliveryDraft}
+                        onDraftDetailsUpdated={handleDeliveryDraftDetailsUpdated}
+                        onDraftItemAdded={handleDeliveryDraftItemAdded}
+                        onDraftItemUpdated={handleDeliveryDraftItemUpdated}
+                        onDraftItemRemoved={handleDeliveryDraftItemRemoved}
+                        onApproveDelivery={handleApproveDelivery}
+                        onCatalogueProductCreated={handleCatalogueProductCreated}
+                        onVariantCreated={handleDeliveryVariantCreated}
+                    />
+                </div>
+                <div hidden={activePage !== "sales"}>
+                    <SalesPage
+                        products={applicationState.products}
+                        inventoryRecords={applicationState.inventoryRecords}
+                        inventoryBatches={applicationState.inventoryBatches}
+                        saleDrafts={applicationState.saleDrafts}
+                        navigationRequest={
+                            activePage === "sales" ? navigationRequest : null
+                        }
+                        onNavigationConsumed={handleNavigationConsumed}
+                        onNavigationDismissed={handleNavigationDismissed}
+                        onDraftCreated={handleSaleDraftCreated}
+                        onDraftDetailsUpdated={handleSaleDraftDetailsUpdated}
+                        onDraftItemAdded={handleSaleDraftItemAdded}
+                        onDraftItemUpdated={handleSaleDraftItemUpdated}
+                        onDraftItemRemoved={handleSaleDraftItemRemoved}
+                        onApproveSale={handleApproveSale}
+                    />
+                </div>
+                <div hidden={activePage !== "activity"}>
+                    <ActivityPage
+                        activityEvents={applicationState.activityEvents}
+                    />
+                </div>
             </div>
         </AppLayout>
+    );
+}
+
+type StartupState =
+    | { state: "loading"; message?: string }
+    | {
+        state: "ready";
+        hydration: ApplicationStateHydration;
+        applicationState: ApplicationState;
+    }
+    | { state: "failed"; message: string };
+
+function describeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function getPersistenceOnlyCount(
+    hydration: ApplicationStateHydration
+): number {
+    return [
+        ...hydration.completedSales,
+        ...hydration.receivedDeliveries,
+        ...hydration.activeDeliveryDrafts
+    ].filter((record) =>
+        record.domainProjection.status === "persistence-only"
+    ).length;
+}
+
+function getPersistenceOnlyActiveDraftCount(
+    hydration: ApplicationStateHydration
+): number {
+    return [
+        ...hydration.activeSaleDrafts,
+        ...hydration.activeDeliveryDrafts
+    ].filter((record) =>
+        record.domainProjection.status === "persistence-only"
+    ).length;
+}
+
+function App() {
+    const [startupState, setStartupState] =
+        useState<StartupState>({ state: "loading" });
+    const [startupAttempt, setStartupAttempt] = useState(0);
+
+    function recoverAfterCommittedWrite() {
+        setStartupState({
+            state: "loading",
+            message:
+                "A SQLite catalogue write committed, but ApplicationState could not publish it. Reloading from a consistent SQLite snapshot."
+        });
+        setStartupAttempt((attempt) => attempt + 1);
+    }
+
+    useEffect(() => {
+        let isMounted = true;
+
+        loadApplicationStateHydration()
+            .then((hydration) => {
+                if (isMounted) {
+                    setStartupState({
+                        state: "ready",
+                        hydration,
+                        applicationState:
+                            createApplicationStateFromHydration(hydration)
+                    });
+                }
+            })
+            .catch((error: unknown) => {
+                if (isMounted) {
+                    setStartupState({
+                        state: "failed",
+                        message: describeError(error)
+                    });
+                }
+            });
+
+        return () => {
+            isMounted = false;
+        };
+    }, [startupAttempt]);
+
+    if (startupState.state === "loading") {
+        return (
+            <main aria-busy="true">
+                <h1>Loading SQLite application data</h1>
+                <p role="status">
+                    {startupState.message ??
+                        "The application is unavailable until database initialization and read-only hydration complete."}
+                </p>
+            </main>
+        );
+    }
+
+    if (startupState.state === "failed") {
+        return (
+            <main>
+                <h1>SQLite application data unavailable</h1>
+                <p role="alert">{startupState.message}</p>
+                <button
+                    type="button"
+                    onClick={() => {
+                        setStartupState({ state: "loading" });
+                        setStartupAttempt((attempt) => attempt + 1);
+                    }}
+                >
+                    Retry
+                </button>
+            </main>
+        );
+    }
+
+    return (
+        <WorkflowApp
+            initialApplicationState={startupState.applicationState}
+            hydration={startupState.hydration}
+            onCommittedWriteRecovery={recoverAfterCommittedWrite}
+        />
     );
 }
 

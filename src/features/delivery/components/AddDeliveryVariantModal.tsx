@@ -16,7 +16,7 @@ interface AddDeliveryVariantModalProps {
     products: productStructure[];
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
-    onCreate: (productVariant: variant) => void;
+    onCreate: (productVariant: variant) => void | Promise<void>;
     onClose: () => void;
 }
 
@@ -50,6 +50,7 @@ export default function AddDeliveryVariantModal({
 }: AddDeliveryVariantModalProps) {
     const [draft, setDraft] = useState(createEmptyVariantCreationDraft);
     const [submitError, setSubmitError] = useState("");
+    const [isSubmitting, setIsSubmitting] = useState(false);
     const errors = validateProductCreationDraft(validationDraft(product, draft));
     const variantPrefix = "variants.0";
 
@@ -58,12 +59,13 @@ export default function AddDeliveryVariantModal({
         setSubmitError("");
     }
 
-    function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (Object.keys(errors).length > 0) {
             return;
         }
 
+        setIsSubmitting(true);
         try {
             const productVariant = createVariantFromDraft(
                 product,
@@ -73,12 +75,17 @@ export default function AddDeliveryVariantModal({
                 undefined,
                 inventoryBatches
             );
-            onCreate(productVariant);
+            const creation = onCreate(productVariant);
+            if (creation) {
+                await creation;
+            }
             onClose();
         } catch (error) {
             setSubmitError(error instanceof Error
                 ? error.message
                 : "The variant could not be created.");
+        } finally {
+            setIsSubmitting(false);
         }
     }
 
@@ -355,10 +362,10 @@ export default function AddDeliveryVariantModal({
                         </button>
                         <button
                             className="primary-button"
-                            disabled={Object.keys(errors).length > 0}
+                            disabled={Object.keys(errors).length > 0 || isSubmitting}
                             type="submit"
                         >
-                            Add Variant
+                            {isSubmitting ? "Saving..." : "Add Variant"}
                         </button>
                     </footer>
                 </form>

@@ -40,7 +40,7 @@ interface ProductsPageProps {
     products: productStructure[];
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
-    onCreateProduct: (result: ProductCreationResult) => void;
+    onCreateProduct: (result: ProductCreationResult) => void | Promise<void>;
     onDeleteProduct: (
         productId: string,
         reason: string
@@ -49,7 +49,7 @@ interface ProductsPageProps {
         product: productStructure,
         reason: string,
         deletions?: ProductRecordDeletionDraft[]
-    ) => void;
+    ) => void | Promise<void>;
     saleDrafts: SaleDraft[];
     deliveryDrafts: DeliveryDraft[];
     navigationRequest: NavigationRequest | null;

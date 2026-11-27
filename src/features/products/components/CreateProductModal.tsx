@@ -27,12 +27,14 @@ interface CommonCreateProductModalProps {
 type CreateProductModalProps = CommonCreateProductModalProps & (
     | {
         mode?: "stock";
-        onCreate: (result: ProductCreationResult) => void;
+        onCreate: (result: ProductCreationResult) => void | Promise<void>;
         onCreateCatalogue?: never;
     }
     | {
         mode: "catalogue";
-        onCreateCatalogue: (product: productStructure) => void;
+        onCreateCatalogue: (
+            product: productStructure
+        ) => void | Promise<void>;
         onCreate?: never;
     }
 );
@@ -63,6 +65,7 @@ export default function CreateProductModal({
 }: CreateProductModalProps) {
     const [draft, setDraft] = useState(emptyDraft);
     const [submitError, setSubmitError] = useState<string | null>(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
     const [validationWarningErrors, setValidationWarningErrors] =
         useState<string[] | null>(null);
     const errors = validateProductCreationDraft(draft);
@@ -80,13 +83,14 @@ export default function CreateProductModal({
         setSubmitError(null);
     }
 
-    function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (Object.keys(errors).length > 0) {
             setValidationWarningErrors(Object.values(errors));
             return;
         }
 
+        setIsSubmitting(true);
         try {
             if (mode === "catalogue") {
                 if (!onCreateCatalogue) {
@@ -99,7 +103,10 @@ export default function CreateProductModal({
                     undefined,
                     inventoryBatches
                 );
-                onCreateCatalogue(product);
+                const creation = onCreateCatalogue(product);
+                if (creation) {
+                    await creation;
+                }
             } else {
                 if (!onCreate) {
                     throw new Error("Product creation is not configured.");
@@ -111,7 +118,10 @@ export default function CreateProductModal({
                     undefined,
                     inventoryBatches
                 );
-                onCreate(result);
+                const creation = onCreate(result);
+                if (creation) {
+                    await creation;
+                }
             }
             setValidationWarningErrors(null);
             onClose();
@@ -121,6 +131,8 @@ export default function CreateProductModal({
                     ? error.message
                     : "The product could not be created."
             );
+        } finally {
+            setIsSubmitting(false);
         }
     }
 
@@ -320,9 +332,12 @@ export default function CreateProductModal({
                         </button>
                         <button
                             className="primary-button"
+                            disabled={isSubmitting}
                             type="submit"
                         >
-                            {mode === "catalogue"
+                            {isSubmitting
+                                ? "Saving..."
+                                : mode === "catalogue"
                                 ? "Create Catalogue Product"
                                 : "Create Product"}
                         </button>

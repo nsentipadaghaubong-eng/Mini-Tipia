@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 
 import {
+    act,
     cleanup,
     fireEvent,
     render,
     screen,
+    waitFor,
     within
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App from "./App";
+import { WorkflowApp } from "./App";
 import * as applicationState from "./applicationState";
 import type { ApplicationState } from "./applicationState";
 import {
@@ -17,11 +19,73 @@ import {
     updateSaleDraftDetails
 } from "./sales/salesDraft";
 import { createDeliveryDraft } from "./deliveries/deliveryDraft";
+import type { ApplicationStateHydration } from "./persistence/applicationStateHydration";
 
 afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
 });
+
+const emptyHydration: ApplicationStateHydration = {
+    products: [],
+    inventoryRecords: [],
+    inventoryBatches: [],
+    activityEvents: [],
+    completedSales: [],
+    receivedDeliveries: [],
+    activeSaleDrafts: [],
+    activeDeliveryDrafts: [],
+    persistenceLimitations: []
+};
+
+const persistenceMocks = vi.hoisted(() => ({
+    executeTransaction: vi.fn(),
+    querySqlite: vi.fn()
+}));
+
+vi.mock("./persistence/transaction", () => ({
+    executeTransaction: persistenceMocks.executeTransaction
+}));
+
+vi.mock("./persistence/query", () => ({
+    querySqlite: persistenceMocks.querySqlite
+}));
+
+function makeEmptyApplicationState(): ApplicationState {
+    return {
+        products: [],
+        inventoryRecords: [],
+        inventoryBatches: [],
+        activityEvents: [],
+        sales: [],
+        saleDrafts: [],
+        deliveryDrafts: []
+    };
+}
+
+function makeApplicationState(
+    saleDrafts: ApplicationState["saleDrafts"] = [],
+    deliveryDrafts: ApplicationState["deliveryDrafts"] = []
+): ApplicationState {
+    return {
+        ...makeEmptyApplicationState(),
+        saleDrafts,
+        deliveryDrafts
+    };
+}
+
+function renderWorkflowApp(
+    initialApplicationState: ApplicationState,
+    onCommittedWriteRecovery: () => void = () => undefined
+) {
+    return render(
+        <WorkflowApp
+            initialApplicationState={initialApplicationState}
+            hydration={emptyHydration}
+            onCommittedWriteRecovery={onCommittedWriteRecovery}
+        />
+    );
+}
 
 function makeSaleDraft(draftId: string, customerName: string) {
     const draft = createSaleDraft({
@@ -49,19 +113,6 @@ function makeDeliveryDraft(
         makeId: () => deliveryId,
         now: () => new Date("2026-11-07T12:00:00.000Z")
     });
-}
-
-function seedDrafts(
-    saleDrafts: ReturnType<typeof makeSaleDraft>[],
-    deliveryDrafts: ReturnType<typeof makeDeliveryDraft>[]
-) {
-    const createInitialState = applicationState.createInitialApplicationState;
-    vi.spyOn(applicationState, "createInitialApplicationState")
-        .mockImplementation(() => ({
-            ...createInitialState(),
-            saleDrafts,
-            deliveryDrafts
-        }));
 }
 
 function makeSalesAppState(): ApplicationState {
@@ -106,7 +157,7 @@ function makeSalesAppState(): ApplicationState {
     };
 
     return {
-        ...applicationState.createInitialApplicationState(),
+        ...makeEmptyApplicationState(),
         products: [product],
         inventoryRecords: [inventoryRecord],
         inventoryBatches: [inventoryBatch],
@@ -118,8 +169,6 @@ function makeSalesAppState(): ApplicationState {
 }
 
 function seedAppState(state: ApplicationState) {
-    vi.spyOn(applicationState, "createInitialApplicationState")
-        .mockReturnValue(state);
     const reduce = applicationState.applicationReducer;
     let latestState = state;
     vi.spyOn(applicationState, "applicationReducer")
@@ -135,9 +184,12 @@ describe("Dashboard pending draft navigation", () => {
         const firstDraft = makeSaleDraft("sale-first-app", "First customer");
         const secondDraft = makeSaleDraft("sale-second-app", "Second customer");
         const firstDraftSnapshot = structuredClone(firstDraft);
-        seedDrafts([firstDraft, secondDraft], []);
+        const initialState = makeApplicationState(
+            [firstDraft, secondDraft],
+            []
+        );
 
-        render(<App />);
+        renderWorkflowApp(initialState);
         const salesButtons = screen.getAllByRole("button", {
             name: "Open Sales"
         });
@@ -161,9 +213,12 @@ describe("Dashboard pending draft navigation", () => {
             "INV-TWO"
         );
         const firstDraftSnapshot = structuredClone(firstDraft);
-        seedDrafts([], [firstDraft, secondDraft]);
+        const initialState = makeApplicationState(
+            [],
+            [firstDraft, secondDraft]
+        );
 
-        render(<App />);
+        renderWorkflowApp(initialState);
         const deliveryButtons = screen.getAllByRole("button", {
             name: "Open Receive Delivery"
         });
@@ -181,7 +236,7 @@ describe("App Sales approval workflow", () => {
         const initialState = makeSalesAppState();
         const getLatestState = seedAppState(initialState);
 
-        render(<App />);
+        renderWorkflowApp(initialState);
         const salesPage = document.querySelector<HTMLElement>(".sales-page");
         if (!salesPage) {
             throw new Error("The Sales page was not rendered by App.");
@@ -304,11 +359,21 @@ describe("App Receive Delivery approval workflow", () => {
         const inventoryBatches = structuredClone(initialState.inventoryBatches);
         const getLatestState = seedAppState(initialState);
 
-        render(<App />);
+        renderWorkflowApp(initialState);
         fireEvent.click(screen.getByRole("link", {
             name: "Receive Delivery"
         }));
         fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+        const confirmation = screen.getByRole("alertdialog", {
+            name: "Delete Entire Delivery Draft?"
+        });
+
+        expect(getLatestState().deliveryDrafts).toEqual([draft]);
+        expect(getLatestState().activityEvents).toEqual([]);
+        fireEvent.click(within(confirmation).getByRole("button", {
+            name: "Confirm Deletion"
+        }));
 
         const cancelledState = getLatestState();
         expect(cancelledState.deliveryDrafts).toEqual([]);
@@ -342,7 +407,7 @@ describe("App Receive Delivery approval workflow", () => {
         const initialState = makeSalesAppState();
         const getLatestState = seedAppState(initialState);
 
-        render(<App />);
+        renderWorkflowApp(initialState);
         const deliveryPage = document.querySelector<HTMLElement>(
             ".receive-delivery-page"
         );
@@ -541,5 +606,158 @@ describe("App Receive Delivery approval workflow", () => {
         expect(within(unlockedInventoryDialog).getByRole("button", {
             name: "Add batch"
         })).toBeEnabled();
+    });
+});
+
+describe("App catalogue persistence", () => {
+    function openCatalogueProductModal() {
+        fireEvent.click(screen.getByRole("link", { name: "Receive Delivery" }));
+        const deliveryPage = document.querySelector<HTMLElement>(
+            ".receive-delivery-page"
+        );
+        if (!deliveryPage) {
+            throw new Error("The Receive Delivery page was not rendered by App.");
+        }
+        const delivery = within(deliveryPage);
+        fireEvent.change(delivery.getByLabelText("Search products"), {
+            target: { value: "New catalogue item" }
+        });
+        fireEvent.click(delivery.getByRole("button", {
+            name: "Create New Product"
+        }));
+        const dialog = screen.getByRole("dialog", { name: "Create Product" });
+        fireEvent.change(within(dialog).getByLabelText(/Product name/), {
+            target: { value: "New catalogue item" }
+        });
+        return dialog;
+    }
+
+    it("publishes full initial Inventory only after the full Product transaction resolves", async () => {
+        let resolveTransaction: (rowsAffected: number[]) => void = () => undefined;
+        persistenceMocks.querySqlite.mockResolvedValue({
+            columns: ["product_id", "product_position"],
+            rows: []
+        });
+        persistenceMocks.executeTransaction.mockImplementation(
+            () =>
+                new Promise<number[]>((resolve) => {
+                    resolveTransaction = resolve;
+                })
+        );
+
+        renderWorkflowApp(makeEmptyApplicationState());
+        fireEvent.click(screen.getByRole("link", { name: "Products" }));
+        fireEvent.click(screen.getByRole("button", { name: "Create Product" }));
+        const dialog = screen.getByRole("dialog", { name: "Create Product" });
+        fireEvent.change(within(dialog).getByLabelText(/Product name/), {
+            target: { value: "Full stock medicine" }
+        });
+        fireEvent.click(within(dialog).getByRole("button", {
+            name: "Add Packaging Level"
+        }));
+        fireEvent.change(within(dialog).getByLabelText(/Threshold quantity/), {
+            target: { value: "5" }
+        });
+        fireEvent.change(within(dialog).getByLabelText(/Packaging name/), {
+            target: { value: "Box" }
+        });
+        fireEvent.change(within(dialog).getByLabelText(/Box quantity/), {
+            target: { value: "3" }
+        });
+        fireEvent.click(within(dialog).getByRole("button", {
+            name: "Create Product"
+        }));
+
+        await waitFor(() => {
+            const warning = screen.queryByRole("alertdialog");
+            if (warning) {
+                throw new Error(warning.textContent ?? "Product validation warning.");
+            }
+            const submitError = screen.queryByRole("alert");
+            if (submitError) {
+                throw new Error(submitError.textContent ?? "Product submit error.");
+            }
+            expect(persistenceMocks.executeTransaction).toHaveBeenCalledOnce();
+        });
+        expect(screen.queryByRole("heading", { name: "Full stock medicine" }))
+            .not.toBeInTheDocument();
+
+        const expectedRows =
+            persistenceMocks.executeTransaction.mock.calls[0]?.[1] as number[];
+        await act(async () => resolveTransaction(expectedRows));
+
+        expect(await screen.findByRole("heading", {
+            name: "Full stock medicine"
+        })).toBeVisible();
+    });
+
+    it("publishes catalogue state only after the SQLite transaction resolves", async () => {
+        let resolveTransaction: (rowsAffected: number[]) => void = () => undefined;
+        persistenceMocks.querySqlite.mockResolvedValue({
+            columns: ["product_id", "product_position"],
+            rows: []
+        });
+        persistenceMocks.executeTransaction.mockImplementation(
+            () =>
+                new Promise<number[]>((resolve) => {
+                    resolveTransaction = resolve;
+                })
+        );
+
+        renderWorkflowApp(makeEmptyApplicationState());
+        const dialog = openCatalogueProductModal();
+        fireEvent.click(within(dialog).getByRole("button", {
+            name: "Create Catalogue Product"
+        }));
+
+        await waitFor(() =>
+            expect(persistenceMocks.executeTransaction).toHaveBeenCalledOnce()
+        );
+        expect(screen.getByRole("dialog", { name: "Create Product" }))
+            .toBeVisible();
+        expect(screen.queryByText(/Selected product: New catalogue item/))
+            .not.toBeInTheDocument();
+
+        const expectedRows = persistenceMocks.executeTransaction.mock.calls[0]?.[1] as number[];
+        await act(async () => resolveTransaction(expectedRows));
+
+        const selectedName = await screen.findByText("New catalogue item", {
+            selector: "strong"
+        });
+        expect(selectedName.closest("p")).toHaveTextContent(
+            "Selected product: New catalogue item"
+        );
+        fireEvent.click(screen.getByRole("link", { name: "Products" }));
+        expect(screen.getByRole("heading", { name: "New catalogue item" }))
+            .toBeVisible();
+    });
+
+    it("leaves ApplicationState unchanged when the catalogue transaction fails", async () => {
+        persistenceMocks.querySqlite.mockResolvedValue({
+            columns: ["product_id", "product_position"],
+            rows: []
+        });
+        persistenceMocks.executeTransaction.mockRejectedValue(
+            new Error("SQLite transaction failed at statement 3.")
+        );
+
+        renderWorkflowApp(makeEmptyApplicationState());
+        const dialog = openCatalogueProductModal();
+        fireEvent.click(within(dialog).getByRole("button", {
+            name: "Create Catalogue Product"
+        }));
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+            "SQLite transaction failed at statement 3."
+        );
+        expect(screen.queryByText(/Selected product: New catalogue item/))
+            .not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", {
+            name: "Close create product"
+        }));
+        fireEvent.click(screen.getByRole("link", { name: "Products" }));
+        expect(screen.getByText(
+            "No products yet. Create a product to get started."
+        )).toBeVisible();
     });
 });

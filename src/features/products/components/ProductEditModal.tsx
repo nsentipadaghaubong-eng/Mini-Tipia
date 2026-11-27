@@ -43,7 +43,7 @@ interface ProductEditModalProps {
         product: productStructure,
         reason: string,
         deletions?: ProductRecordDeletionDraft[]
-    ) => void;
+    ) => unknown;
     draftLockMessages?: string[];
 }
 
@@ -126,6 +126,7 @@ export default function ProductEditModal({
         createProductUpdateDraft(product)
     );
     const [saveError, setSaveError] = useState<string | null>(null);
+    const [isSaving, setIsSaving] = useState(false);
     const [validationWarningErrors, setValidationWarningErrors] =
         useState<string[] | null>(null);
     const [pendingDeletion, setPendingDeletion] =
@@ -321,7 +322,7 @@ export default function ProductEditModal({
         setPendingDeletion(null);
     }
 
-    function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (
             isDraftLocked &&
@@ -353,8 +354,9 @@ export default function ProductEditModal({
             ]);
             return;
         }
+        setIsSaving(true);
         try {
-            onSave(
+            const saving = onSave(
                 updatedProduct,
                 draft.reason.trim(),
                 stagedDeletions.map(({ deletion }) => ({
@@ -362,6 +364,9 @@ export default function ProductEditModal({
                     reason: draft.reason.trim()
                 }))
             );
+            if (saving instanceof Promise) {
+                await saving;
+            }
             setValidationWarningErrors(null);
             onClose();
         } catch (error) {
@@ -370,6 +375,8 @@ export default function ProductEditModal({
                     ? error.message
                     : "The product could not be updated."
             );
+        } finally {
+            setIsSaving(false);
         }
     }
 
@@ -1047,10 +1054,10 @@ export default function ProductEditModal({
                         </button>
                         <button
                             className="primary-button"
-                            disabled={saveDisabled}
+                            disabled={saveDisabled || isSaving}
                             type="submit"
                         >
-                            Save Changes
+                            {isSaving ? "Saving..." : "Save Changes"}
                         </button>
                     </footer>
                 </form>

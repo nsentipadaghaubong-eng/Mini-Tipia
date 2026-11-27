@@ -750,6 +750,80 @@ function makeDeliveryDraft(
 }
 
 describe("application-level Activity state", () => {
+    it("validates Delivery associations for a newly created batch and Inventory record", () => {
+        const result = createProductResult();
+        const productVariant = result.product.variant[0];
+        const packagingLevel = productVariant?.packagingHierarchy[0];
+        if (!productVariant || !packagingLevel) {
+            throw new Error("New Delivery association fixture is incomplete.");
+        }
+        const deliveryDraft = addDeliveryDraftItem(
+            createDeliveryDraft({
+                deliveryDate: "2026-03-05",
+                receivedBy: "Pharmacist"
+            }, {
+                makeId: () => "new-association-delivery",
+                now: () => new Date("2026-03-05T09:00:00.000Z")
+            }),
+            {
+                deliveryItemId: "new-association-item",
+                productId: result.product.id,
+                variantId: productVariant.id,
+                packagingLevelId: packagingLevel.id,
+                quantity: 2,
+                batchNumber: "NEW-LOT",
+                expiryDate: "2029-12-31",
+                costPrice: null,
+                sellingPrice: null
+            },
+            "2026-03-05T09:01:00.000Z"
+        );
+        const state: ApplicationState = {
+            ...createInitialApplicationState(),
+            products: [result.product],
+            inventoryRecords: result.inventoryRecords,
+            inventoryBatches: result.inventoryBatches,
+            activityEvents: [],
+            deliveryDrafts: [deliveryDraft]
+        };
+        let generatedId = 0;
+        const plan = prepareDeliveryApproval(
+            deliveryDraft,
+            state.products,
+            state.inventoryRecords,
+            state.inventoryBatches,
+            {
+                makeId: () => ["new-association-batch", "new-association-inventory"][
+                    generatedId++
+                ] ?? `new-association-extra-${generatedId}`,
+                now: () => new Date("2026-03-05T09:02:00.000Z")
+            }
+        );
+        const [event] = prepareActivityEvents([plan.activity], {
+            makeId: () => "new-association-event",
+            now: () => new Date(plan.draft.updatedAt)
+        });
+        if (!event) {
+            throw new Error("New Delivery association fixture has no Activity event.");
+        }
+
+        const committed = applicationReducer(state, {
+            type: "delivery.approved",
+            plan,
+            event
+        });
+
+        expect(plan.receivedItemAssociations).toEqual([{
+            deliveryItemId: "new-association-item",
+            inventoryRecordId: "new-association-inventory",
+            batchId: "new-association-batch"
+        }]);
+        expect(committed.inventoryRecords.some(
+            (record) => record.id === "new-association-inventory"
+        )).toBe(true);
+        expect(committed.deliveryDrafts[0]?.status).toBe("received");
+    });
+
     it("preserves batch pricing and Product defaults during a stock-only adjustment", () => {
         const initial = createInitialApplicationState();
         const record = initial.inventoryRecords[0];
@@ -1385,6 +1459,22 @@ describe("application-level Activity state", () => {
         expect(() => applicationReducer(state, {
             type: "delivery.approved",
             plan: tamperedPlan,
+            event: deliveryEvent
+        })).toThrow("Delivery approval does not match the active draft.");
+        expect(state).toEqual(stateBeforeRejectedApproval);
+
+        const tamperedAssociationPlan = {
+            ...approvalPlan,
+            receivedItemAssociations: approvalPlan.receivedItemAssociations.map(
+                (association) => ({
+                    ...association,
+                    inventoryRecordId: "forged-inventory-id"
+                })
+            )
+        };
+        expect(() => applicationReducer(state, {
+            type: "delivery.approved",
+            plan: tamperedAssociationPlan,
             event: deliveryEvent
         })).toThrow("Delivery approval does not match the active draft.");
         expect(state).toEqual(stateBeforeRejectedApproval);

@@ -33,8 +33,13 @@ interface ReceiveDeliveryPageProps {
     navigationRequest: NavigationRequest | null;
     onNavigationConsumed: (requestId: number, handled: boolean) => void;
     onNavigationDismissed: (requestId: number) => void;
-    onCatalogueProductCreated: (product: productStructure) => void;
-    onVariantCreated: (productId: string, productVariant: variant) => void;
+    onCatalogueProductCreated: (
+        product: productStructure
+    ) => void | Promise<void>;
+    onVariantCreated: (
+        productId: string,
+        productVariant: variant
+    ) => void | Promise<void>;
     onDraftCreated: (draft: DeliveryDraft) => void;
     onDraftCancelled: (deliveryId: string) => boolean;
     onDraftDetailsUpdated: (
@@ -361,15 +366,23 @@ export default function ReceiveDeliveryPage({
         setShowProductResults(false);
     }
 
-    function handleCatalogueProductCreated(product: productStructure) {
-        onCatalogueProductCreated(product);
-        setSelectedProductId(product.id);
-        setSelectedVariantId("");
-        setEditingItem(undefined);
-        setIsReceivingItem(false);
-        setProductSearch("");
-        setShowProductResults(false);
-        setIsCreatingProduct(false);
+    function handleCatalogueProductCreated(
+        product: productStructure
+    ): void | Promise<void> {
+        const finishCreation = () => {
+            setSelectedProductId(product.id);
+            setSelectedVariantId("");
+            setEditingItem(undefined);
+            setIsReceivingItem(false);
+            setProductSearch("");
+            setShowProductResults(false);
+            setIsCreatingProduct(false);
+        };
+        const creation = onCatalogueProductCreated(product);
+        if (creation) {
+            return creation.then(finishCreation);
+        }
+        finishCreation();
     }
 
     function selectVariant(variantId: string) {
@@ -381,7 +394,7 @@ export default function ReceiveDeliveryPage({
         setIsReceivingItem(isValidVariant);
     }
 
-    function handleVariantCreated(productVariant: variant) {
+    function handleVariantCreated(productVariant: variant): void | Promise<void> {
         if (!selectedProduct || !canAddItems) {
             return;
         }
@@ -394,11 +407,17 @@ export default function ReceiveDeliveryPage({
             setFormMessage(blockers.join(" "));
             return;
         }
-        onVariantCreated(selectedProduct.id, productVariant);
-        setSelectedVariantId(productVariant.id);
-        setEditingItem(undefined);
-        setIsReceivingItem(true);
-        setIsAddingVariant(false);
+        const creation = onVariantCreated(selectedProduct.id, productVariant);
+        const finishCreation = () => {
+            setSelectedVariantId(productVariant.id);
+            setEditingItem(undefined);
+            setIsReceivingItem(true);
+            setIsAddingVariant(false);
+        };
+        if (creation) {
+            return creation.then(finishCreation);
+        }
+        finishCreation();
     }
 
     function requestAddVariant() {

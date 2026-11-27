@@ -185,6 +185,18 @@ describe("Delivery approval and stock-in", () => {
                 [{ packagingLevelId: "box", quantity: 2 }],
                 [{ packagingLevelId: "box", quantity: 5 }]
             ]);
+        expect(plan.receivedItemAssociations).toEqual([
+            {
+                deliveryItemId: "item-1",
+                inventoryRecordId: "inventory-new",
+                batchId: "batch-new"
+            },
+            {
+                deliveryItemId: "item-2",
+                inventoryRecordId: "generated-4",
+                batchId: "generated-3"
+            }
+        ]);
     });
 
     it("records entered prices for a new batch without changing Product defaults", () => {
@@ -245,6 +257,40 @@ describe("Delivery approval and stock-in", () => {
         expect(secondPlan.inventoryRecords).toHaveLength(1);
         expect(secondPlan.inventoryRecords[0].stockQuantities).toEqual([
             { packagingLevelId: "box", quantity: 6 }
+        ]);
+        expect(secondPlan.receivedItemAssociations).toEqual([{
+            deliveryItemId: "item-2",
+            inventoryRecordId: firstPlan.inventoryRecords[0].id,
+            batchId: firstPlan.inventoryBatches[0].batchId
+        }]);
+    });
+
+    it("associates each line with the single shared Inventory record and batch", () => {
+        const draft = withItems(makeDraft("shared-receipt"), [
+            makeItem("box-item", { quantity: 2 }),
+            makeItem("unit-item", {
+                packagingLevelId: "unit",
+                quantity: 5
+            })
+        ]);
+        const plan = makePlan(draft, initialState([]));
+
+        expect(plan.receivedItemAssociations).toEqual([
+            {
+                deliveryItemId: "box-item",
+                inventoryRecordId: "inventory-new",
+                batchId: "batch-new"
+            },
+            {
+                deliveryItemId: "unit-item",
+                inventoryRecordId: "inventory-new",
+                batchId: "batch-new"
+            }
+        ]);
+        expect(plan.inventoryRecords).toHaveLength(1);
+        expect(plan.inventoryRecords[0].stockQuantities).toEqual([
+            { packagingLevelId: "box", quantity: 2 },
+            { packagingLevelId: "unit", quantity: 5 }
         ]);
     });
 

@@ -27,6 +27,11 @@ export interface DeliveryApprovalPlan {
     draft: DeliveryDraft;
     inventoryRecords: inventory[];
     inventoryBatches: inventoryBatch[];
+    receivedItemAssociations: {
+        deliveryItemId: string;
+        inventoryRecordId: string;
+        batchId: string;
+    }[];
     activity: ActivityEventInput;
 }
 
@@ -235,6 +240,7 @@ export function prepareDeliveryApproval(
         packagingLevel: productStructure["variant"][number]["packagingHierarchy"][number];
         item: DeliveryDraftItem;
         batchId: string;
+        inventoryRecordId: string;
     }[] = [];
 
     draft.items.forEach((item, index) => {
@@ -278,7 +284,7 @@ export function prepareDeliveryApproval(
                 throw new Error("The selected batch is no longer available.");
             }
             batches[batchIndex] = pricedBatch;
-            addItemStock(
+            const updatedRecord = addItemStock(
                 checkedItem,
                 pricedBatch,
                 products,
@@ -292,7 +298,8 @@ export function prepareDeliveryApproval(
                 productVariant,
                 packagingLevel,
                 item: checkedItem,
-                batchId: pricedBatch.batchId
+                batchId: pricedBatch.batchId,
+                inventoryRecordId: updatedRecord.id
             });
         } catch (error) {
             const message = error instanceof Error
@@ -351,6 +358,11 @@ export function prepareDeliveryApproval(
         },
         inventoryRecords: records,
         inventoryBatches: batches,
+        receivedItemAssociations: activityLines.map((line) => ({
+            deliveryItemId: line.item.deliveryItemId,
+            inventoryRecordId: line.inventoryRecordId,
+            batchId: line.batchId
+        })),
         activity: {
             type: "delivery.received",
             operationKey: `delivery.received:${draft.deliveryId}`,

@@ -24,3 +24,9 @@ log = "0.4"
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+sha2 = "0.10"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "sync"] }

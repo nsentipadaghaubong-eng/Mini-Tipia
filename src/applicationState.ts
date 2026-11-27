@@ -3759,6 +3759,16 @@ export function applicationReducer(
                         : submittedBatchIdMap.get(record.batchId) ?? record.batchId
                 })
             );
+            const expectedReceivedItemAssociations =
+                expectedPlan.receivedItemAssociations.map((association) => ({
+                    ...association,
+                    inventoryRecordId:
+                        submittedRecordIdMap.get(association.inventoryRecordId) ??
+                        association.inventoryRecordId,
+                    batchId:
+                        submittedBatchIdMap.get(association.batchId) ??
+                        association.batchId
+                }));
             if (expectedPlan.activity.type !== "delivery.received") {
                 throw new Error("Delivery approval planner returned an invalid Activity.");
             }
@@ -3783,6 +3793,8 @@ export function applicationReducer(
                     JSON.stringify(expectedInventoryBatches) ||
                 JSON.stringify(plan.inventoryRecords) !==
                     JSON.stringify(expectedInventoryRecords) ||
+                JSON.stringify(plan.receivedItemAssociations) !==
+                    JSON.stringify(expectedReceivedItemAssociations) ||
                 event.type !== "delivery.received" ||
                 JSON.stringify(activityInputFromEvent(event)) !==
                     JSON.stringify(expectedActivity)
